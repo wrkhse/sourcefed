@@ -53,6 +53,8 @@ query PullRequestData($owner: String!, $name: String!, $number: Int!, $reviewsAf
 }`
 
 const MAX_REVIEW_PAGES = 300
+// 500 checks; a poll's requests stay bounded however many a pull request has.
+const MAX_CONTEXT_PAGES = 5
 
 export async function fetchPrData(github: GithubClient, repo: string, prNumber: number): Promise<GithubPrData> {
   const [owner, name] = repo.split("/")
@@ -78,9 +80,9 @@ export async function fetchPrData(github: GithubClient, repo: string, prNumber: 
 
   const statusCheckRollup: any[] = []
   let contextsPage = pullRequest.statusCheckRollup?.contexts
-  while (contextsPage?.nodes && contextsPage.nodes.length > 0) {
+  for (let pages = 1; contextsPage?.nodes && contextsPage.nodes.length > 0; pages++) {
     statusCheckRollup.push(...contextsPage.nodes)
-    if (!contextsPage.pageInfo?.hasNextPage) break
+    if (!contextsPage.pageInfo?.hasNextPage || pages >= MAX_CONTEXT_PAGES) break
     const next = await github.graphql(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: contextsPage.pageInfo.endCursor })
     contextsPage = next?.repository?.pullRequest?.statusCheckRollup?.contexts
   }

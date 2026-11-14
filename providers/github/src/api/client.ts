@@ -4,7 +4,8 @@ import { GithubRateLimiter, githubRequestsPerMinute, type GithubApi } from "./gi
 const API = "https://api.github.com"
 const GRAPHQL = `${API}/graphql`
 const TIMEOUT_MS = 30_000
-// GitHub asks for at least a minute when a limited answer names no time.
+// GitHub asks for at least a minute when a limited answer names no time; the limiter
+// backs off further for repeated ones.
 const DEFAULT_WAIT_SEC = 60
 
 export const DEFERRED: SourcePollDeferred = { deferred: true }
@@ -41,15 +42,21 @@ function defaultLimiter(): GithubRateLimiter {
  * without reading anything more and `deferOnWait` defers it.
  */
 export class GithubClient {
+  // The APIs whose first request `acquire` paid for.
+  private readonly prepaid: Set<GithubApi>
+
   private constructor(
     private readonly token: string,
     private readonly monitorId: string,
-  ) {}
+    apis: readonly GithubApi[],
+  ) {
+    this.prepaid = new Set(apis)
+  }
 
   /** A client for one poll of `monitorId`, or undefined while the poll must wait its turn. */
   static open(token: string, monitorId: string, apis: readonly GithubApi[], first = false): GithubClient | undefined {
     if (!limiter.acquire(token, monitorId, apis, first)) return undefined
-    return new GithubClient(token, monitorId)
+    return new GithubClient(token, monitorId, apis)
   }
 
   /** A REST resource's JSON; any answer but a success or a rate limit throws with its status. */
@@ -72,7 +79,9 @@ export class GithubClient {
     })
     const body = (await response.json().catch(() => undefined)) as { data?: unknown; errors?: Array<{ type?: string; message?: string }> } | undefined
     const errors = Array.isArray(body?.errors) ? body.errors : []
-    if (errors.some((error) => error?.type === "RATE_LIMITED")) this.waitOut("graphql", waitSeconds(response.headers, Date.now()))
+    if (errors.some((error) => error?.type === "RATE_LIMITED")) {
+      this.waitOut("graphql", waitSeconds(response.headers, Date.now(), () => limiter.backoff(this.token, "graphql")))
+    }
     if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
     if (errors.length > 0) throw new Error(`GitHub GraphQL: ${errorText(errors)}`)
 
@@ -80,7 +89,7 @@ export class GithubClient {
   }
 
   private async send(api: GithubApi, url: string, init: RequestInit): Promise<Response> {
-    if (!limiter.charge(this.token, api)) throw new GithubWaiting(api)
+    if (!limiter.charge(this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
 
     const response = await fetch(url, {
       ...init,
@@ -94,7 +103,7 @@ export class GithubClient {
     })
     if (response.status === 403 || response.status === 429) {
       const detail = await response.clone().text().catch(() => "")
-      const waitSec = rateLimitWait(response, detail, Date.now())
+      const waitSec = rateLimitWait(response, detail, Date.now(), () => limiter.backoff(this.token, api))
       if (waitSec !== undefined) this.waitOut(api, waitSec)
     }
     return response
@@ -127,18 +136,24 @@ export async function githubBody(response: Response, url: string): Promise<any> 
 
 /**
  * Seconds to wait when a 403 or 429 is a rate limit, or undefined when it is not: a 429,
- * a 403 with no requests remaining, or a 403 naming a (secondary) rate limit.
+ * a 403 with no requests remaining, or a 403 naming a secondary limit (`abuse detection`
+ * in older answers). `untimed` gives the wait for a limit that names no time.
  */
-export function rateLimitWait(response: Response, detail: string, now: number): number | undefined {
+export function rateLimitWait(
+  response: Response,
+  detail: string,
+  now: number,
+  untimed: () => number = () => DEFAULT_WAIT_SEC,
+): number | undefined {
   const exhausted = response.headers.get("x-ratelimit-remaining") === "0"
-  const limited = response.status === 429 || exhausted || /rate limit/i.test(detail)
+  const limited = response.status === 429 || exhausted || /rate limit|abuse detection/i.test(detail)
   if (!limited) return undefined
-  return waitSeconds(response.headers, now)
+  return waitSeconds(response.headers, now, untimed)
 }
 
 // Retry-After when given ("0" still waits a second), else the quota's reset when none is
-// left, else a minute.
-function waitSeconds(headers: Headers, now: number): number {
+// left, else `untimed`.
+function waitSeconds(headers: Headers, now: number, untimed: () => number): number {
   const retryAfter = headers.get("retry-after")?.trim() ?? ""
   const seconds = Number(retryAfter)
   if (retryAfter !== "" && Number.isFinite(seconds) && seconds >= 0) return Math.max(1, Math.ceil(seconds))
@@ -147,7 +162,7 @@ function waitSeconds(headers: Headers, now: number): number {
   if (headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset) && reset > 0) {
     return Math.max(1, Math.ceil(reset - now / 1000))
   }
-  return DEFAULT_WAIT_SEC
+  return untimed()
 }
 
 function errorText(errors: Array<{ message?: string }>): string {

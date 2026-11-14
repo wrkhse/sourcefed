@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { afterEach, beforeEach, describe, mock, test } from "node:test"
 import { InMemoryMonitorStore, MonitorRuntime } from "@sourcefed/core"
 import type { MonitorEvent, MonitorRecord } from "@sourcefed/core"
-import { GithubRateLimiter, MAX_WAIT_SEC, githubRequestsPerMinute } from "./api/github-limiter.ts"
+import { GithubRateLimiter, MAX_REQUESTS_PER_POLL, MAX_WAIT_SEC, githubRequestsPerMinute } from "./api/github-limiter.ts"
 import { rateLimitWait, resetGithubApi } from "./api/client.ts"
 import { GithubIssuesMonitor } from "./issues"
 import { GithubMonitor } from "./monitor.ts"
@@ -349,6 +349,7 @@ describe("GitHub rate-limit answers and budget", () => {
       ["403 with no requests left", 403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset }, "API rate limit exceeded", 90],
       ["403 secondary limit", 403, { "retry-after": "45" }, "You have exceeded a secondary rate limit", 45],
       ["403 secondary limit without Retry-After", 403, {}, "You have exceeded a secondary rate limit", 60],
+      ["403 abuse detection", 403, { "retry-after": "30" }, "You have triggered an abuse detection mechanism", 30],
       ["403 not a limit", 403, { "x-ratelimit-remaining": "4000" }, "Resource not accessible by integration", undefined],
     ]
     for (const [name, status, headers, message, expected] of cases) {
@@ -378,22 +379,50 @@ describe("GitHub rate-limit answers and budget", () => {
   test("no budget lets an hour start more than GitHub's 5000 requests", () => {
     for (let perMinute = 1; perMinute <= 75; perMinute++) {
       const { burst } = limiter(perMinute)
-      assert.ok(perMinute * 60 + burst <= 5000, `${perMinute} a minute has a burst of ${burst}`)
+      const hour = perMinute * 60 + burst + MAX_REQUESTS_PER_POLL
+      assert.ok(hour <= 5000, `${perMinute} a minute, burst ${burst} and one poll's overdraw make ${hour}`)
     }
+  })
+
+  test("repeated limits that name no time back off", () => {
+    const waits: number[] = []
+    for (let index = 0; index < 4; index++) {
+      const seconds = shared.backoff(TOKEN, "rest")
+      waits.push(seconds)
+      shared.pause(TOKEN, "rest", seconds, "m1")
+      mock.timers.tick(seconds * 1000 + 5_000)
+    }
+    assert.deepEqual(waits, [60, 120, 240, 480])
+
+    mock.timers.tick(11 * 60_000)
+    assert.equal(shared.backoff(TOKEN, "rest"), 60, "a quiet spell starts again at a minute")
+    assert.equal(shared.backoff(TOKEN, "graphql"), 60, "each API backs off on its own")
+  })
+
+  test("polls admitted at the same moment each take their own credit", () => {
+    const granted = ["m1", "m2", "m3", "m4", "m5"].map((key) => shared.acquire(TOKEN, key, ["graphql", "rest"]))
+    assert.deepEqual(granted, [true, true, true, true, false], "the burst of 4 admits four polls before any sends")
+  })
+
+  test("a pull request monitor short of GraphQL credit does not hold back a REST-only monitor", () => {
+    for (const key of ["p1", "p2", "p3", "p4"]) assert.equal(shared.acquire(TOKEN, key, ["graphql", "rest"]), true)
+    for (let page = 0; page < 4; page++) shared.charge(TOKEN, "graphql")
+
+    mock.timers.tick(4_000)
+    assert.equal(shared.acquire(TOKEN, "p5", ["graphql", "rest"]), false, "GraphQL is still paying back")
+    assert.equal(shared.acquire(TOKEN, "issues", ["rest"]), true, "REST has credit for the issues monitor")
+    mock.timers.tick(12_000)
+    assert.equal(shared.acquire(TOKEN, "p5", ["graphql", "rest"]), true)
   })
 
   test("a first poll jumps the queue only until it is granted", () => {
     const apis = ["rest"] as const
-    for (const key of ["m1", "m2", "m3", "m4"]) {
-      assert.equal(shared.acquire(TOKEN, key, apis), true)
-      shared.charge(TOKEN, "rest")
-    }
+    for (const key of ["m1", "m2", "m3", "m4"]) assert.equal(shared.acquire(TOKEN, key, apis), true)
     assert.equal(shared.acquire(TOKEN, "m5", apis), false)
     assert.equal(shared.acquire(TOKEN, "m6", apis), false)
 
     mock.timers.tick(2_000)
     assert.equal(shared.acquire(TOKEN, "new", apis, true), true, "a new monitor goes ahead of m5 and m6")
-    shared.charge(TOKEN, "rest")
     mock.timers.tick(2_000)
     assert.equal(shared.acquire(TOKEN, "new", apis, true), false, "its next poll, still unprimed, waits its turn")
     assert.equal(shared.acquire(TOKEN, "m5", apis), true)

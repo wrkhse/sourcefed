@@ -4,8 +4,9 @@ const API = "https://api.github.com"
 const MAX_LOG_BYTES = 10_000_000
 
 /**
- * The job's log, or undefined when GitHub has none to give: logs expire, and a missing one
- * only shortens the CI event's detail. A rate limit still stops the poll.
+ * The job's log, or undefined when GitHub has none to give or it takes longer than the
+ * request timeout to read: logs expire, and a missing one only shortens the CI event's
+ * detail. A rate limit still stops the poll.
  */
 export async function fetchJobLog(github: GithubClient, repo: string, jobId: string): Promise<string | undefined> {
   try {

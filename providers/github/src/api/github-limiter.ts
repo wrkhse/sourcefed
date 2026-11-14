@@ -2,9 +2,14 @@
 // an hour (a pull request query costs one). Every use of the account shares those, so the
 // monitors on a token take 30 a minute of each by default: 1800 an hour, about a third.
 const DEFAULT_REQUESTS_PER_MINUTE = 30
-// At 75 a minute the burst is 8, so no hour starts more than 4508 of the 5000 requests.
+// At 75 a minute the burst is 8. With the most one poll can overdraw, no hour starts more
+// than 4500 + 8 + 23 of the 5000 requests.
 export const MAX_REQUESTS_PER_MINUTE = 75
 export const HOURLY_LIMIT = 5000
+// The most requests one pull request poll sends on one API: REST is two comment lists of
+// up to ten pages and three job logs; GraphQL is a query with up to two more review pages
+// and four more check pages, read twice when a check fails.
+export const MAX_REQUESTS_PER_POLL = 23
 
 // The burst holds one runtime tick's credit (the default tick is 5s) plus one, and at
 // least three, so a token polled every tick uses its whole budget.
@@ -20,6 +25,12 @@ const WAITER_FORGET_MS = 10 * 60_000
 // A primary limit resets within the hour; a longer wait means a skewed clock or an odd
 // answer, so waits are capped at an hour.
 export const MAX_WAIT_SEC = 60 * 60
+
+// A limit that names no time waits a minute, and twice as long as the last one when it
+// comes within this long of the last such wait ending, as GitHub asks of repeated
+// secondary limits.
+const BACKOFF_START_SEC = 60
+const BACKOFF_RESET_MS = 10 * 60_000
 
 export type GithubApi = "rest" | "graphql"
 
@@ -39,7 +50,7 @@ type Waiter = { lastAsked: number; seq: number; granted: boolean; apis: readonly
 // asks again (a whole tick later) or the wait ends.
 type Wait = { startedAt: number; askedSec: number; first: string; logged: boolean }
 
-type ApiBudget = { credit: number; refilledAt: number; pausedUntil: number; wait?: Wait }
+type ApiBudget = { credit: number; refilledAt: number; pausedUntil: number; wait?: Wait; backoffSec: number }
 
 type TokenBudget = {
   apis: Record<GithubApi, ApiBudget>
@@ -54,9 +65,9 @@ type TokenBudget = {
  * rate-limit wait.
  *
  * A poll is admitted when it is next in line among the monitors no wait holds back, and
- * every API it uses has a request's credit. Each request it then sends is charged, so a
- * poll of several requests leaves the budget short and later polls wait until it is paid
- * back.
+ * every API it uses has a request's credit, which it takes for its first request on each.
+ * Each further request is charged as it is sent, so a poll of several requests leaves the
+ * budget short and later polls wait until it is paid back.
  */
 export class GithubRateLimiter {
   private readonly budgets = new Map<string, TokenBudget>()
@@ -83,24 +94,41 @@ export class GithubRateLimiter {
     }
     if (held) return false
 
-    for (const api of apis) this.refill(budget.apis[api], now)
-    if (this.nextInLine(budget, now) !== key) return false
+    for (const api of [...apis, ...otherApis(apis)]) this.refill(budget.apis[api], now)
+    if (this.nextInLine(budget, now, apis) !== key) return false
     if (apis.some((api) => budget.apis[api].credit < 1)) return false
 
+    for (const api of apis) budget.apis[api].credit -= 1
     budget.queue = budget.queue.filter((waiting) => waiting !== key)
     budget.waiters.get(key)!.granted = true
     return true
   }
 
-  /** Charges one request on `api`, which may leave its credit below zero; false while it waits. */
-  charge(token: string, api: GithubApi): boolean {
+  /**
+   * Charges one request on `api`, which may leave its credit below zero; a `prepaid` request
+   * was paid for by `acquire`. False while the API waits.
+   */
+  charge(token: string, api: GithubApi, prepaid = false): boolean {
     const now = this.options.now()
     const state = this.budget(token, now).apis[api]
     if (now < state.pausedUntil) return false
+    if (prepaid) return true
 
     this.refill(state, now)
     state.credit -= 1
     return true
+  }
+
+  /**
+   * Seconds to wait for a limit that names no time: a minute, doubled for each one that
+   * comes soon after the last such wait ended, at most an hour.
+   */
+  backoff(token: string, api: GithubApi): number {
+    const now = this.options.now()
+    const state = this.budget(token, now).apis[api]
+    const repeated = state.backoffSec > 0 && now - state.pausedUntil < BACKOFF_RESET_MS
+    state.backoffSec = repeated ? Math.min(state.backoffSec * 2, MAX_WAIT_SEC) : BACKOFF_START_SEC
+    return state.backoffSec
   }
 
   /** Holds every monitor using `api` on `token` for `waitSec`, at most an hour. */
@@ -133,19 +161,23 @@ export class GithubRateLimiter {
   private budget(token: string, now: number): TokenBudget {
     let budget = this.budgets.get(token)
     if (!budget) {
-      const fresh = (): ApiBudget => ({ credit: this.burst, refilledAt: now, pausedUntil: 0 })
+      const fresh = (): ApiBudget => ({ credit: this.burst, refilledAt: now, pausedUntil: 0, backoffSec: 0 })
       budget = { apis: { rest: fresh(), graphql: fresh() }, queue: [], waiters: new Map(), seq: 0 }
       this.budgets.set(token, budget)
     }
     return budget
   }
 
-  // The first queued monitor that no wait holds back. A monitor whose API waits keeps its
-  // place, but does not stop monitors that use only the other API.
-  private nextInLine(budget: TokenBudget, now: number): string | undefined {
+  // The first queued monitor that could go now. A monitor held by an API's wait, or short
+  // of credit on an API the asking monitor does not use, keeps its place but does not stop
+  // monitors that use only the other API.
+  private nextInLine(budget: TokenBudget, now: number, asking: readonly GithubApi[]): string | undefined {
     return budget.queue.find((key) => {
       const apis = budget.waiters.get(key)?.apis ?? []
-      return apis.every((api) => now >= budget.apis[api].pausedUntil)
+      return apis.every((api) => {
+        const state = budget.apis[api]
+        return now >= state.pausedUntil && (asking.includes(api) || state.credit >= 1)
+      })
     })
   }
 
@@ -209,6 +241,10 @@ export class GithubRateLimiter {
     state.credit = Math.min(this.burst, state.credit + earned)
     state.refilledAt = now
   }
+}
+
+function otherApis(apis: readonly GithubApi[]): GithubApi[] {
+  return (["rest", "graphql"] as const).filter((api) => !apis.includes(api))
 }
 
 /**

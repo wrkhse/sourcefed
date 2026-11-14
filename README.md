@@ -246,7 +246,8 @@ use:
   minute (`SOURCEFED_GITHUB_REQUESTS_PER_MINUTE`, at most 75, read when the daemon
   starts), about a third of GitHub's 5000 an hour, leaving the rest for other use of the
   account. A pull request poll sends one GraphQL query and two or more REST requests, so
-  at the default each polls about every `max(pollIntervalSec, monitors × 4s)`. When GitHub
+  at the default each pull request monitor polls about every
+  `max(pollIntervalSec, monitors × 4s)`; an issues poll sends one. When GitHub
   rate-limits a call, every monitor on that token using that API waits until GitHub's
   `Retry-After` or quota reset (at most an hour) and the log gets one line. Other failed
   answers, such as a 404, show as poll failures with their status.
