@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { afterEach, describe, test } from "node:test"
+import { GithubClient, resetGithubApi } from "../../api"
 import { ciFailureDetail } from "./ci-failure-detail.ts"
 import { RECORDED_FAILURES, type RecordedJob, type RecordedRun } from "./fixtures/recorded-ci-runs.ts"
 
@@ -12,12 +13,17 @@ afterEach(() => {
   else process.env.GITHUB_TOKEN = realToken
 })
 
+function client(): GithubClient {
+  resetGithubApi()
+  return GithubClient.open("test-token", "m1", ["graphql", "rest"])!
+}
+
 describe("CI failure detail", () => {
   for (const recorded of RECORDED_FAILURES) {
     test(`quotes only the failed jobs of recorded PR #${recorded.pr}`, async () => {
       serveGithubLogs(recorded.runs)
       const jobs = recorded.runs.flatMap((run) => run.jobs)
-      const body = await ciFailureDetail("org/repo", failedChecks(jobs))
+      const body = await ciFailureDetail(client(), "org/repo", failedChecks(jobs))
 
       for (const job of jobs) {
         const quoted = body.includes(lastLine(job))
@@ -31,7 +37,7 @@ describe("CI failure detail", () => {
     const run = RECORDED_FAILURES[1]!.runs[1]!
     const jobs = run.jobs.map((job, index) => ({ ...job, conclusion: index < 4 ? "failure" : "success" }))
     serveGithubLogs([{ ...run, jobs }])
-    const body = await ciFailureDetail("org/repo", failedChecks(jobs))
+    const body = await ciFailureDetail(client(), "org/repo", failedChecks(jobs))
 
     const failed = jobs.slice(0, 4)
     for (const job of failed) assert.match(body, new RegExp(`^- ${escape(job.name)}: FAILURE$`, "m"))

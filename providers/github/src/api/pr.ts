@@ -1,4 +1,4 @@
-import { githubGraphQL } from "./client.ts"
+import type { GithubClient } from "./client.ts"
 
 export type GithubPrData = {
   reviews: any[]
@@ -54,12 +54,12 @@ query PullRequestData($owner: String!, $name: String!, $number: Int!, $reviewsAf
 
 const MAX_REVIEW_PAGES = 300
 
-export async function fetchPrData(repo: string, prNumber: number): Promise<GithubPrData | undefined> {
+export async function fetchPrData(github: GithubClient, repo: string, prNumber: number): Promise<GithubPrData> {
   const [owner, name] = repo.split("/")
-  if (!owner || !name) return undefined
-  const data = await githubGraphQL(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: undefined })
+  if (!owner || !name) throw new Error(`GitHub repository ${repo} is not owner/name`)
+  const data = await github.graphql(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: undefined })
   const pullRequest = data?.repository?.pullRequest
-  if (!pullRequest) return undefined
+  if (!pullRequest) throw new Error(`GitHub has no pull request ${repo}#${prNumber}`)
 
   const reviews: any[] = []
   let page = pullRequest.reviews
@@ -72,7 +72,7 @@ export async function fetchPrData(repo: string, prNumber: number): Promise<Githu
       body: node.body,
     })))
     if (!page.pageInfo?.hasNextPage || reviews.length >= MAX_REVIEW_PAGES) break
-    const next = await githubGraphQL(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: page.pageInfo.endCursor, contextsAfter: undefined })
+    const next = await github.graphql(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: page.pageInfo.endCursor, contextsAfter: undefined })
     page = next?.repository?.pullRequest?.reviews
   }
 
@@ -81,7 +81,7 @@ export async function fetchPrData(repo: string, prNumber: number): Promise<Githu
   while (contextsPage?.nodes && contextsPage.nodes.length > 0) {
     statusCheckRollup.push(...contextsPage.nodes)
     if (!contextsPage.pageInfo?.hasNextPage) break
-    const next = await githubGraphQL(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: contextsPage.pageInfo.endCursor })
+    const next = await github.graphql(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: contextsPage.pageInfo.endCursor })
     contextsPage = next?.repository?.pullRequest?.statusCheckRollup?.contexts
   }
 

@@ -1,15 +1,15 @@
-import { githubToken } from "./client.ts"
+import { GithubWaiting, type GithubClient } from "./client.ts"
 
 const API = "https://api.github.com"
 const MAX_LOG_BYTES = 10_000_000
 
-export async function fetchJobLog(repo: string, jobId: string): Promise<string | undefined> {
-  const token = githubToken()
-  if (!token) return undefined
+/**
+ * The job's log, or undefined when GitHub has none to give: logs expire, and a missing one
+ * only shortens the CI event's detail. A rate limit still stops the poll.
+ */
+export async function fetchJobLog(github: GithubClient, repo: string, jobId: string): Promise<string | undefined> {
   try {
-    const response = await fetch(`${API}/repos/${repo}/actions/jobs/${jobId}/logs`, {
-      headers: { authorization: `Bearer ${token}`, "user-agent": "sourcefed", accept: "application/vnd.github+json" },
-    })
+    const response = await github.request(`${API}/repos/${repo}/actions/jobs/${jobId}/logs`)
     if (!response.ok || !response.body) return undefined
     const length = Number(response.headers.get("content-length") ?? 0)
     if (length > MAX_LOG_BYTES) return undefined
@@ -27,7 +27,8 @@ export async function fetchJobLog(repo: string, jobId: string): Promise<string |
       chunks.push(value)
     }
     return new TextDecoder().decode(concatChunks(chunks))
-  } catch {
+  } catch (error) {
+    if (error instanceof GithubWaiting) throw error
     return undefined
   }
 }

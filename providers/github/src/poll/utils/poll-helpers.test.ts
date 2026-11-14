@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import * as v from "valibot"
+import { GithubClient, resetGithubApi } from "../../api"
 import { appendGithubCiEvent } from "./append-github-ci-event.ts"
 import { appendGithubConflictEvent } from "./append-github-conflict-event.ts"
 import { appendGithubReviews } from "./append-github-reviews.ts"
@@ -40,7 +41,16 @@ describe("GitHub poll event helpers", () => {
   test("tracks CI, conflict, and merged state transitions", async () => {
     const cursor = emptyGithubCursor()
     const events: GithubEvent[] = []
-    await appendGithubCiEvent("org/repo", 12, cursor, events, [{ name: "Lint", conclusion: "success" }])
+    resetGithubApi()
+    const github = GithubClient.open("test-token", "m1", ["graphql", "rest"])!
+    // Green checks need no request; any call to GitHub fails the test.
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async () => assert.fail("no request to GitHub")
+    try {
+      await appendGithubCiEvent(github, "org/repo", 12, cursor, events, [{ name: "Lint", conclusion: "success" }])
+    } finally {
+      globalThis.fetch = realFetch
+    }
     appendGithubConflictEvent("org/repo", 12, cursor, events, "MERGEABLE")
     appendGithubConflictEvent("org/repo", 12, cursor, events, "CONFLICTING")
     appendGithubStateEvent("org/repo", 12, cursor, events, "OPEN")

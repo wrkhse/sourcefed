@@ -1,12 +1,13 @@
-import { githubJson } from "./client.ts"
+import type { GithubClient } from "./client.ts"
 
 const MAX_COMMENT_PAGES = 10
 
-export async function fetchGithubComments(path: string): Promise<any[] | undefined> {
+export async function fetchGithubComments(github: GithubClient, path: string): Promise<any[]> {
   const comments: any[] = []
   for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
-    const batch = await githubJson(`/${path}?per_page=100&page=${page}`)
-    if (!Array.isArray(batch)) return undefined
+    const batch = await github.json(`/${path}?per_page=100&page=${page}`)
+    if (!Array.isArray(batch)) throw new Error(`GitHub gave an unexpected comments list for ${path}`)
+
     comments.push(...batch)
     if (batch.length < 100) return comments
   }
