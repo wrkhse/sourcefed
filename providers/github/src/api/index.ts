@@ -1,4 +1,5 @@
-export { githubToken } from "./client.ts"
+export { DEFERRED, GithubClient, GithubWaiting, deferOnWait, githubBody, githubToken, resetGithubApi } from "./client.ts"
 export { fetchGithubComments } from "./comments.ts"
+export { GithubRateLimiter, githubRequestsPerMinute, type GithubApi } from "./github-limiter.ts"
 export { fetchJobLog } from "./logs.ts"
 export { fetchPrData } from "./pr.ts"

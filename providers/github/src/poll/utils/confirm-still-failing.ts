@@ -1,9 +1,7 @@
-import { fetchPrData } from "../../api"
+import { fetchPrData, type GithubClient } from "../../api"
 
-export async function confirmStillFailing(repo: string, prNumber: number, failed: any[]): Promise<any[]> {
-  const data = await fetchPrData(repo, prNumber)
-  if (!data) return failed
-
+export async function confirmStillFailing(github: GithubClient, repo: string, prNumber: number, failed: any[]): Promise<any[]> {
+  const data = await fetchPrData(github, repo, prNumber)
   const rollup = data.statusCheckRollup ?? []
   const current = new Map<string, string>()
   for (const check of rollup) {

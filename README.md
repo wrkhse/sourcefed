@@ -242,6 +242,15 @@ use:
 - **GitHub polling** — `GH_TOKEN` or `GITHUB_TOKEN` (without one, GitHub monitors do not
   poll). Calls the REST and GraphQL APIs directly. With the webhook secret set, GitHub's
   `issues` webhooks wake `github-issues` monitors of that repository early.
+  All GitHub monitors on one token share a budget of 30 REST and 30 GraphQL requests a
+  minute (`SOURCEFED_GITHUB_REQUESTS_PER_MINUTE`, at most 75, read when the daemon
+  starts), about a third of GitHub's 5000 an hour, leaving the rest for other use of the
+  account. A pull request poll sends one GraphQL query and two or more REST requests, so
+  at the default each pull request monitor polls about every
+  `max(pollIntervalSec, monitors × 4s)`; an issues poll sends one. When GitHub
+  rate-limits a call, every monitor on that token using that API waits until GitHub's
+  `Retry-After` or quota reset (at most an hour) and the log gets one line. Other failed
+  answers, such as a 404, show as poll failures with their status.
 - **Slack polling** — `SOURCEFED_SLACK_TOKEN` (bot or user token). Reads and notifies only;
   never sends messages. The bot must be a member of the channel or DM it monitors.
   All Slack monitors on one token share a budget of 20 requests a minute

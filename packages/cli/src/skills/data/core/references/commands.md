@@ -67,6 +67,8 @@ SOURCEFED_WEBHOOK_PORT          Optional webhook listener port (default 8788)
 SOURCEFED_JIRA_BASE_URL         Jira base URL (default https://<site>.atlassian.net)
 SOURCEFED_JIRA_TERMINAL_STATUS  Jira status that auto-removes monitors
 GH_TOKEN / GITHUB_TOKEN         GitHub token for direct API polling
+SOURCEFED_GITHUB_REQUESTS_PER_MINUTE
+                                GitHub REST and GraphQL requests a minute, each, shared by the monitors on one token (default 30, max 75)
 SOURCEFED_GITHUB_WEBHOOK_SECRET GitHub webhook secret (enables webhooks)
 SOURCEFED_SLACK_SIGNING_SECRET  Slack signing secret (enables webhooks)
 SOURCEFED_YAB_COMMAND           Yab binary for yab monitors (default /Applications/yab.app/Contents/MacOS/yab)

@@ -1,12 +1,11 @@
 import { COLLECTION_LIMIT, type CollectionListing } from "@sourcefed/core"
-import { githubToken } from "../api/client.ts"
+import { githubBody } from "../api/client.ts"
 import type { GithubIssuesSource } from "./schema.ts"
 
 const API = "https://api.github.com"
 const PAGE_SIZE = 100
 // Pull requests share the issues list, so allow pages beyond the item limit before giving up.
 const MAX_PAGES = 20
-const TIMEOUT_MS = 30_000
 
 export type GithubIssue = { repo: string; number: number; title: string; url: string }
 
@@ -21,7 +20,7 @@ export type GithubFetch = (url: string, headers: Record<string, string>) => Prom
  * when the list fits one page) or, with a `query`, the search API. Any failure
  * or incomplete result throws, so a poll never compares against a partial list.
  */
-export async function listIssues(source: GithubIssuesSource, etag: string | undefined, request: GithubFetch = githubFetch): Promise<IssueListing> {
+export async function listIssues(source: GithubIssuesSource, etag: string | undefined, request: GithubFetch): Promise<IssueListing> {
   if (source.query) return searchIssues(source, request)
 
   const issues: GithubIssue[] = []
@@ -93,28 +92,4 @@ export function nextLink(header: string | null): string | undefined {
     if (match) return match[1]
   }
   return undefined
-}
-
-async function githubBody(response: Response, url: string): Promise<any> {
-  if (response.ok) return response.json()
-
-  const detail = await response.text().catch(() => "")
-  const path = url.replace(API, "")
-  throw new Error(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
-}
-
-async function githubFetch(url: string, headers: Record<string, string>): Promise<Response> {
-  const token = githubToken()
-  if (!token) throw new Error("GH_TOKEN or GITHUB_TOKEN is required for github-issues monitors")
-
-  return fetch(url, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      "user-agent": "sourcefed",
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      ...headers,
-    },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
 }

@@ -41,5 +41,8 @@ flowchart LR
   unmatched, until fewer match.
 - **Never a partial list.** A failed reply or incomplete search results throw, so
   the poll keeps its cursor and tries again on the next interval.
+- **Shared budget.** Requests go through the token's REST budget with the pull
+  request monitors ([../api/README.md](../api/README.md)). A REST rate limit defers
+  the poll with its cursor unchanged; a GraphQL wait does not hold it.
 - **Webhook wake.** With `SOURCEFED_GITHUB_WEBHOOK_SECRET` set, a verified
   `issues` webhook for the repository makes the monitor's next tick poll at once.
