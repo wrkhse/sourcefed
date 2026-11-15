@@ -70,7 +70,11 @@ export class GithubClient {
     return this.send("rest", url, { headers: { accept: "application/vnd.github+json", ...headers } })
   }
 
-  /** A GraphQL query's data; errors and failed answers throw, and a rate limit waits. */
+  /**
+   * A GraphQL query's data. A failed answer, or errors with no data, throw; errors beside
+   * data (a nested field the token may not read) are logged once and the data is used. A
+   * rate limit waits.
+   */
   async graphql(query: string, variables: Record<string, unknown>): Promise<any> {
     const response = await this.send("graphql", GRAPHQL, {
       method: "POST",
@@ -83,7 +87,8 @@ export class GithubClient {
       this.waitOut("graphql", waitSeconds(response.headers, Date.now(), () => limiter.backoff(this.token, "graphql")))
     }
     if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
-    if (errors.length > 0) throw new Error(`GitHub GraphQL: ${errorText(errors)}`)
+    if (errors.length > 0 && (body?.data === null || body?.data === undefined)) throw new Error(`GitHub GraphQL: ${errorText(errors)}`)
+    if (errors.length > 0) warnOnce(`[sourcefed] GitHub GraphQL answered with errors beside its data: ${errorText(errors)}`)
 
     return body?.data
   }
@@ -152,17 +157,31 @@ export function rateLimitWait(
 }
 
 // Retry-After when given ("0" still waits a second), else the quota's reset when none is
-// left, else `untimed`.
+// left and it is still ahead, else `untimed`. GitHub sends Retry-After in seconds; an
+// HTTP-date form is deliberately not parsed and falls through. A reset at or before now
+// (this clock runs ahead of GitHub's) backs off instead of looping one-second waits.
 function waitSeconds(headers: Headers, now: number, untimed: () => number): number {
   const retryAfter = headers.get("retry-after")?.trim() ?? ""
   const seconds = Number(retryAfter)
   if (retryAfter !== "" && Number.isFinite(seconds) && seconds >= 0) return Math.max(1, Math.ceil(seconds))
 
   const reset = Number(headers.get("x-ratelimit-reset") ?? "")
-  if (headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset) && reset > 0) {
+  if (headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset) && reset * 1000 > now) {
     return Math.max(1, Math.ceil(reset - now / 1000))
   }
   return untimed()
+}
+
+// Each distinct line once a process; bounded so a stream of different errors keeps
+// little memory.
+const MAX_WARNED = 100
+const warned = new Set<string>()
+
+function warnOnce(line: string): void {
+  if (warned.has(line)) return
+  if (warned.size >= MAX_WARNED) warned.clear()
+  warned.add(line)
+  console.warn(line)
 }
 
 function errorText(errors: Array<{ message?: string }>): string {

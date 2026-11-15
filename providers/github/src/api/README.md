@@ -15,14 +15,14 @@ the token's budget and turns a rate-limited answer into a wait.
 ## Rate limits
 
 GitHub gives a token 5000 REST requests an hour and, separately, 5000 GraphQL points an
-hour; a pull request query costs one point. The account's other use (`gh`, scripts, CI)
+hour; a pull request query is assumed to cost one point (GitHub's cost rules; not measured). The account's other use (`gh`, scripts, CI)
 shares both, so every monitor on one token shares a budget of 30 requests a minute of
 each API by default (`SOURCEFED_GITHUB_REQUESTS_PER_MINUTE`, read when the daemon starts).
 
 | Setting | Effect |
 | --- | --- |
 | unset | 30 a minute of each API: 1800 an hour, about a third of the quota |
-| above 75 | capped at 75 with a warning: with its burst of 8 and one poll's overdraw (at most 23), no hour starts more than 4531 |
+| above 75 | capped at 75 with a warning: a burst of 8 polls can be admitted at once and each can overdraw by 22, so no hour starts more than 4500 + 8 + 8 × 22 = 4684 |
 | not a positive number | 30, with a warning |
 
 ```mermaid
@@ -59,16 +59,21 @@ flowchart LR
   only until its first grant, so a monitor whose polls keep failing then waits its turn.
 - The burst holds one 5-second tick's credit plus one, and at least three.
 - A missing job log (logs expire) only shortens a CI event; any other failed answer is a
-  poll failure naming the status.
+  poll failure naming the status. GraphQL errors beside data (a nested field the token
+  may not read) are logged once and the data is used; errors with no data fail the poll.
 
 ### Known limits
 
-- Waits use the wall clock and live in memory: a clock step changes them, and a daemon
-  restart forgets them.
+- Waits use the wall clock and live in memory, and a daemon restart forgets them. A
+  step back is clamped: no wait or refill lies more than an hour ahead.
 - A quota reset is read against this machine's clock, so a skewed clock waits too short
-  (GitHub answers again, and the wait starts over) or too long (at most an hour).
-- A poll can overdraw by its extra requests, so a busy minute can go over the budget by
-  one poll's worth.
+  (GitHub answers again, and the wait starts over) or too long (at most an hour). A reset
+  at or before now backs off like a limit that names no time.
+- `Retry-After` is read in seconds, as GitHub sends it; an HTTP-date form is not parsed.
+- Polls admitted together can each overdraw by their further requests, so a busy minute
+  can go over the budget by a burst of polls' worth.
+- An unprimed monitor asking less often than every ten minutes regains first-poll
+  priority each time.
 - A wait extended after its line is written is not logged again, and a wait shorter than
   a tick is logged after it ended.
 - The count in the line covers monitors that asked in the last ten minutes: one not yet

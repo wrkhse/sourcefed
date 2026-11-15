@@ -25,6 +25,8 @@ class FakeGithub {
   reviews = new Map<number, any[]>()
   comments = new Map<number, any[]>()
   errors: Array<[RegExp, number]> = []
+  // GraphQL errors sent beside the data, as for a nested field the token may not read.
+  graphqlErrors: any[] = []
 
   install(): void {
     globalThis.fetch = (async (input: string, init: RequestInit) => {
@@ -77,7 +79,8 @@ class FakeGithub {
         reviews: { nodes: this.reviews.get(variables.number) ?? [], pageInfo: page },
         statusCheckRollup: { contexts: { nodes: [], pageInfo: page } },
       }
-      return Response.json({ data: { repository: { pullRequest } } })
+      const errors = this.graphqlErrors.length > 0 ? { errors: this.graphqlErrors } : {}
+      return Response.json({ data: { repository: { pullRequest } }, ...errors })
     }
 
     const comments = path.match(/^\/repos\/org\/repo\/issues\/(\d+)\/comments$/)
@@ -305,6 +308,24 @@ describe("GitHub rate limits", () => {
     assert.deepEqual(logs, [])
   })
 
+  test("GraphQL errors beside data are logged once and the data is used", async () => {
+    const warnings: string[] = []
+    mock.method(console, "warn", (...args: unknown[]) => warnings.push(args.map(String).join(" ")))
+    github.graphqlErrors = [{ type: "FORBIDDEN", path: ["repository", "pullRequest", "statusCheckRollup"], message: "Resource not accessible by integration" }]
+    const { runtime, delivered } = await runtimeWith(1)
+    await runtime.tick()
+    await runFor(runtime, 70_000)
+
+    github.reviews.set(1, [{ databaseId: 7, author: { login: "alice" }, state: "COMMENTED", submittedAt: "2026-11-14T06:01:00Z", body: "Please rename it" }])
+    await runFor(runtime, 70_000)
+    assert.ok(github.graphql().length >= 3, "the monitor kept polling")
+    assert.deepEqual(failures, [])
+    assert.deepEqual(delivered.map((event) => event.summary), ["Review by alice [COMMENTED] on #1"])
+    assert.deepEqual(warnings, [
+      "[sourcefed] GitHub GraphQL answered with errors beside its data: Resource not accessible by integration",
+    ])
+  })
+
   test("a 404 or a failed GraphQL answer is a poll failure, not a wait", async () => {
     github.errors = [[/\/pulls\/1\/comments$/, 404]]
     const { runtime, records } = await runtimeWith(1)
@@ -350,6 +371,9 @@ describe("GitHub rate-limit answers and budget", () => {
       ["403 secondary limit", 403, { "retry-after": "45" }, "You have exceeded a secondary rate limit", 45],
       ["403 secondary limit without Retry-After", 403, {}, "You have exceeded a secondary rate limit", 60],
       ["403 abuse detection", 403, { "retry-after": "30" }, "You have triggered an abuse detection mechanism", 30],
+      ["reset already passed (clock ahead)", 403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(START / 1000 - 5) }, "API rate limit exceeded", 60],
+      ["reset exactly now", 403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(START / 1000) }, "API rate limit exceeded", 60],
+      ["Retry-After as an HTTP date is not parsed", 429, { "retry-after": "Sat, 14 Nov 2026 06:05:00 GMT" }, "", 60],
       ["403 not a limit", 403, { "x-ratelimit-remaining": "4000" }, "Resource not accessible by integration", undefined],
     ]
     for (const [name, status, headers, message, expected] of cases) {
@@ -379,8 +403,9 @@ describe("GitHub rate-limit answers and budget", () => {
   test("no budget lets an hour start more than GitHub's 5000 requests", () => {
     for (let perMinute = 1; perMinute <= 75; perMinute++) {
       const { burst } = limiter(perMinute)
-      const hour = perMinute * 60 + burst + MAX_REQUESTS_PER_POLL
-      assert.ok(hour <= 5000, `${perMinute} a minute, burst ${burst} and one poll's overdraw make ${hour}`)
+      // A burst of polls can be admitted at once, and each can overdraw by its further requests.
+      const hour = perMinute * 60 + burst + burst * (MAX_REQUESTS_PER_POLL - 1)
+      assert.ok(hour <= 5000, `${perMinute} a minute, burst ${burst} and a burst of overdraws make ${hour}`)
     }
   })
 
@@ -426,6 +451,29 @@ describe("GitHub rate-limit answers and budget", () => {
     mock.timers.tick(2_000)
     assert.equal(shared.acquire(TOKEN, "new", apis, true), false, "its next poll, still unprimed, waits its turn")
     assert.equal(shared.acquire(TOKEN, "m5", apis), true)
+  })
+
+  test("a clock stepping back neither stretches a wait past an hour nor keeps a stopped monitor first", () => {
+    let now = START
+    const stepped = new GithubRateLimiter({ requestsPerMinute: 30, now: () => now, log: (line) => logs.push(line) })
+    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), true)
+    stepped.pause(TOKEN, "rest", 120, "m1")
+
+    now = START - 2 * 24 * 60 * 60_000
+    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), false, "still waiting just after the step")
+    now += MAX_WAIT_SEC * 1000 + 5_000
+    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), true, "the wait ends within an hour of the step")
+
+    // m2 asked before the step and then stopped; m3 is not held behind it for two days.
+    now = START
+    for (let polls = 0; polls < 10 && stepped.acquire(TOKEN, "m1", ["rest"]); polls++) continue
+    assert.equal(stepped.acquire(TOKEN, "m2", ["rest"]), false, "m2 is queued with no credit")
+    now = START - 24 * 60 * 60_000
+    stepped.acquire(TOKEN, "m3", ["rest"])
+    now += 20_000
+    stepped.acquire(TOKEN, "m3", ["rest"])
+    now += 20_000
+    assert.equal(stepped.acquire(TOKEN, "m3", ["rest"]), true, "credit is earned again from the step, and m2 no longer leads")
   })
 
   test("a wait longer than an hour is capped and says so", () => {

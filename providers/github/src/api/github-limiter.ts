@@ -1,9 +1,11 @@
 // GitHub limits a token to 5000 REST requests an hour and, separately, 5000 GraphQL points
-// an hour (a pull request query costs one). Every use of the account shares those, so the
+// an hour. A pull request query is assumed to cost one point, from GitHub's cost rules; it
+// was not measured. Every use of the account shares those, so the
 // monitors on a token take 30 a minute of each by default: 1800 an hour, about a third.
 const DEFAULT_REQUESTS_PER_MINUTE = 30
-// At 75 a minute the burst is 8. With the most one poll can overdraw, no hour starts more
-// than 4500 + 8 + 23 of the 5000 requests.
+// At 75 a minute the burst is 8. Ticks run monitors concurrently, so up to a burst of polls
+// are admitted before any sends, and each can overdraw by its further requests: no hour
+// starts more than 4500 + 8 + 8 × 22 = 4684 of the 5000 requests.
 export const MAX_REQUESTS_PER_MINUTE = 75
 export const HOURLY_LIMIT = 5000
 // The most requests one pull request poll sends on one API: REST is two comment lists of
@@ -20,11 +22,14 @@ const MIN_BURST = 3
 // nobody.
 const MIN_WAITER_SILENCE_MS = 15_000
 // A monitor that has not asked for this long is forgotten, which bounds the memory kept.
+// An unprimed monitor asking less often than this regains first-poll priority each time;
+// that is at most one jump of the queue every ten minutes.
 const WAITER_FORGET_MS = 10 * 60_000
 
 // A primary limit resets within the hour; a longer wait means a skewed clock or an odd
 // answer, so waits are capped at an hour.
 export const MAX_WAIT_SEC = 60 * 60
+const MAX_WAIT_MS = MAX_WAIT_SEC * 1000
 
 // A limit that names no time waits a minute, and twice as long as the last one when it
 // comes within this long of the last such wait ending, as GitHub asks of repeated
@@ -153,8 +158,9 @@ export class GithubRateLimiter {
 
   /** When `api` on `token` may send again; 0 when it is not waiting. */
   waitsUntil(token: string, api: GithubApi): number {
-    const state = this.budgets.get(token)?.apis[api]
-    if (!state || this.options.now() >= state.pausedUntil) return 0
+    const now = this.options.now()
+    const state = this.budget(token, now).apis[api]
+    if (now >= state.pausedUntil) return 0
     return state.pausedUntil
   }
 
@@ -165,6 +171,7 @@ export class GithubRateLimiter {
       budget = { apis: { rest: fresh(), graphql: fresh() }, queue: [], waiters: new Map(), seq: 0 }
       this.budgets.set(token, budget)
     }
+    clampToNow(budget, now)
     return budget
   }
 
@@ -241,6 +248,19 @@ export class GithubRateLimiter {
     state.credit = Math.min(this.burst, state.credit + earned)
     state.refilledAt = now
   }
+}
+
+// The clock is the wall clock, which can step backwards. No wait or refill lies more than
+// the longest wait ahead, and no monitor asked in the future, so a step back neither
+// stretches a wait past an hour nor keeps a stopped monitor at the head of the queue.
+function clampToNow(budget: TokenBudget, now: number): void {
+  for (const state of Object.values(budget.apis)) {
+    state.pausedUntil = Math.min(state.pausedUntil, now + MAX_WAIT_MS)
+    // Credit is earned from the end of a wait, or from now.
+    state.refilledAt = Math.min(state.refilledAt, Math.max(now, state.pausedUntil))
+    if (state.wait) state.wait.startedAt = Math.min(state.wait.startedAt, now)
+  }
+  for (const waiter of budget.waiters.values()) waiter.lastAsked = Math.min(waiter.lastAsked, now)
 }
 
 function otherApis(apis: readonly GithubApi[]): GithubApi[] {
