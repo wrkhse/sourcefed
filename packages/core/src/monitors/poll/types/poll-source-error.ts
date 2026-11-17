@@ -6,7 +6,9 @@
  * Every bundle carries its own copy of this class (scripts/build.mjs bundles each provider
  * with only node:* external), so one copy cannot tell another's failure by instanceof. The
  * brand is the cross-package contract: Symbol.for is one symbol in the whole process, and
- * isPollSourceError is how a bundle recognises a failure thrown by another.
+ * isPollSourceError is how a bundle recognises a failure thrown by another. The brand is
+ * non-enumerable, so spreading or serialising an error does not copy it, and the guard
+ * requires an Error as well: inside one realm instanceof is safe across bundle copies.
  */
 const POLL_SOURCE_ERROR = Symbol.for("sourcefed.pollSourceError")
 
@@ -14,11 +16,10 @@ export class PollSourceError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = "PollSourceError"
-    ;(this as unknown as Record<symbol, boolean>)[POLL_SOURCE_ERROR] = true
+    Object.defineProperty(this, POLL_SOURCE_ERROR, { value: true })
   }
 }
 
 export function isPollSourceError(value: unknown): value is PollSourceError {
-  if (typeof value !== "object" || value === null) return false
-  return (value as Record<symbol, unknown>)[POLL_SOURCE_ERROR] === true
+  return value instanceof Error && (value as unknown as Record<symbol, unknown>)[POLL_SOURCE_ERROR] === true
 }

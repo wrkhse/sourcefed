@@ -5,21 +5,52 @@ import type { YabPage } from "../../types"
 const DEFAULT_YAB_COMMAND = "/Applications/yab.app/Contents/MacOS/yab"
 const TIMEOUT_MS = 45_000
 
+// Yab quotes the page and its own stderr back at us, and both can carry the feed's URL, whose
+// path or query is often the feed's only credential. Keep the host, drop the rest.
+const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi
+const MAX_QUOTED = 300
+
+function redact(text: string, url: string | undefined): string {
+  let redacted = text.replace(URL_PATTERN, (candidate) => hostOf(candidate))
+  for (const part of secretParts(url)) redacted = redacted.split(part).join("")
+  return redacted.slice(0, MAX_QUOTED)
+}
+
+function hostOf(candidate: string): string {
+  try {
+    return new URL(candidate).hostname
+  } catch {
+    return "the feed"
+  }
+}
+
+// A bare echo of the feed's path or query, with no scheme in front of it, still names the
+// credential, so the requested URL's own parts are removed as well.
+function secretParts(url: string | undefined): string[] {
+  if (!url) return []
+  try {
+    const parsed = new URL(url)
+    return [parsed.pathname, parsed.search].filter((part) => part.length > 1)
+  } catch {
+    return []
+  }
+}
+
 /** Read a URL through Yab, with the cookies of the given space (or wherever the site is signed in). */
 export async function fetchThroughYab(url: string, space?: string): Promise<YabPage> {
   const args: Record<string, unknown> = { url, html: true }
   if (space) args.space = space
-  return parseYabFetch(await callYabTool("fetch", args))
+  return parseYabFetch(await callYabTool("fetch", args), url)
 }
 
 /** Yab's fetch answers `STATUS · TYPE · URL`, a blank line, then the body. */
-export function parseYabFetch(text: string): YabPage {
+export function parseYabFetch(text: string, url?: string): YabPage {
   const split = text.indexOf("\n\n")
   const head = split >= 0 ? text.slice(0, split) : text
   const body = split >= 0 ? text.slice(split + 2) : ""
   const [status = "", type = "", ...rest] = head.split(" · ")
   const code = Number(status.trim())
-  if (!Number.isInteger(code) || code <= 0) throw new PollSourceError(`yab fetch gave an unexpected answer: ${head.slice(0, 200)}`)
+  if (!Number.isInteger(code) || code <= 0) throw new PollSourceError(`yab fetch gave an unexpected answer: ${redact(head, url)}`)
   return { status: code, type: type.trim(), url: rest.join(" · ").trim(), body }
 }
 
@@ -29,6 +60,7 @@ export function parseYabFetch(text: string): YabPage {
  */
 export function callYabTool(name: string, args: Record<string, unknown>): Promise<string> {
   const command = process.env.SOURCEFED_YAB_COMMAND || DEFAULT_YAB_COMMAND
+  const url = typeof args.url === "string" ? args.url : undefined
 
   return new Promise((resolve, reject) => {
     const child = spawn(command, ["mcp"], { stdio: ["pipe", "pipe", "pipe"] })
@@ -51,7 +83,7 @@ export function callYabTool(name: string, args: Record<string, unknown>): Promis
 
     child.on("error", (error) => finish(new PollSourceError(`yab mcp could not start (${command}): ${error.message}`)))
     child.on("exit", (code) => {
-      const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 300)}` : ""
+      const detail = stderr.trim() ? `: ${redact(stderr.trim(), url)}` : ""
       finish(new PollSourceError(`yab mcp exited (${code ?? "signal"}) before answering${detail}`))
     })
     child.stdin.on("error", () => {})
@@ -76,14 +108,14 @@ export function callYabTool(name: string, args: Record<string, unknown>): Promis
           continue
         }
         if (message.id === 1) {
-          if (message.error) return finish(new PollSourceError(`yab mcp initialize failed: ${message.error.message}`))
+          if (message.error) return finish(new PollSourceError(`yab mcp initialize failed: ${redact(message.error.message, url)}`))
           send({ method: "notifications/initialized" })
           send({ id: 2, method: "tools/call", params: { name, arguments: args } })
         } else if (message.id === 2) {
-          if (message.error) return finish(new PollSourceError(`yab ${name} failed: ${message.error.message}`))
+          if (message.error) return finish(new PollSourceError(`yab ${name} failed: ${redact(message.error.message, url)}`))
           const content: any[] = Array.isArray(message.result?.content) ? message.result.content : []
           const text = content.filter((part) => part?.type === "text").map((part) => String(part.text)).join("\n")
-          if (message.result?.isError) return finish(new PollSourceError(`yab ${name} failed: ${text.slice(0, 300)}`))
+          if (message.result?.isError) return finish(new PollSourceError(`yab ${name} failed: ${redact(text, url)}`))
           return finish(undefined, text)
         }
       }

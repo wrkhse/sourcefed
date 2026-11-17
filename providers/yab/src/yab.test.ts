@@ -149,6 +149,17 @@ describe("polling through Yab", () => {
     })
     assert.throws(() => parseYabFetch("no tab, see tabs"), /unexpected answer/)
   })
+
+  test("an unexpected answer names the host, never the feed's path or query", () => {
+    const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
+    assert.throws(() => parseYabFetch(`nope · text/html · ${url}`, url), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /example\.test/)
+      assert.ok(!error.message.includes("secret-path-token"), "the path is not quoted")
+      assert.ok(!error.message.includes("secret-query-token"), "the query is not quoted")
+      return true
+    })
+  })
 })
 
 const FAKE_YAB = `#!/usr/bin/env node
@@ -166,7 +177,12 @@ process.stdin.on("data", (chunk) => {
     if (message.method !== "tools/call") continue
     const mode = process.env.FAKE_YAB_MODE
     if (mode === "exit") process.exit(3)
-    if (mode === "error") reply(message.id, { isError: true, content: [{ type: "text", text: "no such space" }] })
+    if (mode === "exit-leak") {
+      process.stderr.write("fetching " + process.env.FAKE_YAB_URL + ": connection reset")
+      process.exit(3)
+    }
+    if (mode === "leak") reply(message.id, { isError: true, content: [{ type: "text", text: "failed to read " + message.params.arguments.url + " and again " + message.params.arguments.url.replace(/^https?:\\/\\/[^/]+/, "") }] })
+    else if (mode === "error") reply(message.id, { isError: true, content: [{ type: "text", text: "no such space" }] })
     else reply(message.id, { content: [{ type: "text", text: "200 · application/json · " + message.params.arguments.url + "\\n\\n" + JSON.stringify({ tool: message.params.name, args: message.params.arguments, argv: process.argv.slice(2) }) }] })
   }
 })
@@ -191,6 +207,7 @@ describe("Yab MCP client", () => {
     if (realCommand === undefined) delete process.env.SOURCEFED_YAB_COMMAND
     else process.env.SOURCEFED_YAB_COMMAND = realCommand
     delete process.env.FAKE_YAB_MODE
+    delete process.env.FAKE_YAB_URL
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -210,6 +227,26 @@ describe("Yab MCP client", () => {
     await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /yab fetch failed: no such space/)
     process.env.FAKE_YAB_MODE = "exit"
     await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /yab mcp exited \(3\) before answering/)
+  })
+
+  test("Yab's own words never carry the feed's path or query", async () => {
+    const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
+    process.env.FAKE_YAB_MODE = "leak"
+    const toolFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+    assert.ok(toolFailure instanceof Error)
+    assert.match(toolFailure.message, /example\.test/)
+    assert.ok(!toolFailure.message.includes("secret-path-token"), "the path is not quoted")
+    assert.ok(!toolFailure.message.includes("secret-query-token"), "the query is not quoted")
+
+    process.env.FAKE_YAB_MODE = "exit-leak"
+    process.env.FAKE_YAB_URL = url
+    const exitFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+    assert.ok(exitFailure instanceof Error)
+    assert.match(exitFailure.message, /example\.test/)
+    assert.ok(!exitFailure.message.includes("secret-path-token"), "stderr's path is not quoted")
+    assert.ok(!exitFailure.message.includes("secret-query-token"), "stderr's query is not quoted")
+    delete process.env.FAKE_YAB_MODE
+    delete process.env.FAKE_YAB_URL
   })
 
   test("reports a missing Yab", async () => {

@@ -6,6 +6,7 @@ import { isPollSourceError } from "../types/poll-source-error.ts"
 const MAX_IDENTITY = 80
 const MAX_MESSAGE = 200
 const MAX_LINE = 300
+const MAX_CAUSE_DEPTH = 4
 
 export async function tick(context: MonitorContext): Promise<void> {
   const monitors = await context.service.list()
@@ -46,10 +47,20 @@ function logFailure(record: MonitorRecord, source: Monitor, what: string, error:
 function describeError(error: unknown): string {
   if (!(error instanceof Error)) return oneLine(String(error), MAX_MESSAGE)
   const message = oneLine(error.message, MAX_MESSAGE)
-  const cause = error.cause instanceof Error && !message.includes(error.cause.message)
-    ? ` (cause: ${oneLine(error.cause.message, MAX_MESSAGE)})`
-    : ""
-  return `${message}${cause}`
+  const reason = reasonText(error)
+  return reason && !message.includes(reason) ? `${message} (cause: ${reason})` : message
+}
+
+// A network failure says only "fetch failed"; the reason (ENOTFOUND, ECONNREFUSED) sits in the
+// cause, sometimes in the cause's cause. The innermost one within the bound is the useful one.
+function reasonText(error: Error): string {
+  let reason = ""
+  let cause: unknown = error.cause
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth += 1) {
+    reason = oneLine(cause.message, MAX_MESSAGE)
+    cause = cause.cause
+  }
+  return reason
 }
 
 // The label is the source's display string — the one `monitor list` already shows — used
