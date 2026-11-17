@@ -1,6 +1,7 @@
-// Packages every bundle leaves out: Node built-ins, plus the host-provided packages the
-// published package declares as peers. Shared by the shipped build and the test build so a
-// test resolves them from node_modules exactly as the shipped bundle does.
+// What the two esbuild builds leave out: the published bundle (scripts/build-public.mjs) and
+// the test bundles (scripts/build-tests.mjs). node:* is never bundled; the MCP server and the
+// OpenCode plugin are regular dependencies the published package resolves at runtime; the
+// three Pi packages are optional peers the host supplies.
 export const EXTERNAL = [
   "node:*",
   "@modelcontextprotocol/server",
