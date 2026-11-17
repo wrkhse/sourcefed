@@ -56,19 +56,22 @@ export class SourcefedDaemon {
   }
 
   async stop(): Promise<void> {
-    const settled = await this.runtime.stop()
+    try {
+      const settled = await this.runtime.stop()
 
-    // Closed even when ticks are still in flight: a tick past this point decides
-    // untriaged rather than hold the navigator open.
-    this.triage?.close()
-
-    if (!settled) {
-      console.warn("[sourcefed] monitor ticks still in flight; keeping exclusive ownership of the state directory")
-      return
+      if (!settled) {
+        console.warn("[sourcefed] monitor ticks still in flight; keeping exclusive ownership of the state directory")
+        return
+      }
+      await this.releaseExclusive?.()
+      this.releaseExclusive = undefined
+      this.started = false
+    } finally {
+      // Closed even when ticks are still in flight, and even when a failing stop
+      // throws past this method: a decide past this point settles untriaged
+      // rather than hold the navigator open.
+      this.triage?.close()
     }
-    await this.releaseExclusive?.()
-    this.releaseExclusive = undefined
-    this.started = false
   }
 
   async webhook(request: Request): Promise<Response> {

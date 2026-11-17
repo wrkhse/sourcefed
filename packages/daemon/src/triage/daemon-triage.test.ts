@@ -103,6 +103,20 @@ describe("SourcefedDaemon triage", () => {
     await daemon.stop()
   })
 
+  test("a stop that throws still closes triage and rejects with the same error", async () => {
+    const fake = fakeTriage(async () => ({ deliver: true, triaged: false }))
+    const daemon = createDaemon(fake.triage)
+    const failure = new Error("runtime stop failed")
+
+    // Stubbed runtime: a stop() that rejects proves triage still closes behind it.
+    daemon.runtime.stop = async () => {
+      throw failure
+    }
+
+    await assert.rejects(daemon.stop(), (error) => error === failure)
+    assert.equal(fake.closeCount(), 1)
+  })
+
   test("stop closes triage once per stop, and stopping again is harmless", async () => {
     const fake = fakeTriage(async () => ({ deliver: true, triaged: false }))
     const daemon = createDaemon(fake.triage)
