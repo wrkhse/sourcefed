@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.2
+
+[compare changes](https://github.com/wrkhse/sourcefed/compare/v0.5.1...v0.5.2)
+
+### 🩹 Fixes
+
+- **release:** Verify Homebrew through the stevenjpx2/taps tap ([#18](https://github.com/wrkhse/sourcefed/pull/18))
+- **deps:** Refresh Pi development hosts and document audit blockers ([#22](https://github.com/wrkhse/sourcefed/pull/22))
+- **slack:** Share one request budget per token and wait out rate limits ([#23](https://github.com/wrkhse/sourcefed/pull/23))
+- **github:** Wait out rate limits and share a request budget per token ([#26](https://github.com/wrkhse/sourcefed/pull/26))
+
+### 📖 Documentation
+
+- Align repository metadata and examples with wrkhse ([#20](https://github.com/wrkhse/sourcefed/pull/20))
+
+### ❤️ Contributors
+
+- Steven John ([@StevenJPx2](https://github.com/StevenJPx2))
+
 ## v0.5.1
 
 [compare changes](https://github.com/StevenJPx2/sourcefed/compare/v0.5.0...v0.5.1)
