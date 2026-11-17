@@ -1,6 +1,6 @@
 import { JsonMonitorEventQueue, JsonMonitorStore, MonitorRuntime, type MonitorEventQueue, type MonitorRecord, type MonitorStore, type MonitorTarget, type QueuedMonitorEvent } from "@sourcefed/core"
 import { isSource, SOURCE_MAP, SOURCE_TYPES, sourceDefinition, sourceForInput, sourceForWebhookPath } from "./registry.ts"
-import type { DaemonCreateInput, DaemonResult, LogEntryView, MonitorView, SourcefedDaemonOptions } from "./types"
+import type { DaemonCreateInput, DaemonResult, EventTriage, LogEntryView, MonitorView, SourcefedDaemonOptions } from "./types"
 import { NotifyingEventSink, targetKey } from "./utils"
 
 const DELIVERY_LOG_LIMIT = 100
@@ -9,6 +9,7 @@ export class SourcefedDaemon {
   readonly runtime: MonitorRuntime
   private readonly store: MonitorStore
   private readonly queue: MonitorEventQueue
+  private readonly triage?: EventTriage
   private readonly listeners = new Map<string, Set<(events: QueuedMonitorEvent[]) => void>>()
   private readonly observers = new Set<(target: MonitorTarget) => void>()
   private readonly received = new Map<string, Map<(events: QueuedMonitorEvent[]) => void, Set<string>>>()
@@ -21,9 +22,10 @@ export class SourcefedDaemon {
     this.store = options.store ?? new JsonMonitorStore({ stateDir: options.stateDir })
     const queueDir = options.stateDir ?? (this.store instanceof JsonMonitorStore ? this.store.stateDir : undefined) ?? defaultStateDir()
     this.queue = options.eventQueue ?? new JsonMonitorEventQueue(queueDir)
+    this.triage = options.triage
     this.runtime = new MonitorRuntime({
       store: this.store,
-      sink: new NotifyingEventSink(this.queue, (target) => this.emit(target)),
+      sink: new NotifyingEventSink(this.queue, (target) => this.emit(target), this.triage),
       sources: SOURCE_MAP,
       sourceForWebhookPath,
       pollLoopSec: options.pollLoopSec,
@@ -55,6 +57,11 @@ export class SourcefedDaemon {
 
   async stop(): Promise<void> {
     const settled = await this.runtime.stop()
+
+    // Closed even when ticks are still in flight: a tick past this point decides
+    // untriaged rather than hold the navigator open.
+    this.triage?.close()
+
     if (!settled) {
       console.warn("[sourcefed] monitor ticks still in flight; keeping exclusive ownership of the state directory")
       return
