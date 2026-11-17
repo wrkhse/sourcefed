@@ -3,7 +3,6 @@ import type { MonitorCreateInput } from "@sourcefed/core"
 import type { YabSourceRecord } from "./types"
 import type { SourceInput } from "@sourcefed/core"
 import { YabSourceSchema } from "./schema.ts"
-import { shortUrl } from "./short-url.ts"
 import { yabPollMonitor } from "./poll"
 
 export class YabMonitor extends Monitor<YabSourceRecord> {
@@ -57,4 +56,9 @@ export class YabMonitor extends Monitor<YabSourceRecord> {
     if (input.exclude) source.exclude = input.exclude
     return source
   }
+}
+
+function shortUrl(href: string): string {
+  const url = new URL(href)
+  return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`
 }

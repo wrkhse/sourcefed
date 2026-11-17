@@ -1,7 +1,7 @@
 import type { MonitorContext } from "#sourcefed/types"
 import type { Monitor } from "../../monitor"
 import type { MonitorRecord } from "../../types"
-import { PollSourceError } from "../types/poll-source-error.ts"
+import { isPollSourceError } from "../types/poll-source-error.ts"
 
 const MAX_IDENTITY = 80
 const MAX_MESSAGE = 200
@@ -13,7 +13,7 @@ export async function tick(context: MonitorContext): Promise<void> {
     if (!record.enabled) continue
     const source = context.sources[record.source.type] as Monitor | undefined
     if (!source) {
-      console.error(`[sourcefed] monitor ${record.id}: no monitor provider for source type ${record.source.type}`)
+      console.error(oneLine(`[sourcefed] monitor ${record.id}: no monitor provider for source type ${record.source.type}`, MAX_LINE))
       continue
     }
     try {
@@ -31,7 +31,7 @@ export async function tick(context: MonitorContext): Promise<void> {
 // expects — a PollSourceError — is one line. A bug keeps its message and stack, and
 // SOURCEFED_DEBUG prints the stack for an expected failure too.
 function logFailure(record: MonitorRecord, source: Monitor, what: string, error: unknown): void {
-  const expected = error instanceof PollSourceError
+  const expected = isPollSourceError(error)
   const line = oneLine(
     `[sourcefed] monitor ${record.id} (${describeSource(record, source)}) ${what}: ${describeError(error)}`,
     MAX_LINE,
@@ -52,8 +52,8 @@ function describeError(error: unknown): string {
   return `${message}${cause}`
 }
 
-// The label is the source's own short display name — for Yab a feed's host — because the
-// cursor key can hold a URL with credentials, which must never reach a log line.
+// The label is the source's display string — the one `monitor list` already shows — used
+// instead of the cursor key so a monitor's line names it the way the CLI does.
 function describeSource(record: MonitorRecord, source: Monitor): string {
   try {
     const label = oneLine(source.label(source.validateSource(record.source)), MAX_IDENTITY)
@@ -66,7 +66,7 @@ function describeSource(record: MonitorRecord, source: Monitor): string {
 // Upstream answers and stored cursors carry newlines and can be long; one failure is still
 // one readable line.
 function oneLine(text: string, limit: number): string {
-  const collapsed = text.replace(/\s*[\r\n]+\s*/g, " ").trim()
+  const collapsed = text.replace(/\s*[\r\n\u0085\u2028\u2029]+\s*/g, " ").trim()
   return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed
 }
 

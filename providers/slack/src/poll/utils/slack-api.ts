@@ -134,20 +134,21 @@ async function refreshUsers(token: string): Promise<SlackUser[]> {
 }
 
 async function slackApi(token: string, method: string, params: Record<string, string>): Promise<SlackReply> {
+  let response: Response
   try {
-    const response = await fetch(`${SLACK_API}/${method}`, {
+    response = await fetch(`${SLACK_API}/${method}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(params),
     })
-    const result = (await response.json().catch(() => undefined)) as { ok?: boolean; error?: string } | undefined
-    if (response.ok && result?.ok === true) return { ok: true, result }
-    const error = result?.error ?? `HTTP ${response.status}`
-    if (response.status === 429 || error === "ratelimited") return { ok: false, error, retryAfterSec: retryAfter(response) }
-    return { ok: false, error }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+  const result = (await response.json().catch(() => undefined)) as { ok?: boolean; error?: string } | undefined
+  if (response.ok && result?.ok === true) return { ok: true, result }
+  const error = result?.error ?? `HTTP ${response.status}`
+  if (response.status === 429 || error === "ratelimited") return { ok: false, error, retryAfterSec: retryAfter(response) }
+  return { ok: false, error }
 }
 
 // Retry-After in seconds; "0" still waits a second. Missing or not a number waits a minute.

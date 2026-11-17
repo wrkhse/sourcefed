@@ -12,11 +12,11 @@ type TestSource = { type: "test"; key: string }
 
 // A source that names itself and fails the poll the way a provider does. Its key is a cursor
 // key holding a credential: a log line must never print it.
-function failingSource(run: () => Promise<never>): Monitor {
+function failingSource(run: () => Promise<never>, label = "example.test"): Monitor {
   return {
     validateSource: (source: TestSource) => source,
     key: (source: TestSource) => `test:https://user:secret@example.test/feed?token=secret-${source.key}`,
-    label: () => "example.test",
+    label: () => label,
     tick: run,
   } as unknown as Monitor
 }
@@ -79,15 +79,19 @@ describe("poll failure logging", () => {
   test("a failed poll timestamp update logs exactly one line too", async () => {
     const service = await serviceWithRecord()
     const record = await createRecord(service)
-    service.updateCursor = async () => { throw new PollSourceError("store unavailable") }
+    const storeFailure = new Error("store unavailable")
+    service.updateCursor = async () => { throw storeFailure }
     const source = failingSource(async () => { throw new PollSourceError("upstream unavailable") })
 
     await tick(context(service, source))
 
-    assert.deepEqual(calls, [
-      [`[sourcefed] monitor ${record.id} (test example.test) poll failed: upstream unavailable`],
-      [`[sourcefed] monitor ${record.id} (test example.test) poll timestamp update failed: store unavailable`],
+    assert.deepEqual(calls[0], [
+      `[sourcefed] monitor ${record.id} (test example.test) poll failed: upstream unavailable`,
     ])
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1]![0], `[sourcefed] monitor ${record.id} (test example.test) poll timestamp update failed: store unavailable`)
+    assert.equal(calls[1]!.length, 2, "a store failure is a bug, so the error comes too")
+    assert.equal(calls[1]![1], storeFailure)
   })
 
   test("a message with a newline still logs one line", async () => {
@@ -98,6 +102,45 @@ describe("poll failure logging", () => {
     await tick(context(service, source))
 
     assert.deepEqual(calls, [[`[sourcefed] monitor ${record.id} (test example.test) poll failed: a b`]])
+  })
+
+  test("a message over the line's limit is cut with an ellipsis", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => { throw new PollSourceError("x".repeat(301)) })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    const line = String(calls[0]![0])
+    assert.ok(line.length <= 300, `the line is at most 300 characters, not ${line.length}`)
+    assert.ok(line.endsWith("…"), "a cut line ends with an ellipsis")
+  })
+
+  test("a source label over the identity's limit is cut with an ellipsis", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => { throw new PollSourceError("boom") }, "l".repeat(81))
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    const line = String(calls[0]![0])
+    assert.ok(line.length <= 300, `the line is at most 300 characters, not ${line.length}`)
+    assert.ok(line.includes(`(test ${"l".repeat(79)}…)`), "the identity is cut to 80 characters with an ellipsis")
+  })
+
+  test("line separators and a next-line character collapse to spaces", async () => {
+    const service = await serviceWithRecord()
+    const record = await createRecord(service)
+    const source = failingSource(async () => { throw new PollSourceError("a\u2028b\u2029c\u0085d") })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    const line = String(calls[0]![0])
+    assert.equal(line, `[sourcefed] monitor ${record.id} (test example.test) poll failed: a b c d`)
+    assert.ok(!/[\u2028\u2029\u0085]/.test(line), "no line separator survives")
   })
 
   test("a thrown value that is not an Error keeps its value", async () => {

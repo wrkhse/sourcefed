@@ -138,10 +138,16 @@ export async function deferOnWait<T>(read: () => Promise<T>): Promise<T | Source
 
 /** A successful answer's JSON; anything else throws with its status and the start of its body. */
 export async function githubBody(response: Response, url: string): Promise<any> {
-  if (response.ok) return response.json()
+  const path = url.replace(API, "")
+  if (response.ok) {
+    try {
+      return await response.json()
+    } catch (error) {
+      throw new PollSourceError(`GitHub gave a body that is not JSON for ${path}`, { cause: error })
+    }
+  }
 
   const detail = await response.text().catch(() => "")
-  const path = url.replace(API, "")
   throw new PollSourceError(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
 }
 

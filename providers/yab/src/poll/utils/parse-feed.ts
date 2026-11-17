@@ -51,7 +51,12 @@ function atomLink(block: string): string | undefined {
 }
 
 function parseJsonFeed(text: string): FeedEntry[] {
-  const data = JSON.parse(text)
+  let data: any
+  try {
+    data = JSON.parse(text)
+  } catch (error) {
+    throw new PollSourceError("the JSON feed could not be parsed", { cause: error })
+  }
   let items: unknown[] | undefined
   if (Array.isArray(data)) items = data
   else if (Array.isArray(data?.items)) items = data.items

@@ -15,5 +15,9 @@ export async function jiraFetch(path: string): Promise<any> {
     throw new PollSourceError(`Jira ${path} request failed: ${message}`, { cause: error })
   }
   if (!response.ok) throw new PollSourceError(`Jira ${response.status} for ${path}`)
-  return response.json()
+  try {
+    return await response.json()
+  } catch (error) {
+    throw new PollSourceError(`Jira ${path} gave a body that is not JSON`, { cause: error })
+  }
 }
