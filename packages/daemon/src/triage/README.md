@@ -14,6 +14,7 @@ them and a passed event reaches them all.
 | `evidence.ts` | `triageEvidence`: the event, thread and monitor text blocks, each clamped to 16 KiB. |
 | `discover.ts` | `candidateSockets`, `probe`, `discover`: which sockets to ask, and whether one answers as Chauffeur v2. |
 | `triage.ts` | `ChauffeurTriage`: one kept connection, `decide()` that never rejects, a 3 s deadline over probe and call, one re-probe per 30 s, `close()` on stop. |
+| `navigator.ts` | `chauffeurNavigators`, `ChauffeurConnect`: the client's `connect({ socket })` turned into the `Navigator` triage asks, the one surface the wiring commit replaces. |
 
 ## Discovery
 
@@ -138,12 +139,36 @@ losses: the connection is dropped and closed, the log gets one `went away` line 
 each, the next probe waits 30 s from the loss, and until it answers every event is
 delivered untriaged at once. A connection that works logs its version and socket once.
 
+## Wiring
+
+The daemon takes triage through `SourcefedDaemonOptions.triage`, and
+[packages/cli/src/utils/daemon.ts](../../../cli/src/utils/daemon.ts) is the one place the
+wiring lands. That commit waits on the client's release tarball: wrkhse/chauffeur#31
+attaches it to each prerelease, the package stays `private: true`, and nothing comes from
+the npm registry. It does three things:
+
+1. Adds `@fdcn/chauffeur` to `packages/daemon/package.json` `devDependencies` as the
+   release-asset URL
+   `https://github.com/wrkhse/chauffeur/releases/download/v1.0.0-rc.5/fdcn-chauffeur-1.0.0-rc.5.tgz`,
+   and records the tarball's sha256 in the PR body.
+2. Imports `connect` from `@fdcn/chauffeur/client` in `packages/cli/src/utils/daemon.ts`
+   and passes `triage: new ChauffeurTriage({ connect: chauffeurNavigators(connect) })`.
+3. Adds the CI test that starts the real Chauffeur daemon, has it load
+   `<config>/chauffeur-next/rules/sourcefed/triage.json`, and proves the
+   `sourcefed/triage` verdict reaches the sink.
+
+`navigator.ts`'s `ChauffeurConnect` is the client surface this branch was written against,
+so if the client's `connect` does not fit it, the shape changed - report it, do not loosen
+a test to fit.
+
 ## Testing
 
 `evidence.test.ts` covers the three blocks, the thread fallbacks and clamping.
 `discover.test.ts` serves status replies from in-process Unix sockets in a temporary
 folder, and covers candidate order, `CHAUFFEUR_SOCKET`, v1 and incompatible answers, an
-oversized reply and silence. `triage.test.ts` uses a fake navigator and clock for the
+oversized reply and silence. `navigator.test.ts` covers the client seam - the socket
+handed to `connect`, one connection per endpoint, and a withhold driven through
+`ChauffeurTriage`. `triage.test.ts` uses a fake navigator and clock for the
 verdicts, the deadline, the 30 s interval, one probe shared by concurrent events, loss
 reporting and `close()`. `runtime-triage.test.ts` runs poll and webhook events through
 the sink: a withheld event is not asked again once the cursor advances, a failed enqueue
