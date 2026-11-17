@@ -131,8 +131,8 @@ export class JsonMonitorEventQueue implements MonitorEventQueue {
     this.eventsFile = path.join(stateDir, "events.json")
   }
 
-  async enqueue(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<QueuedMonitorEvent> {
-    return this.transact((events) => appendQueued(events, createQueuedMonitorEvent(input.monitor, input.event), this.limit))
+  async enqueue(input: { monitor: MonitorRecord; event: MonitorEvent; chauffeurTriaged?: boolean }): Promise<QueuedMonitorEvent> {
+    return this.transact((events) => appendQueued(events, createQueuedMonitorEvent(input.monitor, input.event, input.chauffeurTriaged), this.limit))
   }
 
   async read(target: MonitorTarget): Promise<QueuedMonitorEvent[]> {

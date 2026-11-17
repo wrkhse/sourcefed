@@ -22,8 +22,8 @@ export class InMemoryMonitorEventQueue implements MonitorEventQueue {
 
   constructor(private readonly limit = TARGET_QUEUE_LIMIT) {}
 
-  async enqueue(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<QueuedMonitorEvent> {
-    return appendQueued(this.events, createQueuedMonitorEvent(input.monitor, input.event), this.limit)
+  async enqueue(input: { monitor: MonitorRecord; event: MonitorEvent; chauffeurTriaged?: boolean }): Promise<QueuedMonitorEvent> {
+    return appendQueued(this.events, createQueuedMonitorEvent(input.monitor, input.event, input.chauffeurTriaged), this.limit)
   }
 
   async read(target: MonitorTarget): Promise<QueuedMonitorEvent[]> {
@@ -38,14 +38,16 @@ export class InMemoryMonitorEventQueue implements MonitorEventQueue {
   }
 }
 
-export function createQueuedMonitorEvent(monitor: MonitorRecord, event: MonitorEvent): QueuedMonitorEvent {
-  return {
+export function createQueuedMonitorEvent(monitor: MonitorRecord, event: MonitorEvent, chauffeurTriaged = false): QueuedMonitorEvent {
+  const queued: QueuedMonitorEvent = {
     id: `${monitor.id}:${monitorEventID(event)}`,
     monitorID: monitor.id,
     target: monitor.target,
     event,
     queuedAt: new Date().toISOString(),
   }
+  if (chauffeurTriaged) queued.chauffeurTriaged = true
+  return queued
 }
 
 /**
