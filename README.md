@@ -268,7 +268,8 @@ use:
 - **Poll failures** — a failed poll logs one line with the monitor's id, its source's label and
   the error's message, with newlines collapsed and long text cut. A source marks a failure it
   expects with `PollSourceError`; anything else it throws is a bug and keeps its stack, as does
-  any failure with `SOURCEFED_DEBUG=1`.
+  any failure with `SOURCEFED_DEBUG=1`. Yab's own error text is quoted only with
+  `SOURCEFED_DEBUG=1`, and then reduced to the feed's host.
 
 State:
 

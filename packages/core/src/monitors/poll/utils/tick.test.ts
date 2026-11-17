@@ -166,6 +166,21 @@ describe("poll failure logging", () => {
     assert.ok(!line.includes("level6"), "the walk stops at the bound")
   })
 
+  test("an aggregate cause with no message still names its code", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => {
+      const refused = new AggregateError([], "") as AggregateError & { code: string }
+      refused.code = "ECONNREFUSED"
+      throw new PollSourceError("fetch failed", { cause: new TypeError("fetch failed", { cause: refused }) })
+    })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    assert.ok(String(calls[0]![0]).endsWith("(cause: ECONNREFUSED)"))
+  })
+
   test("a source label over the identity's limit is cut with an ellipsis", async () => {
     const service = await serviceWithRecord()
     await createRecord(service)

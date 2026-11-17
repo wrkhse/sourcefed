@@ -57,10 +57,16 @@ function reasonText(error: Error): string {
   let reason = ""
   let cause: unknown = error.cause
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth += 1) {
-    reason = oneLine(cause.message, MAX_MESSAGE)
+    const text = oneLine(cause.message, MAX_MESSAGE) || errorCode(cause)
+    if (text) reason = text
     cause = cause.cause
   }
   return reason
+}
+
+function errorCode(error: Error): string {
+  const code = (error as { code?: unknown }).code
+  return typeof code === "number" || typeof code === "string" ? String(code) : ""
 }
 
 // The label is the source's display string — the one `monitor list` already shows — used

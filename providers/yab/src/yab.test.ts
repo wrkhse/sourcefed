@@ -147,18 +147,36 @@ describe("polling through Yab", () => {
       url: "https://e.com/feed",
       body: "<feed></feed>",
     })
-    assert.throws(() => parseYabFetch("no tab, see tabs"), /unexpected answer/)
+    assert.throws(() => parseYabFetch("no tab, see tabs"), /not the expected shape/)
   })
 
-  test("an unexpected answer names the host, never the feed's path or query", () => {
+  test("an unexpected answer quotes nothing unless SOURCEFED_DEBUG is set", () => {
     const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
-    assert.throws(() => parseYabFetch(`nope · text/html · ${url}`, url), (error: unknown) => {
-      assert.ok(error instanceof Error)
-      assert.match(error.message, /example\.test/)
-      assert.ok(!error.message.includes("secret-path-token"), "the path is not quoted")
-      assert.ok(!error.message.includes("secret-query-token"), "the query is not quoted")
-      return true
-    })
+    const failure = (() => {
+      try {
+        parseYabFetch(`nope · text/html · ${url}`, url)
+      } catch (error) {
+        return error as Error
+      }
+      return undefined
+    })()
+
+    assert.ok(failure)
+    assert.equal(failure.message, "Yab's answer was not the expected shape")
+    assert.ok(!failure.message.includes("example.test"), "Yab's own words are not quoted")
+
+    process.env.SOURCEFED_DEBUG = "1"
+    try {
+      assert.throws(() => parseYabFetch(`nope · text/html · ${url}`, url), (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /example\.test/)
+        assert.ok(!error.message.includes("secret-path-token"), "the path is not quoted")
+        assert.ok(!error.message.includes("secret-query-token"), "the query is not quoted")
+        return true
+      })
+    } finally {
+      delete process.env.SOURCEFED_DEBUG
+    }
   })
 })
 
@@ -176,9 +194,14 @@ process.stdin.on("data", (chunk) => {
     if (message.method === "initialize") reply(message.id, { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake-yab", version: "0" } })
     if (message.method !== "tools/call") continue
     const mode = process.env.FAKE_YAB_MODE
+    if (mode === "error-object") return errorReply(message.id, { code: -1 })
     if (mode === "exit") process.exit(3)
     if (mode === "exit-leak") {
       process.stderr.write("fetching " + process.env.FAKE_YAB_URL + ": connection reset")
+      process.exit(3)
+    }
+    if (mode === "leak-short") {
+      process.stderr.write("GET /feed returned 401 while fetching " + process.env.FAKE_YAB_URL)
       process.exit(3)
     }
     if (mode === "leak") reply(message.id, { isError: true, content: [{ type: "text", text: "failed to read " + message.params.arguments.url + " and again " + message.params.arguments.url.replace(/^https?:\\/\\/[^/]+/, "") }] })
@@ -188,6 +211,9 @@ process.stdin.on("data", (chunk) => {
 })
 function reply(id, result) {
   process.stdout.write("not json noise\\n" + JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n")
+}
+function errorReply(id, error) {
+  process.stdout.write("not json noise\\n" + JSON.stringify({ jsonrpc: "2.0", id, error }) + "\\n")
 }
 `
 
@@ -208,6 +234,7 @@ describe("Yab MCP client", () => {
     else process.env.SOURCEFED_YAB_COMMAND = realCommand
     delete process.env.FAKE_YAB_MODE
     delete process.env.FAKE_YAB_URL
+    delete process.env.SOURCEFED_DEBUG
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -224,34 +251,55 @@ describe("Yab MCP client", () => {
 
   test("reports a tool error and a server that quits", async () => {
     process.env.FAKE_YAB_MODE = "error"
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /yab fetch failed: no such space/)
+    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab reported the fetch failed/)
     process.env.FAKE_YAB_MODE = "exit"
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /yab mcp exited \(3\) before answering/)
+    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab exited \(3\) before answering/)
   })
 
-  test("Yab's own words never carry the feed's path or query", async () => {
+  test("no byte of Yab's own words reaches the failure unless asked", async () => {
     const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
     process.env.FAKE_YAB_MODE = "leak"
     const toolFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
     assert.ok(toolFailure instanceof Error)
-    assert.match(toolFailure.message, /example\.test/)
-    assert.ok(!toolFailure.message.includes("secret-path-token"), "the path is not quoted")
-    assert.ok(!toolFailure.message.includes("secret-query-token"), "the query is not quoted")
+    assert.equal(toolFailure.message, "Yab reported the fetch failed")
 
     process.env.FAKE_YAB_MODE = "exit-leak"
     process.env.FAKE_YAB_URL = url
     const exitFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
     assert.ok(exitFailure instanceof Error)
-    assert.match(exitFailure.message, /example\.test/)
-    assert.ok(!exitFailure.message.includes("secret-path-token"), "stderr's path is not quoted")
-    assert.ok(!exitFailure.message.includes("secret-query-token"), "stderr's query is not quoted")
+    assert.equal(exitFailure.message, "Yab exited (3) before answering")
     delete process.env.FAKE_YAB_MODE
     delete process.env.FAKE_YAB_URL
   })
 
+  test("SOURCEFED_DEBUG quotes Yab's words redacted, and keeps a short path", async () => {
+    const url = "https://example.test/feed?x=1"
+    process.env.FAKE_YAB_MODE = "leak-short"
+    process.env.FAKE_YAB_URL = url
+    process.env.SOURCEFED_DEBUG = "1"
+    try {
+      const failure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+      assert.ok(failure instanceof Error)
+      assert.match(failure.message, /example\.test/, "the URL is cut to its host")
+      assert.match(failure.message, /GET \/feed returned 401/, "a short path is not stripped from the text")
+    } finally {
+      delete process.env.FAKE_YAB_MODE
+      delete process.env.FAKE_YAB_URL
+      delete process.env.SOURCEFED_DEBUG
+    }
+  })
+
+  test("an error without a message does not crash and is still refused", async () => {
+    process.env.FAKE_YAB_MODE = "error-object"
+    const failure = await callYabTool("fetch", { url: "https://e.com" }).then(() => undefined, (error: unknown) => error)
+    delete process.env.FAKE_YAB_MODE
+    assert.ok(failure instanceof Error)
+    assert.equal(failure.message, "Yab answered with an error (code -1)")
+  })
+
   test("reports a missing Yab", async () => {
     process.env.SOURCEFED_YAB_COMMAND = path.join(dir, "missing")
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /yab mcp could not start/)
+    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab could not start/)
     process.env.SOURCEFED_YAB_COMMAND = path.join(dir, "yab")
   })
 })
