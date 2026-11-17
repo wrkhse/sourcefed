@@ -116,6 +116,9 @@ occupy Bun’s process-wide fetch slots needed by providers and other plugins. S
 
 ### Chauffeur triage
 
+**Status:** the daemon does not wire Chauffeur triage yet; it arrives with the pinned
+@fdcn/chauffeur client. The rest of this section describes it as it will run.
+
 When a Chauffeur v2 daemon runs, every event is triaged at the daemon's sink before it is
 queued, so OpenCode, Pi, MCP and the CLI see the same filtered stream. Only an explicit
 `withhold: "event"` intent drops an event; a missing daemon, a v1 daemon, an error or a
