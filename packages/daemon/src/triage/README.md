@@ -72,9 +72,11 @@ flowchart TD
 - Any other intent, or none at all, queues the event with `chauffeurTriaged: true`.
 - With no Chauffeur, a v1 daemon, an error or a timeout, the event queues unmarked.
 - A triage that throws or rejects delivers the event unmarked, because the sink catches
-  it; only a failed enqueue answers `ok: false`, so the poll retries.
+  it; only a failed enqueue answers `ok: false`, so the poll keeps its cursor and
+  retries: the event is asked again and queued once.
 - The mark serves every host. The OpenCode bridge skips its v1 `chauffeur.gate` for a
-  marked event and still asks it for an unmarked one, so no event is triaged twice.
+  marked event and still asks it for an unmarked one, so no event is judged by both
+  v2 and v1.
 
 ## Evidence
 

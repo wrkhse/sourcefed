@@ -190,6 +190,8 @@ describe("triage at the runtime transport", () => {
 
       assert.equal(polls, 2)
       assert.equal(triage.asked.filter((id) => id === "event-a").length, 1, "event A must be asked exactly once")
+      // A failed enqueue re-offers the event to the sink, so triage judges it again.
+      assert.equal(triage.asked.filter((id) => id === "event-b").length, 2)
       const queued = await inner.read(target)
       assert.equal(queued.length, 1)
       assert.equal(queued[0].event.id, "event-b")
