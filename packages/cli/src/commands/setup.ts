@@ -1,23 +1,63 @@
-import { installTriageRule, type RuleInstall } from "../utils/chauffeur-rule.ts"
-import { flag } from "../utils/flags.ts"
+import { CHAUFFEUR_NAMES, installTriageRule, type RuleInstall } from "../utils/chauffeur-rule.ts"
 import { setupHost, setupSpec } from "../utils/setup.ts"
 
+export type SetupTarget = "all" | "opencode" | "pi" | "chauffeur"
+
+export type SetupArgs = { target: SetupTarget; name: string } | { error: string }
+
+function isSetupTarget(value: string | undefined): value is SetupTarget {
+  return value === "all" || value === "opencode" || value === "pi" || value === "chauffeur"
+}
+
+/** Reads `sourcefed setup` arguments, so a target or name it cannot act on is reported rather than ignored. */
+export function parseSetupArgs(args: string[]): SetupArgs {
+  const target = args[0] ?? "all"
+
+  if (!isSetupTarget(target)) {
+    return { error: `unknown setup target ${target}; expected opencode, pi or chauffeur (sourcefed setup chauffeur --name chauffeur)` }
+  }
+
+  const index = args.findIndex((arg) => arg === "--name" || arg.startsWith("--name="))
+
+  if (index === -1) return { target, name: "chauffeur-next" }
+
+  if (target !== "chauffeur") {
+    return { error: `--name is only valid with the chauffeur target, not ${target}` }
+  }
+
+  const value = args[index] === "--name" ? args[index + 1] : args[index].slice("--name=".length)
+
+  if (value === undefined || !(CHAUFFEUR_NAMES as readonly string[]).includes(value)) {
+    return { error: `--name needs a value of ${CHAUFFEUR_NAMES.join(" or ")}` }
+  }
+
+  return { target, name: value }
+}
+
 export async function runSetup(args: string[]): Promise<void> {
+  const parsed = parseSetupArgs(args)
+
+  if ("error" in parsed) {
+    console.error(`[sourcefed] ${parsed.error}`)
+    process.exitCode = 1
+    return
+  }
+
   const spec = setupSpec()
-  const requested = args[0] ?? "all"
-  if (requested === "opencode" || requested === "all") {
+
+  if (parsed.target === "opencode" || parsed.target === "all") {
     await setupHost("opencode", ["plugin", "add", spec], spec)
   }
-  if (requested === "pi" || requested === "all") {
+  if (parsed.target === "pi" || parsed.target === "all") {
     await setupHost("pi", ["install", `npm:${spec}`], `npm:${spec}`)
   }
-  if (requested === "chauffeur") {
-    const result = await installTriageRule({ name: flag(args, "name") ?? "chauffeur-next" })
+  if (parsed.target === "chauffeur") {
+    const result = await installTriageRule({ name: parsed.name })
     printRuleInstall(result)
     if (result.status === "refused") process.exitCode = 1
   }
-  if (requested === "all") {
-    const result = await installTriageRule({ name: "chauffeur-next", requireConfigDir: true })
+  if (parsed.target === "all") {
+    const result = await installTriageRule({ name: parsed.name, requireConfigDir: true })
     if (result.status === "skipped") console.error(`[sourcefed] skipped the Chauffeur rule: ${result.reason}`)
     else printRuleInstall(result)
   }
