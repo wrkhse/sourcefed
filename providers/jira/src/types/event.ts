@@ -1,3 +1,5 @@
+import type { EventSubject } from "@sourcefed/core"
+
 export interface JiraEvent {
   kind: "comment" | "description" | "changelog"
   id?: string
@@ -8,4 +10,5 @@ export interface JiraEvent {
   author?: string
   actionable: boolean
   terminal?: boolean
+  subject?: EventSubject
 }

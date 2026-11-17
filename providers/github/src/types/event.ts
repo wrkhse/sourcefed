@@ -1,3 +1,5 @@
+import type { EventSubject } from "@sourcefed/core"
+
 export interface GithubEvent {
   kind: "review" | "comment" | "ci" | "conflict" | "merged"
   id?: string
@@ -8,4 +10,5 @@ export interface GithubEvent {
   body?: string
   actionable: boolean
   terminal?: boolean
+  subject?: EventSubject
 }

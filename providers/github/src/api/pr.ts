@@ -1,6 +1,7 @@
 import type { GithubClient } from "./client.ts"
 
 export type GithubPrData = {
+  title?: string
   reviews: any[]
   statusCheckRollup: any[]
   mergeable?: string
@@ -12,6 +13,7 @@ const PR_DATA_QUERY = `
 query PullRequestData($owner: String!, $name: String!, $number: Int!, $reviewsAfter: String, $contextsAfter: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      title
       state
       mergeable
       mergeStateStatus
@@ -88,6 +90,7 @@ export async function fetchPrData(github: GithubClient, repo: string, prNumber: 
   }
 
   return {
+    title: pullRequest.title,
     reviews,
     statusCheckRollup,
     mergeable: pullRequest.mergeable,

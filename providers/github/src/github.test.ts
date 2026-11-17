@@ -84,6 +84,41 @@ describe("GitHub webhook events", () => {
     assert.equal(event, undefined)
   })
 
+  test("carries a pull request's title as the event's subject", () => {
+    const event = parseGithubWebhook({
+      action: "opened",
+      repository: { full_name: "example-org/example-repo" },
+      pull_request: { number: 1671, title: "  Add navigate " },
+      sender: { login: "someone" },
+    }, "pull_request", "delivery-7")
+
+    assert.deepEqual(event?.subject, {
+      type: "github-pull-request",
+      key: "example-org/example-repo#1671",
+      repo: "example-org/example-repo",
+      number: 1671,
+      title: "Add navigate",
+    })
+  })
+
+  test("carries an issue comment's pull request title as the event's subject", () => {
+    const event = parseGithubWebhook({
+      action: "created",
+      repository: { full_name: "example-org/example-repo" },
+      issue: { number: 1672, title: "Fix the tick race" },
+      comment: { id: 1, body: "Please bound it." },
+      sender: { login: "someone" },
+    }, "issue_comment", "delivery-8")
+
+    assert.deepEqual(event?.subject, {
+      type: "github-pull-request",
+      key: "example-org/example-repo#1672",
+      repo: "example-org/example-repo",
+      number: 1672,
+      title: "Fix the tick race",
+    })
+  })
+
   test("keeps review content without delivery metadata", () => {
     const event = parseGithubWebhook({
       action: "submitted",
