@@ -2,6 +2,8 @@
 
 The daemon owns monitor commands, queue claims and acknowledgement. Adapters own
 host identities and callbacks; transport code does not decide delivery policy.
+When a compatible Chauffeur v2 daemon runs, events pass
+[Chauffeur v2 triage](triage/README.md) at the sink before they are queued.
 
 | Module | Responsibility |
 | --- | --- |
@@ -12,6 +14,7 @@ host identities and callbacks; transport code does not decide delivery policy.
 | `event-stream.ts` | `DaemonEventStream`: setup, SSE frame parsing, serialized delivery/ack, reconnect and bounded draining. |
 | `event-transport.ts` | `openEventResponse` / `eventReader`: dedicated HTTP(S) sockets, status checks and a byte-bounded reader outside Bun’s fetch queue. |
 | `registry.ts` | Compose built-in source providers. |
+| `triage/` | [Chauffeur v2 triage](triage/README.md): evidence, socket discovery and the per-event verdict. |
 | `types/` | Existing public daemon/client contracts and JSON protocol frames. |
 | `utils/` | Environment, daemon spawn/discovery, target encoding, event sink and Node HTTP server adapters. |
 | `index.ts` | Package entrypoint. |

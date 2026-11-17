@@ -114,6 +114,16 @@ dedicated HTTP/HTTPS sockets rather than `fetch`, so valid monitoring demand can
 occupy Bun’s process-wide fetch slots needed by providers and other plugins. See
 [subscription lifecycle](docs/subscription-lifecycle.md) for ownership and cleanup rules.
 
+### Chauffeur triage
+
+When a Chauffeur v2 daemon runs, every event is triaged at the daemon's sink before it is
+queued, so OpenCode, Pi, MCP and the CLI see the same filtered stream. Only an explicit
+`withhold: "event"` intent drops an event; a missing daemon, a v1 daemon, an error or a
+3-second deadline lets it through, so delivery never depends on Chauffeur. The daemon
+looks on `$XDG_RUNTIME_DIR/chauffeur/daemon.sock`, then `chauffeur-next/daemon.sock`
+(the temporary folder when `XDG_RUNTIME_DIR` is unset); set `CHAUFFEUR_SOCKET` to point
+it at one socket. See [Chauffeur v2 triage](packages/daemon/src/triage/README.md).
+
 ## MCP
 
 ```sh
