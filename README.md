@@ -56,13 +56,13 @@ Manually, OpenCode takes one entry, and the CLI picks up the TUI plugin from it:
 
 ```json
 // ~/.config/opencode/opencode.jsonc
-{ "plugins": ["@fdcn/sourcefed@0.5.1"] }
+{ "plugins": ["@fdcn/sourcefed@0.5.2"] }
 ```
 
 Pi:
 
 ```sh
-pi install npm:@fdcn/sourcefed@0.5.1
+pi install npm:@fdcn/sourcefed@0.5.2
 ```
 
 Pi supplies its extension SDK, TUI widgets and TypeBox. These are optional peers
