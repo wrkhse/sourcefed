@@ -3,6 +3,10 @@ import { readdirSync, rmSync } from "node:fs"
 import path from "node:path"
 import { define } from "./build-define.mjs"
 
+// Host-provided packages load from node_modules, as in the shipped bundles (see
+// scripts/build-public.mjs): Pi ships CJS interop that cannot be inlined into an ESM bundle.
+const HOST_PACKAGES = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]
+
 const ROOTS = ["packages", "providers", "adapters"]
 const files = []
 for (const root of ROOTS) {
@@ -43,7 +47,7 @@ for (const file of files) {
     platform: "node",
     format: "esm",
     target: "node22",
-    external: ["node:*"],
+    external: ["node:*", ...HOST_PACKAGES],
     define,
     logLevel: "warning",
   })
