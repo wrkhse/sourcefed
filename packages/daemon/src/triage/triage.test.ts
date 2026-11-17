@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { describe, test } from "node:test"
+import { describe, mock, test, type TestContext } from "node:test"
 import type { MonitorEvent, MonitorRecord } from "@sourcefed/core"
 import type { ChauffeurEndpoint } from "./discover.ts"
 import { triageEvidence } from "./evidence.ts"
@@ -40,6 +40,24 @@ function monitorEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
 }
 
 type Reply = (request: TriageRequest, options: { signal: AbortSignal }) => Promise<unknown>
+
+/** Fakes only setTimeout, so a test drives the deadline with tick instead of wall time. */
+function mockTimers(t: TestContext): void {
+  t.after(() => mock.timers.reset())
+  mock.timers.enable({ apis: ["setTimeout"] })
+}
+
+/** A reply that never settles; `asked` resolves once the navigator has the request. */
+function unansweredReply() {
+  const asked = Promise.withResolvers<void>()
+  return {
+    asked: asked.promise,
+    reply: () => {
+      asked.resolve()
+      return new Promise(() => {})
+    },
+  }
+}
 
 function fakeNavigator(reply: Reply = async () => ({ intents: [] })) {
   const requests: TriageRequest[] = []
@@ -242,16 +260,18 @@ describe("ChauffeurTriage", () => {
     assert.equal(h.connections[0].closeCount(), 0)
   })
 
-  test("a navigator that ignores its signal still returns by the deadline", async () => {
-    const h = harness({ deadlineMs: 50, reply: () => new Promise(() => {}) })
-    const started = Date.now()
+  test("a navigator that ignores its signal still returns by the deadline", async (t) => {
+    mockTimers(t)
 
-    const decision = await h.triage.decide(monitor, event)
-    const elapsed = Date.now() - started
+    const unanswered = unansweredReply()
+    const h = harness({ deadlineMs: 50, reply: unanswered.reply })
 
-    assert.deepEqual(decision, { deliver: true, triaged: false })
-    assert.ok(elapsed < 500, `decide took ${elapsed} ms`)
+    const decision = h.triage.decide(monitor, event)
+    await unanswered.asked
+    mock.timers.tick(50)
+
     assert.equal(h.connections[0].signals[0].aborted, true)
+    assert.deepEqual(await decision, { deliver: true, triaged: false })
   })
 
   test("close releases the navigator and stops probing", async () => {
@@ -269,69 +289,76 @@ describe("ChauffeurTriage", () => {
     assert.equal(h.connections[0].closeCount(), 1)
   })
 
-  test("close settles a decide still waiting on a navigator and aborts its signal", async () => {
-    const navigating = Promise.withResolvers<void>()
-    const h = harness({
-      deadlineMs: 10_000,
-      reply: () => {
-        navigating.resolve()
-        return new Promise(() => {})
-      },
-    })
-    const started = Date.now()
+  test("close settles a decide still waiting on a navigator and aborts its signal", async (t) => {
+    mockTimers(t)
+
+    const unanswered = unansweredReply()
+    const h = harness({ deadlineMs: 10_000, reply: unanswered.reply })
 
     const decision = h.triage.decide(monitor, event)
-    await navigating.promise
+    await unanswered.asked
     h.triage.close()
 
-    assert.deepEqual(await decision, { deliver: true, triaged: false })
-    const elapsed = Date.now() - started
-
-    assert.ok(elapsed < 500, `close took ${elapsed} ms`)
     assert.equal(h.connections[0].signals[0].aborted, true)
+    assert.deepEqual(await decision, { deliver: true, triaged: false })
   })
 
-  test("a settled decide leaves no deadline timer behind", async () => {
+  test("a settled decide leaves no deadline timer behind", async (t) => {
+    mockTimers(t)
     const h = harness({ deadlineMs: 10_000 })
-    const started = Date.now()
 
     assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: true })
-    const elapsed = Date.now() - started
 
-    assert.ok(elapsed < 200, `decide took ${elapsed} ms`)
+    // An uncleared deadline would abort the signal the navigator holds once the clock reaches it.
+    mock.timers.tick(10_000)
+    assert.equal(h.connections[0].signals[0].aborted, false)
+    assert.equal(h.logs.filter((line) => line.includes("went away")).length, 0)
   })
 
-  test("a silent navigator is dropped at the deadline so the rest of a batch is immediate", async () => {
-    const h = harness({ deadlineMs: 100, reply: () => new Promise(() => {}) })
+  test("a silent navigator is dropped at the deadline so the rest of a batch is immediate", async (t) => {
+    mockTimers(t)
 
-    const firstStarted = Date.now()
-    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: false })
-    const firstElapsed = Date.now() - firstStarted
+    const unanswered = unansweredReply()
+    const h = harness({ deadlineMs: 100, reply: unanswered.reply })
 
-    const restStarted = Date.now()
+    const first = h.triage.decide(monitor, event)
+    await unanswered.asked
+    mock.timers.tick(100)
+
+    assert.equal(h.connections[0].signals[0].aborted, true)
+    assert.deepEqual(await first, { deliver: true, triaged: false })
+
+    // The rest settle with the mock clock still, so no deadline elapses for them.
     const rest = [await h.triage.decide(monitor, event), await h.triage.decide(monitor, event)]
-    const restElapsed = Date.now() - restStarted
-
     assert.deepEqual(rest, [
       { deliver: true, triaged: false },
       { deliver: true, triaged: false },
     ])
-    assert.ok(firstElapsed >= 50, `the first decide returned after ${firstElapsed} ms, before its deadline`)
-    assert.ok(restElapsed < 50, `the rest of the batch took ${restElapsed} ms`)
-    assert.ok(firstElapsed + restElapsed < 250, `the batch took ${firstElapsed + restElapsed} ms`)
     assert.equal(h.connects(), 1)
     assert.equal(h.connections[0].closeCount(), 1)
     assert.equal(h.logs.filter((line) => line.includes("went away")).length, 1)
   })
 
-  test("after the reprobe interval a dropped navigator is probed and connected again", async () => {
+  test("after the reprobe interval a dropped navigator is probed and connected again", async (t) => {
+    mockTimers(t)
+
+    const asked = Promise.withResolvers<void>()
     let calls = 0
     const h = harness({
       deadlineMs: 100,
-      reply: () => (calls++ === 0 ? new Promise(() => {}) : Promise.resolve({ intents: [] })),
+      reply: () => {
+        if (calls++ > 0) return Promise.resolve({ intents: [] })
+        asked.resolve()
+        return new Promise(() => {})
+      },
     })
 
-    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: false })
+    const first = h.triage.decide(monitor, event)
+    await asked.promise
+    mock.timers.tick(100)
+
+    assert.equal(h.connections[0].signals[0].aborted, true)
+    assert.deepEqual(await first, { deliver: true, triaged: false })
     assert.equal(h.connects(), 1)
 
     h.clock.now = REPROBE_INTERVAL_MS
