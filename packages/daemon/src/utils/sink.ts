@@ -9,15 +9,13 @@ export class NotifyingEventSink implements MonitorEventSink {
   ) {}
 
   async deliver(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<{ ok: boolean; error?: string }> {
+    const decision = await this.decisionFor(input)
+
+    // A withheld event is queued for no host at all. The source cursor still
+    // advances, so Chauffeur's verdict is the last word on it.
+    if (!decision.deliver) return { ok: true }
+
     try {
-      const decision = this.triage
-        ? await this.triage.decide(input.monitor, input.event)
-        : ({ deliver: true, triaged: false } as const)
-
-      // A withheld event is queued for no host at all. The source cursor still
-      // advances, so Chauffeur's verdict is the last word on it.
-      if (!decision.deliver) return { ok: true }
-
       // The mark tells a host Chauffeur already vetted the event, so it must skip its own gate.
       await this.queue.enqueue({
         monitor: input.monitor,
@@ -27,7 +25,24 @@ export class NotifyingEventSink implements MonitorEventSink {
       this.notify(input.monitor.target)
       return { ok: true }
     } catch (error) {
+      // Only a failed enqueue is retryable: the poll keeps its cursor and offers the event again.
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * Triage is advisory, so a decide that throws or rejects must not fail the
+   * delivery: the poll would keep the event and retry it, which is the opposite
+   * of fail-open. An unanswered verdict delivers the event unmarked instead, so
+   * the host still applies its own gate.
+   */
+  private async decisionFor(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<{ deliver: boolean; triaged?: boolean }> {
+    if (!this.triage) return { deliver: true, triaged: false }
+
+    try {
+      return await this.triage.decide(input.monitor, input.event)
+    } catch {
+      return { deliver: true, triaged: false }
     }
   }
 }

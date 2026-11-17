@@ -49,6 +49,15 @@ function sinkWith(decision?: TriageDecision) {
   return { queue, notified, sink }
 }
 
+/** A sink whose triage decide fails, either by throwing or by rejecting. */
+function sinkWithFailingDecide(decide: () => Promise<TriageDecision>) {
+  const queue = new InMemoryMonitorEventQueue()
+  const notified: MonitorTarget[] = []
+  const sink = new NotifyingEventSink(queue, (delivered) => notified.push(delivered), { decide })
+
+  return { queue, notified, sink }
+}
+
 describe("NotifyingEventSink", () => {
   test("a withheld event is neither queued nor announced", async () => {
     const { queue, notified, sink } = sinkWith({ deliver: false })
@@ -82,6 +91,32 @@ describe("NotifyingEventSink", () => {
 
   test("without triage every event is queued unmarked", async () => {
     const { queue, notified, sink } = sinkWith()
+
+    assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
+
+    const queued = await queue.read(target)
+    assert.equal(queued.length, 1)
+    assert.equal(Object.hasOwn(queued[0], "chauffeurTriaged"), false)
+    assert.deepEqual(notified, [target])
+  })
+
+  test("a triage that throws synchronously queues the event unmarked", async () => {
+    const { queue, notified, sink } = sinkWithFailingDecide(() => {
+      throw new Error("triage bug")
+    })
+
+    assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
+
+    const queued = await queue.read(target)
+    assert.equal(queued.length, 1)
+    assert.equal(Object.hasOwn(queued[0], "chauffeurTriaged"), false)
+    assert.deepEqual(notified, [target])
+  })
+
+  test("a triage that rejects queues the event unmarked", async () => {
+    const { queue, notified, sink } = sinkWithFailingDecide(async () => {
+      throw new Error("triage bug")
+    })
 
     assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
 
