@@ -43,7 +43,11 @@ holds the canonical rule text.
 event after startup probes. A working connection is kept, so later events reuse it, and
 every event waiting at that moment shares one probe. Discovery runs at most once per
 30 s, so a missing daemon costs one probe per interval; stopping the daemon closes the
-connection.
+connection. A connection lost to an `unavailable` rejection or to a call that misses the
+deadline is closed, and the next probe waits 30 s from the loss; until then each event
+delivers untriaged without waiting, so a hung Chauffeur costs one deadline, not one per
+event. Each decide's deadline is a referenced timer, cleared when the decide settles, and
+`close()` settles every waiting decide untriaged at once.
 
 ```mermaid
 flowchart TD
@@ -67,6 +71,8 @@ flowchart TD
   cursor advances, so the verdict is the last word on that event.
 - Any other intent, or none at all, queues the event with `chauffeurTriaged: true`.
 - With no Chauffeur, a v1 daemon, an error or a timeout, the event queues unmarked.
+- A triage that throws or rejects delivers the event unmarked, because the sink catches
+  it; only a failed enqueue answers `ok: false`, so the poll retries.
 - The mark serves every host. The OpenCode bridge skips its v1 `chauffeur.gate` for a
   marked event and still asks it for an unmarked one, so no event is triaged twice.
 
@@ -86,9 +92,13 @@ An informational event ends `actionable: no (informational)`, and an event with 
 leaves `body: ` empty. Lines join with newlines.
 
 - `thread` is `"<label>: <title>"`, the label or the title when only one is known, and
-  `""` when neither is. The label is the monitor source's `label()`, such as `#42` for
-  a pull request or the joined labels for an issue query. The title is
-  `event.subject.title`. Both are trimmed, and nothing is fetched.
+  `""` when neither is. The label is the monitor source's `label()`: `#42` for a pull
+  request, `ENG-42` for a Jira issue, `thread` or `DM` for Slack, or the joined labels
+  of a GitHub issues monitor. The title is `event.subject.title`: a pull-request event
+  carries the title its existing GraphQL query and webhook payloads already read, and a
+  Jira-issue event carries the summary from its existing issue request, so those threads
+  read `#42: feat(cli): add navigate` and `ENG-42: <summary>`; a Slack event carries only
+  its label. Both parts are trimmed, and nothing is fetched for the thread itself.
 - `monitor` is the source's `describe()`, such as `GitHub wrkhse/chauffeur#42`.
 
 Each block is cut to 16 KiB on a code-point boundary, far under Chauffeur's 256 KiB
@@ -116,13 +126,15 @@ Every failure delivers the event unmarked, no more than 3 s late.
 | --- | --- |
 | No socket at any candidate | Delivered unmarked. |
 | A v1 daemon, or a reply that is not protocol 1 with a 1.x version | Delivered unmarked. |
-| A daemon that accepts the connection and stays silent | Delivered unmarked at the probe or deadline timeout. |
-| An error reply, or a rejection other than `unavailable`, such as `limit_exceeded` | Delivered unmarked. |
-| The 3 s deadline, probe included | Delivered unmarked at the deadline. |
+| A rejection whose reason is `unavailable` | Delivered unmarked, and the connection is closed. |
+| A call that neither answers nor rejects before its deadline | Delivered unmarked at the deadline, and the connection is closed. |
+| An error reply, or a rejection other than `unavailable`, such as `limit_exceeded` | Delivered unmarked, and the connection is kept. |
+| The 3 s deadline during the probe | Delivered unmarked at the deadline; the probe finishes on its own. |
 
-A rejection whose reason is `unavailable` drops the connection, and discovery is capped
-at one attempt per 30 s. The log gets one line per loss; a connection that works logs its
-version and socket once.
+A rejection whose reason is `unavailable`, and a call that misses its deadline, are
+losses: the connection is dropped and closed, the log gets one `went away` line for
+each, the next probe waits 30 s from the loss, and until it answers every event is
+delivered untriaged at once. A connection that works logs its version and socket once.
 
 ## Testing
 
@@ -131,5 +143,9 @@ version and socket once.
 folder, and covers candidate order, `CHAUFFEUR_SOCKET`, v1 and incompatible answers, an
 oversized reply and silence. `triage.test.ts` uses a fake navigator and clock for the
 verdicts, the deadline, the 30 s interval, one probe shared by concurrent events, loss
-reporting and `close()`. `sink.test.ts` covers the sink and `daemon-triage.test.ts`
-the daemon option. Nothing starts a Chauffeur daemon locally.
+reporting and `close()`. `runtime-triage.test.ts` runs poll and webhook events through
+the sink: a withheld event is not asked again once the cursor advances, a failed enqueue
+retries the poll, and a withheld webhook answers success. `stream-triage.test.ts` checks
+that a subscriber and the queue record the same mark, over a real SSE round trip.
+`sink.test.ts` covers the sink and `daemon-triage.test.ts` the daemon option. Nothing
+starts a Chauffeur daemon locally.
