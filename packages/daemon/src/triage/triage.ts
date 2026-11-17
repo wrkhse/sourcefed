@@ -25,6 +25,9 @@ export type Navigator = {
 
 export type TriageDecision = { deliver: false } | { deliver: true; triaged: boolean }
 
+/** One decide's deadline: a ref'd timer that aborts its signal, cleared when the decide or close ends it. */
+type Deadline = { readonly signal: AbortSignal; abort(): void; clear(): void }
+
 export type ChauffeurTriageOptions = {
   connect: (endpoint: ChauffeurEndpoint) => Navigator
   /** Defaults to the real socket discovery; tests replace it with a fake. */
@@ -62,6 +65,8 @@ export class ChauffeurTriage {
   private lastProbe: number | undefined
   private reportedUnavailable = false
   private closed = false
+  /** Every decide still waiting on a verdict, so close() can settle each at once. */
+  private readonly deadlines = new Set<Deadline>()
 
   constructor(options: ChauffeurTriageOptions) {
     this.connect = options.connect
@@ -89,20 +94,35 @@ export class ChauffeurTriage {
     const navigator = this.navigator
     this.navigator = undefined
     if (navigator) closeQuietly(navigator)
+
+    // Each waiting decide settles untriaged now, so no deadline outlives close.
+    const pending = [...this.deadlines]
+    this.deadlines.clear()
+    for (const deadline of pending) deadline.abort()
   }
 
   private async verdict(monitor: MonitorRecord, event: MonitorEvent): Promise<TriageDecision> {
     // One deadline for both the probe and the call, so a slow probe cannot add to the wait.
-    const signal = AbortSignal.timeout(this.deadlineMs)
+    const deadline = startDeadline(this.deadlineMs)
+    this.deadlines.add(deadline)
 
-    const navigator = await this.navigatorFor(signal)
-    if (!navigator) return UNTRIAGED
+    try {
+      const navigator = await this.navigatorFor(deadline.signal)
+      // A deadline reached during the probe leaves no navigator to blame.
+      if (!navigator || deadline.signal.aborted) return UNTRIAGED
 
-    const asked = await this.ask(navigator, monitor, event, signal)
-    if (asked.kind === "result") return triageDecision(asked.result)
-    if (asked.kind === "rejected" && asked.reason === "unavailable") this.drop(navigator)
+      const asked = await this.ask(navigator, monitor, event, deadline.signal)
+      if (asked.kind === "result") return triageDecision(asked.result)
 
-    return UNTRIAGED
+      // A navigator that neither answered nor rejected before the deadline is lost, not merely slow.
+      if (asked.kind === "deadline" || asked.reason === "unavailable") this.drop(navigator)
+
+      return UNTRIAGED
+    } finally {
+      // The timer must not outlive the decide, or a settled verdict would hold the loop open.
+      deadline.clear()
+      this.deadlines.delete(deadline)
+    }
   }
 
   private async navigatorFor(signal: AbortSignal): Promise<Navigator | undefined> {
@@ -188,6 +208,8 @@ export class ChauffeurTriage {
 
     this.navigator = undefined
     closeQuietly(navigator)
+    // The loss restarts the probe interval, so a dead navigator costs one event, not every event.
+    this.lastProbe = this.now()
     if (this.reportedUnavailable) return
 
     this.reportedUnavailable = true
@@ -221,6 +243,24 @@ function probeQuietly(discover: () => Promise<ChauffeurEndpoint | undefined>): P
     return Promise.resolve(discover()).then((endpoint) => endpoint, () => undefined)
   } catch {
     return Promise.resolve(undefined)
+  }
+}
+
+/**
+ * Starts one decide's deadline. The timer is deliberately ref'd: with no other
+ * handle alive, an unref'd timer lets Node exit before the deadline fires.
+ */
+function startDeadline(deadlineMs: number): Deadline {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), deadlineMs)
+
+  return {
+    signal: controller.signal,
+    abort: () => {
+      clearTimeout(timer)
+      controller.abort()
+    },
+    clear: () => clearTimeout(timer),
   }
 }
 

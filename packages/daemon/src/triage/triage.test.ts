@@ -268,4 +268,75 @@ describe("ChauffeurTriage", () => {
     h.triage.close()
     assert.equal(h.connections[0].closeCount(), 1)
   })
+
+  test("close settles a decide still waiting on a navigator and aborts its signal", async () => {
+    const navigating = Promise.withResolvers<void>()
+    const h = harness({
+      deadlineMs: 10_000,
+      reply: () => {
+        navigating.resolve()
+        return new Promise(() => {})
+      },
+    })
+    const started = Date.now()
+
+    const decision = h.triage.decide(monitor, event)
+    await navigating.promise
+    h.triage.close()
+
+    assert.deepEqual(await decision, { deliver: true, triaged: false })
+    const elapsed = Date.now() - started
+
+    assert.ok(elapsed < 500, `close took ${elapsed} ms`)
+    assert.equal(h.connections[0].signals[0].aborted, true)
+  })
+
+  test("a settled decide leaves no deadline timer behind", async () => {
+    const h = harness({ deadlineMs: 10_000 })
+    const started = Date.now()
+
+    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: true })
+    const elapsed = Date.now() - started
+
+    assert.ok(elapsed < 200, `decide took ${elapsed} ms`)
+  })
+
+  test("a silent navigator is dropped at the deadline so the rest of a batch is immediate", async () => {
+    const h = harness({ deadlineMs: 100, reply: () => new Promise(() => {}) })
+
+    const firstStarted = Date.now()
+    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: false })
+    const firstElapsed = Date.now() - firstStarted
+
+    const restStarted = Date.now()
+    const rest = [await h.triage.decide(monitor, event), await h.triage.decide(monitor, event)]
+    const restElapsed = Date.now() - restStarted
+
+    assert.deepEqual(rest, [
+      { deliver: true, triaged: false },
+      { deliver: true, triaged: false },
+    ])
+    assert.ok(firstElapsed >= 50, `the first decide returned after ${firstElapsed} ms, before its deadline`)
+    assert.ok(restElapsed < 50, `the rest of the batch took ${restElapsed} ms`)
+    assert.ok(firstElapsed + restElapsed < 250, `the batch took ${firstElapsed + restElapsed} ms`)
+    assert.equal(h.connects(), 1)
+    assert.equal(h.connections[0].closeCount(), 1)
+    assert.equal(h.logs.filter((line) => line.includes("went away")).length, 1)
+  })
+
+  test("after the reprobe interval a dropped navigator is probed and connected again", async () => {
+    let calls = 0
+    const h = harness({
+      deadlineMs: 100,
+      reply: () => (calls++ === 0 ? new Promise(() => {}) : Promise.resolve({ intents: [] })),
+    })
+
+    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: false })
+    assert.equal(h.connects(), 1)
+
+    h.clock.now = REPROBE_INTERVAL_MS
+    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: true, triaged: true })
+    assert.equal(h.discovers(), 2)
+    assert.equal(h.connects(), 2)
+  })
 })
