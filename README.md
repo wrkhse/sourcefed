@@ -265,9 +265,10 @@ use:
   `fetch` tool (`yab mcp`, started per poll), so it uses the browser's sign-ins: private
   feeds such as Gmail's unread-inbox Atom feed work with no token. Yab must be running;
   `SOURCEFED_YAB_COMMAND` overrides the binary path.
-- **Poll failures** — a failed poll logs one line with the monitor's id, its source and the
-  error's message; the stack is only logged for a thrown value that is not an Error. Set
-  `SOURCEFED_DEBUG=1` to log the full error for every failure.
+- **Poll failures** — a failed poll logs one line with the monitor's id, its source's label and
+  the error's message, with newlines collapsed and long text cut. A source marks a failure it
+  expects with `PollSourceError`; anything else it throws is a bug and keeps its stack, as does
+  any failure with `SOURCEFED_DEBUG=1`.
 
 State:
 

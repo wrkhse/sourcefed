@@ -1,4 +1,4 @@
-import type { SourcePollDeferred } from "@sourcefed/core"
+import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core"
 import { GithubRateLimiter, githubRequestsPerMinute, type GithubApi } from "./github-limiter.ts"
 
 const API = "https://api.github.com"
@@ -86,8 +86,8 @@ export class GithubClient {
     if (errors.some((error) => error?.type === "RATE_LIMITED")) {
       this.waitOut("graphql", waitSeconds(response.headers, Date.now(), () => limiter.backoff(this.token, "graphql")))
     }
-    if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
-    if (errors.length > 0 && (body?.data === null || body?.data === undefined)) throw new Error(`GitHub GraphQL: ${errorText(errors)}`)
+    if (!response.ok) throw new PollSourceError(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
+    if (errors.length > 0 && (body?.data === null || body?.data === undefined)) throw new PollSourceError(`GitHub GraphQL: ${errorText(errors)}`)
     if (errors.length > 0) warnOnce(`[sourcefed] GitHub GraphQL answered with errors beside its data: ${errorText(errors)}`)
 
     return body?.data
@@ -96,16 +96,22 @@ export class GithubClient {
   private async send(api: GithubApi, url: string, init: RequestInit): Promise<Response> {
     if (!limiter.charge(this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
 
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        "user-agent": "sourcefed",
-        "x-github-api-version": "2022-11-28",
-        ...(init.headers as Record<string, string>),
-      },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    })
+    let response: Response
+    try {
+      response = await fetch(url, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          "user-agent": "sourcefed",
+          "x-github-api-version": "2022-11-28",
+          ...(init.headers as Record<string, string>),
+        },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new PollSourceError(`GitHub ${api} request failed: ${message}`, { cause: error })
+    }
     if (response.status === 403 || response.status === 429) {
       const detail = await response.clone().text().catch(() => "")
       const waitSec = rateLimitWait(response, detail, Date.now(), () => limiter.backoff(this.token, api))
@@ -136,7 +142,7 @@ export async function githubBody(response: Response, url: string): Promise<any> 
 
   const detail = await response.text().catch(() => "")
   const path = url.replace(API, "")
-  throw new Error(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
+  throw new PollSourceError(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
 }
 
 /**

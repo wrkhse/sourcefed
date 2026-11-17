@@ -1,4 +1,4 @@
-import type { SourcePollDeferred } from "@sourcefed/core"
+import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core"
 import { MAX_RETRY_AFTER_SEC, SlackRateLimiter, slackRequestsPerMinute } from "./slack-limiter.ts"
 
 const SLACK_API = "https://slack.com/api"
@@ -76,7 +76,7 @@ function defaultLimiter(): SlackRateLimiter {
 // back), and a rate limit or a wait started by another poll defers the whole read.
 async function readSlack(plan: ReadPlan): Promise<SlackRead | SourcePollDeferred> {
   const token = process.env.SOURCEFED_SLACK_TOKEN
-  if (!token) throw new Error(`slack ${plan.method} failed: SOURCEFED_SLACK_TOKEN is not set`)
+  if (!token) throw new PollSourceError(`slack ${plan.method} failed: SOURCEFED_SLACK_TOKEN is not set`)
   const priming = plan.request.after === undefined
   if (!limiter.acquire(token, plan.request.monitorId, plan.request.first === true)) return DEFERRED
 
@@ -91,7 +91,7 @@ async function readSlack(plan: ReadPlan): Promise<SlackRead | SourcePollDeferred
       if (page.retryAfterSec !== undefined) limiter.pause(token, page.retryAfterSec, plan.method, plan.request.monitorId)
       if (messages.length > 0 && keepsPartial) break
       if (page.retryAfterSec !== undefined) return DEFERRED
-      throw new Error(`slack ${plan.method} failed: ${page.error}`)
+      throw new PollSourceError(`slack ${plan.method} failed: ${page.error}`)
     }
     if (Array.isArray(page.result.messages)) messages.push(...page.result.messages)
     cursor = page.result.response_metadata?.next_cursor ?? ""

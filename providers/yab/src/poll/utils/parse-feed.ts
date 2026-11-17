@@ -1,3 +1,4 @@
+import { PollSourceError } from "@sourcefed/core"
 import type { FeedEntry } from "../../types"
 
 // Mail and newsletter feeds pad previews with zero-width and joiner characters.
@@ -8,7 +9,7 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 export function parseFeed(body: string, type = ""): FeedEntry[] {
   const text = body.trim()
   if (/json/i.test(type) || text.startsWith("{") || text.startsWith("[")) return parseJsonFeed(text)
-  if (!/<(feed|rss|rdf:RDF)[\s>]/i.test(text)) throw new Error("the page is not an Atom, RSS or JSON feed")
+  if (!/<(feed|rss|rdf:RDF)[\s>]/i.test(text)) throw new PollSourceError("the page is not an Atom, RSS or JSON feed")
 
   const entries = elements(text, "entry")
   const blocks = entries.length > 0 ? entries : elements(text, "item")
@@ -55,7 +56,7 @@ function parseJsonFeed(text: string): FeedEntry[] {
   if (Array.isArray(data)) items = data
   else if (Array.isArray(data?.items)) items = data.items
   else if (Array.isArray(data?.entries)) items = data.entries
-  if (!items) throw new Error("the JSON has no items or entries list")
+  if (!items) throw new PollSourceError("the JSON has no items or entries list")
 
   const entries: FeedEntry[] = []
   for (const item of items as any[]) {

@@ -1,3 +1,4 @@
+import { PollSourceError } from "@sourcefed/core"
 import type { GithubClient } from "./client.ts"
 
 export type GithubPrData = {
@@ -58,10 +59,10 @@ const MAX_CONTEXT_PAGES = 5
 
 export async function fetchPrData(github: GithubClient, repo: string, prNumber: number): Promise<GithubPrData> {
   const [owner, name] = repo.split("/")
-  if (!owner || !name) throw new Error(`GitHub repository ${repo} is not owner/name`)
+  if (!owner || !name) throw new PollSourceError(`GitHub repository ${repo} is not owner/name`)
   const data = await github.graphql(PR_DATA_QUERY, { owner, name, number: prNumber, reviewsAfter: undefined, contextsAfter: undefined })
   const pullRequest = data?.repository?.pullRequest
-  if (!pullRequest) throw new Error(`GitHub has no pull request ${repo}#${prNumber}`)
+  if (!pullRequest) throw new PollSourceError(`GitHub has no pull request ${repo}#${prNumber}`)
 
   const reviews: any[] = []
   let page = pullRequest.reviews

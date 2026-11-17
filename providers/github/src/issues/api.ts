@@ -1,4 +1,4 @@
-import { COLLECTION_LIMIT, type CollectionListing } from "@sourcefed/core"
+import { COLLECTION_LIMIT, PollSourceError, type CollectionListing } from "@sourcefed/core"
 import { githubBody } from "../api/client.ts"
 import type { GithubIssuesSource } from "./schema.ts"
 
@@ -31,7 +31,7 @@ export async function listIssues(source: GithubIssuesSource, etag: string | unde
     if (page === 0 && response.status === 304) return { status: "unchanged" }
 
     const body = await githubBody(response, url)
-    if (!Array.isArray(body)) throw new Error(`GitHub gave an unexpected issues list for ${source.repo}`)
+    if (!Array.isArray(body)) throw new PollSourceError(`GitHub gave an unexpected issues list for ${source.repo}`)
 
     for (const item of body) {
       if (!item.pull_request) issues.push(toIssue(source.repo, item))
@@ -54,7 +54,7 @@ async function searchIssues(source: GithubIssuesSource, request: GithubFetch): P
   for (let page = 0; url && page < MAX_PAGES; page += 1) {
     const response = await request(url, {})
     const body = await githubBody(response, url)
-    if (body?.incomplete_results) throw new Error(`GitHub search gave incomplete results for ${source.repo}`)
+    if (body?.incomplete_results) throw new PollSourceError(`GitHub search gave incomplete results for ${source.repo}`)
     if (Number(body?.total_count) > COLLECTION_LIMIT) return { status: "listed", listing: { overLimit: true } }
 
     for (const item of body?.items ?? []) issues.push(toIssue(source.repo, item))
