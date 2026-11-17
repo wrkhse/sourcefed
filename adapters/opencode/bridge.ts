@@ -127,12 +127,17 @@ export class OpenCodeBridge {
   }
 
   /**
-   * Ask Chauffeur's gate, when it runs in this process. Only an explicit
-   * `deliver: false` withholds the event; no gate, an error, or a slow answer
-   * delivers.
+   * Ask Chauffeur's gate, when it runs in this process, unless Chauffeur v2
+   * already triaged the event at the daemon. Only an explicit `deliver: false`
+   * withholds the event; no gate, an error, or a slow answer delivers.
    */
   private async admitted(sessionID: string, queued: QueuedMonitorEvent): Promise<boolean> {
     if (!this.rpc) return true
+    // Chauffeur v2 already decided at the daemon's sink, and asking v1 as well
+    // would triage the event twice. Unmarked events (no v2, or v2 failed or
+    // timed out) keep today's v1 gate, 3 s, fail open, until it is removed at
+    // Chauffeur's cutover.
+    if (queued.chauffeurTriaged === true) return true
 
     const { event } = queued
 
