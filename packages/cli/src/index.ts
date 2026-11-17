@@ -32,7 +32,7 @@ function printUsage(): void {
   console.error("sourcefed mcp --stdio|--http [--port PORT]")
   console.error("sourcefed monitor create|list|status|stop|start|remove|events|follow|ack|logs|sources [options]")
   console.error("sourcefed skills [list|get <name>|path [name]]")
-  console.error("sourcefed setup [opencode|pi]")
+  console.error("sourcefed setup [opencode|pi|chauffeur [--name chauffeur-next|chauffeur]]")
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

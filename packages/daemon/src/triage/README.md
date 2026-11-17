@@ -27,6 +27,16 @@ A candidate must answer `chauffeur.status` with protocol `1` and a `1.x` version
 prereleases such as `1.0.0-rc.4` count. One reply is read up to 64 KiB and a probe
 waits at most 500 ms.
 
+## Rule
+
+`sourcefed setup chauffeur` writes the `sourcefed/triage` rule into
+`$XDG_CONFIG_HOME/chauffeur-next/rules/sourcefed/triage.json` (`~/.config` when unset),
+which Chauffeur v2 loads on its next rule reload. `--name chauffeur` is refused unless a
+Chauffeur v2 daemon answers on that name's socket, because v1 reads the same folder, and an
+existing rule file is never overwritten. `sourcefed setup` writes the rule too when
+`~/.config/chauffeur-next` exists. [packages/cli/src/utils/chauffeur-rule.ts](../../../cli/src/utils/chauffeur-rule.ts)
+holds the canonical rule text.
+
 ## Decisions
 
 `decide()` never rejects: a verdict that cannot be had delivers the event. The first

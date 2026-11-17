@@ -11,21 +11,25 @@ const CHAUFFEUR_V2_VERSION = /^1\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]
 const STATUS_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"chauffeur.status"}\n'
 
 /**
- * Lists the sockets a Chauffeur daemon may listen on, most preferred first.
+ * The socket one named Chauffeur daemon listens on: <runtime>/<name>/daemon.sock.
  *
  * This mirrors @fdcn/chauffeur/client's socketPath rule -- the runtime folder is $XDG_RUNTIME_DIR,
  * falling back to the temporary folder -- and will import it once that package is a dependency.
- * v1 and v2 can both be installed, so both names are tried in that order.
+ */
+export function socketFor(name: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const runtime = env.XDG_RUNTIME_DIR || os.tmpdir()
+
+  return path.join(runtime, name, "daemon.sock")
+}
+
+/**
+ * Lists the sockets a Chauffeur daemon may listen on, most preferred first. v1 and v2 can both be
+ * installed, so both names are tried in that order.
  */
 export function candidateSockets(env: Readonly<Record<string, string | undefined>> = process.env): string[] {
   if (env.CHAUFFEUR_SOCKET) return [env.CHAUFFEUR_SOCKET]
 
-  const runtime = env.XDG_RUNTIME_DIR || os.tmpdir()
-
-  return [
-    path.join(runtime, "chauffeur", "daemon.sock"),
-    path.join(runtime, "chauffeur-next", "daemon.sock"),
-  ]
+  return [socketFor("chauffeur", env), socketFor("chauffeur-next", env)]
 }
 
 /**

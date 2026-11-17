@@ -124,6 +124,19 @@ looks on `$XDG_RUNTIME_DIR/chauffeur/daemon.sock`, then `chauffeur-next/daemon.s
 (the temporary folder when `XDG_RUNTIME_DIR` is unset); set `CHAUFFEUR_SOCKET` to point
 it at one socket. See [Chauffeur v2 triage](packages/daemon/src/triage/README.md).
 
+The triage rule itself is installed with:
+
+```sh
+sourcefed setup chauffeur                  # for chauffeur-next
+sourcefed setup chauffeur --name chauffeur # only when a v2 daemon answers there
+```
+
+It writes `sourcefed/triage` to `$XDG_CONFIG_HOME/chauffeur-next/rules/sourcefed/triage.json`
+(`~/.config` when unset), which Chauffeur v2 loads on its next rule reload. The install is
+v2 only: `--name chauffeur` is refused unless a Chauffeur v2 daemon answers on that name's
+socket, because v1 reads the same folder. chauffeur-next is the default until Chauffeur's
+cutover, and an existing rule file is never overwritten.
+
 ## MCP
 
 ```sh

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { candidateSockets, compatibleStatus, discover, probe } from "./discover.ts"
+import { candidateSockets, compatibleStatus, discover, probe, socketFor } from "./discover.ts"
 
 const STATUS_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"chauffeur.status"}\n'
 const directories: string[] = []
@@ -95,6 +95,17 @@ describe("candidateSockets", () => {
       "/run/user/501/chauffeur/daemon.sock",
       "/run/user/501/chauffeur-next/daemon.sock",
     ])
+  })
+})
+
+describe("socketFor", () => {
+  test("builds a named socket from XDG_RUNTIME_DIR", () => {
+    assert.equal(socketFor("chauffeur-next", { XDG_RUNTIME_DIR: "/run/user/501" }), "/run/user/501/chauffeur-next/daemon.sock")
+  })
+
+  test("falls back to the temporary folder, including for an empty XDG_RUNTIME_DIR", () => {
+    assert.equal(socketFor("chauffeur", {}), path.join(os.tmpdir(), "chauffeur", "daemon.sock"))
+    assert.equal(socketFor("chauffeur", { XDG_RUNTIME_DIR: "" }), path.join(os.tmpdir(), "chauffeur", "daemon.sock"))
   })
 })
 
