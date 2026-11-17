@@ -1,5 +1,5 @@
 import * as v from "valibot"
-import { COLLECTION_LIMIT, PollMonitor, compareCollection, toMonitorEvent, type SourceEvent } from "@sourcefed/core"
+import { COLLECTION_LIMIT, PollMonitor, PollSourceError, compareCollection, toMonitorEvent, type SourceEvent } from "@sourcefed/core"
 import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
 import { listIssues, type GithubFetch } from "./api.ts"
 import { issueKey, limitEvent, matchedEvent, unmatchedEvent } from "./events.ts"
@@ -36,7 +36,7 @@ export async function pollGithubIssues(
 export const githubIssuesPollMonitor = new PollMonitor<GithubIssuesSource>({
   run: async (source, cursor, monitorId) => {
     const token = githubToken()
-    if (!token) throw new Error("GH_TOKEN or GITHUB_TOKEN is required for github-issues monitors")
+    if (!token) throw new PollSourceError("GH_TOKEN or GITHUB_TOKEN is required for github-issues monitors")
 
     // An issues poll sends only REST requests, so a GraphQL wait does not hold it.
     const github = GithubClient.open(token, monitorId, ["rest"], cursor === undefined)

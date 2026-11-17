@@ -1,4 +1,4 @@
-import { COLLECTION_LIMIT, type CollectionListing } from "@sourcefed/core"
+import { COLLECTION_LIMIT, PollSourceError, type CollectionListing } from "@sourcefed/core"
 import { jiraAuth } from "../poll/utils/jira-auth.ts"
 
 const PAGE_SIZE = 100
@@ -50,18 +50,22 @@ async function jiraBody(response: Response): Promise<any> {
 
   const body = await response.json().catch(() => undefined) as { errorMessages?: string[] } | undefined
   const detail = body?.errorMessages?.join("; ")
-  throw new Error(`Jira search answered ${response.status}${detail ? `: ${detail}` : ""}`)
+  throw new PollSourceError(`Jira search answered ${response.status}${detail ? `: ${detail}` : ""}`)
 }
 
 function jiraBase(): string {
   const base = process.env.SOURCEFED_JIRA_BASE_URL
-  if (!base) throw new Error("SOURCEFED_JIRA_BASE_URL is required for jira-query monitors")
+  if (!base) throw new PollSourceError("SOURCEFED_JIRA_BASE_URL is required for jira-query monitors")
   return base.replace(/\/+$/, "")
 }
 
 async function jiraFetch(path: string): Promise<Response> {
-  return fetch(`${jiraBase()}${path}`, {
-    headers: { Authorization: jiraAuth(), Accept: "application/json" },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
+  const base = jiraBase()
+  const headers = { Authorization: jiraAuth(), Accept: "application/json" }
+  try {
+    return await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new PollSourceError(`Jira search request failed: ${message}`, { cause: error })
+  }
 }

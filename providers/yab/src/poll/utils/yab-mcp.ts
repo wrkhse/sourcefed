@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { PollSourceError } from "@sourcefed/core"
 import type { YabPage } from "../../types"
 
 const DEFAULT_YAB_COMMAND = "/Applications/yab.app/Contents/MacOS/yab"
@@ -18,7 +19,7 @@ export function parseYabFetch(text: string): YabPage {
   const body = split >= 0 ? text.slice(split + 2) : ""
   const [status = "", type = "", ...rest] = head.split(" · ")
   const code = Number(status.trim())
-  if (!Number.isInteger(code) || code <= 0) throw new Error(`yab fetch gave an unexpected answer: ${head.slice(0, 200)}`)
+  if (!Number.isInteger(code) || code <= 0) throw new PollSourceError(`yab fetch gave an unexpected answer: ${head.slice(0, 200)}`)
   return { status: code, type: type.trim(), url: rest.join(" · ").trim(), body }
 }
 
@@ -46,12 +47,12 @@ export function callYabTool(name: string, args: Record<string, unknown>): Promis
     const send = (message: Record<string, unknown>): void => {
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
     }
-    const timer = setTimeout(() => finish(new Error(`yab ${name} timed out after ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS)
+    const timer = setTimeout(() => finish(new PollSourceError(`yab ${name} timed out after ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS)
 
-    child.on("error", (error) => finish(new Error(`yab mcp could not start (${command}): ${error.message}`)))
+    child.on("error", (error) => finish(new PollSourceError(`yab mcp could not start (${command}): ${error.message}`)))
     child.on("exit", (code) => {
       const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 300)}` : ""
-      finish(new Error(`yab mcp exited (${code ?? "signal"}) before answering${detail}`))
+      finish(new PollSourceError(`yab mcp exited (${code ?? "signal"}) before answering${detail}`))
     })
     child.stdin.on("error", () => {})
     child.stderr.setEncoding("utf8")
@@ -75,14 +76,14 @@ export function callYabTool(name: string, args: Record<string, unknown>): Promis
           continue
         }
         if (message.id === 1) {
-          if (message.error) return finish(new Error(`yab mcp initialize failed: ${message.error.message}`))
+          if (message.error) return finish(new PollSourceError(`yab mcp initialize failed: ${message.error.message}`))
           send({ method: "notifications/initialized" })
           send({ id: 2, method: "tools/call", params: { name, arguments: args } })
         } else if (message.id === 2) {
-          if (message.error) return finish(new Error(`yab ${name} failed: ${message.error.message}`))
+          if (message.error) return finish(new PollSourceError(`yab ${name} failed: ${message.error.message}`))
           const content: any[] = Array.isArray(message.result?.content) ? message.result.content : []
           const text = content.filter((part) => part?.type === "text").map((part) => String(part.text)).join("\n")
-          if (message.result?.isError) return finish(new Error(`yab ${name} failed: ${text.slice(0, 300)}`))
+          if (message.result?.isError) return finish(new PollSourceError(`yab ${name} failed: ${text.slice(0, 300)}`))
           return finish(undefined, text)
         }
       }

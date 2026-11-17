@@ -120,6 +120,15 @@ describe("polling through Yab", () => {
     )
   })
 
+  test("names the feed by host, never its path or query", async () => {
+    const secret = { ...source, url: "https://example.test/feed/secret-path-token?token=secret-query-token" }
+    const error = await pollYab(secret, undefined, async () => ({ status: 404, type: "text/html", url: secret.url, body: "" })).then(() => undefined, (failure: unknown) => failure)
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /example\.test/)
+    assert.ok(!error.message.includes("secret-path-token"), "the path is not logged")
+    assert.ok(!error.message.includes("secret-query-token"), "the query is not logged")
+  })
+
   test("asks Yab for the feed with the source's space", async () => {
     const asked: unknown[] = []
     const result = await pollYab(source, undefined, async (url, space) => {
