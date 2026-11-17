@@ -152,7 +152,7 @@ async function checkPi(dir, archive, installed, baseEnv) {
   try {
     await waitForDaemon(env.SOURCEFED_DAEMON_URL)
     const commands = await piCommands(cli, project, env)
-    for (const name of ["sourcefed", "sourcefed logs"]) {
+    for (const name of ["sourcefed", "sourcefed-logs"]) {
       const command = commands.find((item) => item.name === name && item.source === "extension")
       assert.ok(command, name)
     }

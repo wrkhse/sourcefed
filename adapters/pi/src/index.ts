@@ -113,7 +113,7 @@ export default async function sourcefedExtension(pi: ExtensionAPI): Promise<void
     },
   })
 
-  pi.registerCommand("sourcefed logs", {
+  pi.registerCommand("sourcefed-logs", {
     description: "Show recent Sourcefed notifications for the current Pi session",
     handler: async (_args, ctx) => {
       const result = (await call(ctx, "monitor_logs", {})) as { logs?: LogEntryView[] }

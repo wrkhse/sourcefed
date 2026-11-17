@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync } from
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { define } from "./build-define.mjs"
+import { EXTERNAL } from "./build-external.mjs"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const OUT = path.join(ROOT, "packages/sourcefed/dist")
@@ -29,16 +30,6 @@ for (const name of PI_HOST_PACKAGES) {
   assert.equal(manifest.peerDependencies?.[name], "*", `${name} must accept the Pi host version`)
   assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, `${name} must be optional`)
 }
-
-const EXTERNAL = [
-  "node:*",
-  "@modelcontextprotocol/server",
-  "@earendil-works/pi-coding-agent",
-  "@earendil-works/pi-tui",
-  "typebox",
-  "@opencode/plugin",
-  "@opencode/plugin/*",
-]
 
 rmSync(OUT, { recursive: true, force: true })
 mkdirSync(OUT, { recursive: true })
