@@ -1,5 +1,5 @@
 import * as v from "valibot"
-import type { EventSubject } from "@sourcefed/core"
+import { subjectTitle, type EventSubject } from "@sourcefed/core"
 import { appendJiraChangelog } from "./append-jira-changelog.ts"
 import { appendJiraComments } from "./append-jira-comments.ts"
 import { appendJiraDescription } from "./append-jira-description.ts"
@@ -34,14 +34,10 @@ export async function pollJira(issueKey: string, cursorRaw: unknown): Promise<{ 
   return { events, cursor, terminal: isTerminalStatus(statusName) }
 }
 
-// Chauffeur's thread evidence reads an issue as "ENG-42: <summary>"; longer summaries are
-// cut so that line stays readable.
-const MAX_TITLE_LENGTH = 300
-
 function issueSubject(issueKey: string, summary: unknown): EventSubject {
   const subject: EventSubject = { type: "jira-issue", key: issueKey, url: issueUrl(issueKey) }
-  const title = typeof summary === "string" ? summary.trim().slice(0, MAX_TITLE_LENGTH) : ""
+  const title = subjectTitle(summary)
   // An issue with no summary still has a subject; only the title is left out.
-  if (title) subject.title = title
+  if (title !== undefined) subject.title = title
   return subject
 }

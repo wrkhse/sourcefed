@@ -54,6 +54,16 @@ describe("Jira issue poll subjects", () => {
     assert.equal(new URLSearchParams(issueRequest.split("?")[1]).get("fields"), "status,description,summary")
   })
 
+  test("one poll reads the comments and the issue in two requests", async () => {
+    const fake = installJira("Add schedules")
+
+    await pollJira("PROJ-9", undefined)
+
+    assert.equal(fake.requests.length, 2)
+    assert.equal(fake.requests[0]?.startsWith("/rest/api/3/issue/PROJ-9/comment?"), true)
+    assert.equal(fake.requests[1]?.startsWith("/rest/api/3/issue/PROJ-9?"), true)
+  })
+
   test("an event carries the summary as its subject title, trimmed, and keeps it as a monitor event", async () => {
     const fake = installJira("  Add schedules ")
 
