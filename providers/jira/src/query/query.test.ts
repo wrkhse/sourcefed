@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { afterEach, beforeEach, describe, test } from "node:test"
+import { isPollSourceError } from "@sourcefed/core"
 import { orderedByKey } from "./api.ts"
 import { JiraQueryMonitor } from "./monitor.ts"
 import { pollJiraQuery } from "./poll.ts"
@@ -110,6 +111,15 @@ describe("jira-query", () => {
     const { request } = jira(unbounded)
 
     await assert.rejects(pollJiraQuery(source, undefined, request, now), /Jira search answered 400: Unbounded JQL queries/)
+  })
+
+  test("an HTML answer is a poll failure, not a parser bug", async () => {
+    const { request } = jira(() => new Response("<html>sign in</html>", { status: 200, headers: { "content-type": "text/html" } }))
+
+    const failure = await pollJiraQuery(source, undefined, request, now).then(() => undefined, (error: unknown) => error)
+
+    assert.ok(isPollSourceError(failure), "an HTML answer is an expected poll failure")
+    assert.match((failure as Error).message, /not JSON/)
   })
 
   test("keeps a query's own ordering", () => {

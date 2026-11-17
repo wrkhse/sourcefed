@@ -106,7 +106,7 @@ describe("poll failure logging", () => {
 
   test("a message over the line's limit is cut with an ellipsis", async () => {
     const service = await serviceWithRecord()
-    await createRecord(service)
+    const record = await createRecord(service)
     const source = failingSource(async () => { throw new PollSourceError("x".repeat(301)) })
 
     await tick(context(service, source))
@@ -115,6 +115,70 @@ describe("poll failure logging", () => {
     const line = String(calls[0]![0])
     assert.ok(line.length <= 300, `the line is at most 300 characters, not ${line.length}`)
     assert.ok(line.endsWith("…"), "a cut line ends with an ellipsis")
+    const prefix = `[sourcefed] monitor ${record.id} (test example.test) poll failed: `
+    assert.equal(line.slice(prefix.length).length, 200, "the message is cut to 200 characters")
+  })
+
+  test("a cause that pushes the line past 300 is cut too", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => { throw new PollSourceError("x".repeat(200), { cause: new Error("y".repeat(200)) }) })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    const line = String(calls[0]![0])
+    assert.ok(line.length <= 300, `the line is at most 300 characters, not ${line.length}`)
+    assert.ok(line.endsWith("…"), "a cut line ends with an ellipsis")
+    assert.ok(line.includes("(cause: "), "the cause is still named")
+  })
+
+  test("a network failure's inner reason is on the line", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => {
+      throw new PollSourceError("fetch failed", {
+        cause: new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND feeds.example.test") }),
+      })
+    })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    assert.ok(String(calls[0]![0]).endsWith("(cause: getaddrinfo ENOTFOUND feeds.example.test)"))
+  })
+
+  test("the cause walk stops at its depth bound", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => {
+      let chain = new Error("level6")
+      for (let level = 5; level >= 1; level -= 1) chain = new Error(`level${level}`, { cause: chain })
+      throw new PollSourceError("outer", { cause: chain })
+    })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    const line = String(calls[0]![0])
+    assert.ok(line.includes("level4"), "the last cause within the bound is named")
+    assert.ok(!line.includes("level5"), "the walk stops at the bound")
+    assert.ok(!line.includes("level6"), "the walk stops at the bound")
+  })
+
+  test("an aggregate cause with no message still names its code", async () => {
+    const service = await serviceWithRecord()
+    await createRecord(service)
+    const source = failingSource(async () => {
+      const refused = new AggregateError([], "") as AggregateError & { code: string }
+      refused.code = "ECONNREFUSED"
+      throw new PollSourceError("fetch failed", { cause: new TypeError("fetch failed", { cause: refused }) })
+    })
+
+    await tick(context(service, source))
+
+    assert.equal(calls.length, 1)
+    assert.ok(String(calls[0]![0]).endsWith("(cause: ECONNREFUSED)"))
   })
 
   test("a source label over the identity's limit is cut with an ellipsis", async () => {
@@ -190,5 +254,15 @@ describe("poll failure logging", () => {
 
     const logged = calls.flat().map((entry) => String(entry)).join(" ")
     assert.ok(!logged.includes("secret"), "no credential from the key is logged")
+  })
+
+  test("a missing provider says so in one line", async () => {
+    const service = await serviceWithRecord()
+    const record = await createRecord(service)
+    const source = failingSource(async () => { throw new Error("never called") })
+
+    await tick({ ...context(service, source), sources: {} })
+
+    assert.deepEqual(calls, [[`[sourcefed] monitor ${record.id}: no monitor provider for source type test`]])
   })
 })

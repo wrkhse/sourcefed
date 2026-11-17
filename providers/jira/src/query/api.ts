@@ -46,7 +46,13 @@ function toIssue(item: any): JiraIssue {
 }
 
 async function jiraBody(response: Response): Promise<any> {
-  if (response.ok) return response.json()
+  if (response.ok) {
+    try {
+      return await response.json()
+    } catch (error) {
+      throw new PollSourceError("Jira search gave a body that is not JSON", { cause: error })
+    }
+  }
 
   const body = await response.json().catch(() => undefined) as { errorMessages?: string[] } | undefined
   const detail = body?.errorMessages?.join("; ")

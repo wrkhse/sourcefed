@@ -54,8 +54,8 @@ function parseJsonFeed(text: string): FeedEntry[] {
   let data: any
   try {
     data = JSON.parse(text)
-  } catch (error) {
-    throw new PollSourceError("the JSON feed could not be parsed", { cause: error })
+  } catch {
+    throw new PollSourceError("the JSON feed could not be parsed")
   }
   let items: unknown[] | undefined
   if (Array.isArray(data)) items = data
