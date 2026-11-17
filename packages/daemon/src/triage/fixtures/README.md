@@ -1,9 +1,9 @@
 # Replay fixtures
 
-Copied byte for byte from `wrkhse/chauffeur`, `crates/protocol/fixtures/`, at
-`ab16f20f8cdcfa60bdf32794ab191ee066dd0320` (Chauffeur PR #30, branch
-`fix/protocol-follow-ups`). The copies are read-only: never edit either file.
-Refresh them by copying both again from the new commit.
+Copied byte for byte from `wrkhse/chauffeur`, `crates/protocol/fixtures/`, at v2
+`5ef2b2fbf9338a174392166b17b3b5066a55ce89` (Chauffeur PR #30). The copies are
+read-only: never edit either file. Refresh them by copying both again from the new
+commit.
 
 | File | SHA-256 |
 | --- | --- |
