@@ -1,0 +1,237 @@
+{
+  "recorded_at": "2026-11-17T08:11:30Z",
+  "daemon": {
+    "version": "0.1.0"
+  },
+  "adapter": "main's adapters/opencode/src/gate.ts: an integration_event signal with deadline_ms 3000; deliver unless a gate effect says deliver:false; an error or a late reply delivers",
+  "replies": {
+    "bot-coverage": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "comment",
+        "summary": "codecov[bot] commented on PR #42",
+        "body": "Coverage 81.2% (+0.3%).",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 283
+    },
+    "approval": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "review",
+        "summary": "PR #42 approved",
+        "body": "LGTM, approved.",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 302
+    },
+    "status-churn": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "jira",
+        "kind": "updated",
+        "summary": "ENG-42 status changed",
+        "body": "Status: In Progress → In Review.",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 314
+    },
+    "assignee-churn": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "jira",
+        "kind": "updated",
+        "summary": "ENG-42 assignee changed",
+        "body": "Assignee: Alex → Sam. No request or new task.",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 305
+    },
+    "thanks": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "slack",
+        "kind": "message",
+        "summary": "A colleague replied",
+        "body": "Thanks, looks good 👍",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 372
+    },
+    "empty-message": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "slack",
+        "kind": "message",
+        "summary": "A Slack message arrived",
+        "body": "[message without text]",
+        "actionable": false
+      },
+      "deliver": false,
+      "reply": {
+        "effects": [
+          {
+            "agent_id": "slice-2-triage-replay",
+            "deliver": false,
+            "type": "gate"
+          }
+        ]
+      },
+      "elapsed_ms": 42
+    },
+    "ci-failure": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "check_run",
+        "summary": "CI failed on PR #42",
+        "body": "The protocol tests fail: missing required field protocol. Please fix before merging.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 296
+    },
+    "requested-changes": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "review",
+        "summary": "Changes requested on PR #42",
+        "body": "Please bound the request line before parsing and add a regression test.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 353
+    },
+    "direct-question": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "slack",
+        "kind": "message",
+        "summary": "A teammate asks the coding agent",
+        "body": "@agent Which commit fixes the daemon shutdown race? Please reply with the hash.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 363
+    },
+    "merge-conflict": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "conflict",
+        "summary": "PR #42 has merge conflicts",
+        "body": "The base branch changed socket.rs; rebase and resolve the conflict.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 327
+    },
+    "merged-followup": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "merged",
+        "summary": "PR #42 merged with follow-up work",
+        "body": "The fix is merged. @agent please update ENG-42 and run the deployment smoke test.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 364
+    },
+    "new-fact": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "jira",
+        "kind": "comment",
+        "summary": "New reproduction on ENG-42",
+        "body": "The failure only occurs when the peer half-closes after its request. Update the socket fix to cover this case.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 341
+    }
+  }
+}
