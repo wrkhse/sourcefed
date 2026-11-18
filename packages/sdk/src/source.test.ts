@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import { InMemoryMonitorStore, MonitorService } from "@sourcefed/core"
 import type { Monitor, MonitorContext, MonitorRecord } from "@sourcefed/core"
-import { defineSource, type Http, type SourceContext, type SourceDefinition, type SourceWebhook } from "@sourcefed/sdk"
+import { defineSource, type Http, type Mcp, type SourceContext, type SourceDefinition, type SourceWebhook } from "@sourcefed/sdk"
 import * as v from "valibot"
 
 const FakeSourceSchema = v.object({
@@ -27,8 +27,14 @@ const testHttp: Http = {
   },
 }
 
+const testMcp: Mcp = {
+  call: async () => {
+    throw new Error("the fake source calls no tools")
+  },
+}
+
 const testNow = () => new Date("2026-11-18T09:30:00.000Z")
-const testHost = { http: testHttp, now: testNow }
+const testHost = { http: testHttp, mcp: testMcp, now: testNow }
 
 function fakeRecord(cursor: unknown): MonitorRecord {
   return {
@@ -106,7 +112,7 @@ describe("defineSource", () => {
     assert.equal(monitor.wake, undefined)
   })
 
-  test("polls with the source, cursor, monitor id and host http and clock", async () => {
+  test("polls with the source, cursor, monitor id and host http, mcp and clock", async () => {
     const calls: SourceContext<FakeSource>[] = []
     const monitor = defineSource(fakeDefinition(calls), testHost)
     const service = new MonitorService(new InMemoryMonitorStore({ monitors: [fakeRecord("cursor-1")] }))
@@ -122,10 +128,23 @@ describe("defineSource", () => {
     assert.equal(calls[0].cursor, "cursor-1")
     assert.equal(calls[0].monitorId, "m-sdk")
     assert.equal(calls[0].http, testHttp)
+    assert.equal(calls[0].mcp, testMcp)
     assert.equal(calls[0].now, testNow)
 
     const after = await service.get("m-sdk")
     assert.equal(after?.cursors["fake:general"], "next")
+  })
+
+  test("a definition's defaultPollIntervalSec is the monitor's", () => {
+    const monitor = defineSource({ ...fakeDefinition(), defaultPollIntervalSec: 900 }, testHost)
+
+    assert.equal(monitor.defaultPollIntervalSec, 900)
+  })
+
+  test("a definition without a defaultPollIntervalSec leaves the monitor's undefined", () => {
+    const monitor = defineSource(fakeDefinition(), testHost)
+
+    assert.equal(monitor.defaultPollIntervalSec, undefined)
   })
 
   test("a definition's mergeCursor merges the poll's cursor into the stored one", async () => {

@@ -49,7 +49,12 @@ export const feed = defineSource({
 | --- | --- |
 | `source.ts` | `defineSource` and the `SourceDefinition` / `SourceContext` / `SourceWebhook` a provider writes. |
 | `http.ts` | `Http`, `httpOver`, `fetchHttp` and the three failures a plugin tells apart. |
-| `golden.ts` | `assertGolden`, `webhookSteps`, `withEnvironment`, `scriptedHttp`, `goldenRequest`, `replyResponse`, `redactHeaders` and the transcript types. |
+| `mcp.ts` | `Mcp`, `stdioMcp`, `hostMcpServers` and `McpError`: the MCP servers the host runs for a source. |
+| `golden.ts` | `assertGolden`, `fakeMcpSpawn`, `webhookSteps`, `withEnvironment`, `scriptedHttp`, `goldenRequest`, `replyResponse`, `redactHeaders` and the transcript types. |
+
+A definition's optional `defaultPollIntervalSec` is how often a new monitor
+of the source polls when the caller names no interval, such as `900` for a
+source whose upstream changes slowly.
 
 ## Webhooks and merged cursors
 
@@ -81,14 +86,38 @@ one.
 
 ## What the host owns
 
-Today: the `http` transport and the `now` clock, and nothing else. Every poll
-and every webhook's `verify` and `parse` receive the host's clock, and every
-poll the host's `Http`; a test or the golden harness supplies its own,
-and `fetchHttp` with `new Date()` is the only pair in production.
+Today: the `http` transport, the `mcp` servers and the `now` clock, and
+nothing else. Every poll and every webhook's `verify` and `parse` receive the
+host's clock, and every poll the host's `Http` and `Mcp`; a test or the
+golden harness supplies its own, and `fetchHttp`, `stdioMcp(hostMcpServers)`
+and `new Date()` are the only ones in production.
 `http.fetch` answers as the upstream answered (status, headers, body), and
 `http.json` reduces a request to its JSON or an `HttpError`. A poll gets no
 timer, no store and no secret, so `SourceHost` is the seam the broker replaces
 once barn owns the network.
+
+## MCP servers
+
+A source never starts a process: it names a server the host runs and calls one
+of its tools, and gets the tool's text parts joined by newlines.
+
+```ts
+const page = await mcp.call("yab", "fetch", { url: source.url, html: true })
+```
+
+Yab is the host's only server. `hostMcpServers` runs it from
+`SOURCEFED_YAB_COMMAND`, read at each call, or the app's own binary, with a
+45 s limit per call. `stdioMcp` speaks MCP over stdio and starts one process
+per call, stopped once the call settles, so nothing stays connected between
+polls. A server the host does not run rejects with a plain `Error`: that is a
+configuration bug, not a failed call.
+
+A call that produces no text rejects with an `McpError` whose `failure` is
+`start`, `timeout`, `exit` (with `exitCode`), `error` (a JSON-RPC error,
+with its `code`) or `tool` (the tool reported a failure). The server's own
+words, its stderr or the tool's failure text, are in `detail` and never in
+`message`: they may quote what the source sent, such as a feed URL whose path
+is its credential, so the source decides whether and how to show them.
 
 ## What crosses the boundary
 
@@ -128,6 +157,16 @@ would write. `webhookSteps` runs those steps for both the recorder and the
 replay, so the two cannot drift; `assertGolden` names the provider and the
 delivery on a difference (`github webhook review`).
 
+A case may also carry `mcpReplies`, the answers the recorded server gave in
+order, and `mcpCalls`, the tool calls the source made (`{ tool, arguments }`).
+The replay runs the real `stdioMcp` client against `fakeMcpSpawn`, a server
+that answers over in-memory streams with no process, and asserts the calls
+equal the recorded ones. A source that calls more tools than the case has
+replies fails loudly with code `golden:no-reply`. A case without them records
+no calls, so a source that never calls MCP replays unchanged. A case records
+`defaultPollIntervalSec` when the old monitor defines one, and the replay
+holds the source to it.
+
 A golden test sets the provider's environment with `withEnvironment`, which
 sets each variable (`undefined` removes one) for the run and puts every one
 back afterwards, even when the run throws, so it does not leak into the tests
@@ -152,7 +191,12 @@ the old provider from it on its own core. It stubs `fetch` with the cases
 file's replies and records requests with the same `goldenRequest` the replay
 uses. It calls the old poll runner directly to record its returned events,
 cursor and terminal flag, or its error. It writes the fixture and its sha256,
-then removes the worktree; no live API is contacted.
+then removes the worktree; no live API is contacted and no process is started
+beyond `git` and esbuild's service. The pre-SDK Yab provider starts `yab mcp`
+itself, so for the whole run node's `spawn` is replaced in-process: a case
+with `mcpReplies` is answered by `fakeMcpSpawn` in memory, and in any other
+case starting a process throws, so the attempt is recorded as the case's
+error instead of running.
 
 The cases file names `provider`, the old provider's `entry` and `export`,
 the output `fixture` path and API `base`. Its `env` values and `unset`
@@ -175,7 +219,11 @@ the replay answer with, and a 204 or 304 carries no body. A case without
 `continues` is a first poll: it runs with an absent cursor and records
 `cursor: null`. A case with `continues: true` starts at the preceding case's
 returned cursor, so it cannot follow an error or a deferred case. A poll that
-defers records `deferred: true` and no events, cursor or terminal flag.
+defers records `deferred: true` and no events, cursor or terminal flag. A
+case may give `mcpReplies`, each `{ text }`, `{ text, isError: true }` or
+`{ error: { code, message } }`; the fixture records them and the calls made
+right after `requests`, and the recorder fails naming the case when they run
+out.
 
 An optional `webhooks` list records deliveries to the old monitor's
 `webhook` after the poll cases, with the fixed clock in place. Each entry has

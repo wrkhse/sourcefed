@@ -1,7 +1,8 @@
 import { build } from "esbuild"
-import { goldenRequest, replyResponse, webhookSteps } from "@sourcefed/sdk"
+import { fakeMcpSpawn, goldenRequest, replyResponse, webhookSteps } from "@sourcefed/sdk"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
+import { createRequire, syncBuiltinESMExports } from "node:module"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -20,6 +21,11 @@ const temporary = mkdtempSync(path.join(os.tmpdir(), "sourcefed-golden-"))
 const RealDate = Date
 // The instant `new Date()` and `Date.now()` answer with while a case runs, or undefined for the real clock.
 let fixedAt
+// The pre-SDK Yab provider starts `yab mcp` itself. Recording must not start a process, so
+// while the bundle runs node's spawn answers with a fake server per case, in memory.
+const childProcess = createRequire(import.meta.url)("node:child_process")
+const realSpawn = childProcess.spawn
+let currentSpawn = noMcpReplies
 
 try {
   git(["worktree", "add", "--detach", temporary, ref])
@@ -50,6 +56,11 @@ try {
       }
     }
   }
+
+  // Installed after bundling, so esbuild's service and git keep the real spawn, and synced so
+  // the bundle's ESM `import { spawn }` binds to the replacement.
+  childProcess.spawn = (command, args) => currentSpawn(command, args)
+  syncBuiltinESMExports()
 
   const exported = (await import(pathToFileURL(bundle).href))[input.export]
   const monitor = typeof exported === "function" ? new exported() : exported
@@ -86,12 +97,19 @@ try {
   console.log(`${createHash("sha256").update(text).digest("hex")}  ${input.fixture}`)
 } finally {
   globalThis.Date = RealDate
+  childProcess.spawn = realSpawn
+  syncBuiltinESMExports()
 
   try {
     git(["worktree", "remove", "--force", temporary])
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
+}
+
+// A case without mcp replies that starts a process records the failure visibly instead.
+function noMcpReplies() {
+  throw new Error("this case has no mcp replies")
 }
 
 function setClock(instant) {
@@ -170,8 +188,11 @@ async function bundleProvider(worktree, entry) {
 async function recordCase(monitor, kase, cursor) {
   const requests = []
   const originalFetch = globalThis.fetch
+  const calls = []
+  const mcp = kase.mcpReplies ? fakeMcpSpawn(kase.mcpReplies, calls) : undefined
   let next = 0
 
+  currentSpawn = mcp ?? noMcpReplies
   globalThis.fetch = async (input, init) => {
     requests.push(goldenRequest(String(input), init))
 
@@ -193,12 +214,15 @@ async function recordCase(monitor, kase, cursor) {
       cursor: cursor ?? null,
       replies: kase.replies,
       requests,
+      // Recorded only when the cases file scripted a server, so other fixtures keep their bytes.
+      ...(mcp ? { mcpReplies: kase.mcpReplies, mcpCalls: calls } : {}),
       source,
       key: monitor.key(source),
       label: monitor.label(source),
       detail: monitor.detail(source),
       describe: monitor.describe(source),
       icon: monitor.icon,
+      ...(monitor.defaultPollIntervalSec !== undefined ? { defaultPollIntervalSec: monitor.defaultPollIntervalSec } : {}),
       schema: monitor.input,
     }
 
@@ -220,6 +244,10 @@ async function recordCase(monitor, kase, cursor) {
     }
   } finally {
     globalThis.fetch = originalFetch
+    currentSpawn = noMcpReplies
+
+    // Thrown from here so the poll's own catch cannot record it as the case's error.
+    if (mcp?.missing) throw new Error(`${kase.name}: the cases file ran out of mcp replies`)
   }
 }
 

@@ -321,6 +321,54 @@ describe("assertGolden", () => {
   })
 })
 
+describe("assertGolden mcp calls", () => {
+  const [first] = fixture.cases
+  const fetched: SourceDefinition<FakeSource> = {
+    ...definition,
+    poll: async ({ source, mcp }) => {
+      const text = await mcp.call("yab", "fetch", { url: `https://fake.test/${source.channel}` })
+
+      return { events: [], cursor: { text }, terminal: false }
+    },
+  }
+  const recorded: GoldenFixture = {
+    ...fixture,
+    cases: [
+      {
+        ...first,
+        name: "yab fetch",
+        replies: [],
+        requests: [],
+        mcpReplies: [{ text: "200 · text/html · https://fake.test/general\n\n<p>hi</p>" }],
+        mcpCalls: [{ tool: "fetch", arguments: { url: "https://fake.test/general" } }],
+        events: [],
+        cursorAfter: { text: "200 · text/html · https://fake.test/general\n\n<p>hi</p>" },
+      },
+    ],
+  }
+
+  test("replays a recorded tool call", async () => {
+    await assertGolden(recorded, fetched)
+  })
+
+  test("names the provider and case when the call differs", async () => {
+    const [kase] = recorded.cases
+    const other: GoldenFixture = { ...recorded, cases: [{ ...kase, mcpCalls: [{ tool: "fetch", arguments: { url: "https://fake.test/other" } }] }] }
+
+    await assert.rejects(assertGolden(other, fetched), /fake yab fetch: mcp calls/)
+  })
+
+  test("fails loudly when the replies run out", async () => {
+    const [kase] = recorded.cases
+    const short: GoldenFixture = { ...recorded, cases: [{ ...kase, mcpReplies: [] }] }
+
+    await assert.rejects(assertGolden(short, fetched), (error: Error) => {
+      assert.equal((error as { code?: unknown }).code, "golden:no-reply")
+      return true
+    })
+  })
+})
+
 // A signature is the body behind a timestamp, and it is stale more than five minutes either side of the host's clock.
 const webhook: SourceWebhook = {
   path: "/webhooks/fake",

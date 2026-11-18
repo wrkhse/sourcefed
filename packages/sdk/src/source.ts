@@ -11,6 +11,7 @@ import type {
 } from "@sourcefed/core"
 import type { GenericSchema } from "valibot"
 import { fetchHttp, type Http } from "./http.ts"
+import { hostMcpServers, stdioMcp, type Mcp } from "./mcp.ts"
 
 /** What one poll is given. Cancellation and log lines arrive with the worker boundary, not this slice. */
 export type SourceContext<T extends MonitorSource> = {
@@ -18,6 +19,8 @@ export type SourceContext<T extends MonitorSource> = {
   readonly cursor: unknown
   readonly monitorId: string
   readonly http: Http
+  /** The MCP servers the host runs: a source names one and calls its tool, and never starts a process. */
+  readonly mcp: Mcp
   /** The clock a source stamps events with, supplied by the host so a recorded poll replays at its recorded instant. */
   readonly now: () => Date
 }
@@ -43,6 +46,8 @@ export type SourceDefinition<T extends MonitorSource> = {
   readonly detail: (source: T) => string
   readonly describe: (source: T) => string
   readonly icon?: string
+  /** How often a new monitor of this source polls, in seconds, when the caller names no interval. */
+  readonly defaultPollIntervalSec?: number
   /** A webhook that only wakes the monitor for an early poll; the poll stays the source of truth. */
   readonly wake?: MonitorWake<T>
   /** A webhook that delivers events itself, beside the poll; the daemon routes and retries them as core's do. */
@@ -55,14 +60,14 @@ export type SourceDefinition<T extends MonitorSource> = {
   readonly mergeCursor?: (current: unknown, result: unknown) => unknown
 }
 
-/** What the host gives a source. A test or the golden harness supplies its own http and clock. */
-export type SourceHost = { readonly http: Http; readonly now: () => Date }
+/** What the host gives a source. A test or the golden harness supplies its own http, MCP and clock. */
+export type SourceHost = { readonly http: Http; readonly mcp: Mcp; readonly now: () => Date }
 
 /**
  * Turns one definition into the core Monitor the daemon already knows, so a source is data
  * plus a poll function and the runtime above it is untouched.
  */
-export function defineSource<T extends MonitorSource>(definition: SourceDefinition<T>, host: SourceHost = { http: fetchHttp(), now: () => new Date() }): Monitor<T> {
+export function defineSource<T extends MonitorSource>(definition: SourceDefinition<T>, host: SourceHost = { http: fetchHttp(), mcp: stdioMcp(hostMcpServers), now: () => new Date() }): Monitor<T> {
   return new PluginMonitor(definition, host)
 }
 
@@ -78,6 +83,7 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
   // `declare` emits no field of its own, so the subclass adds no `wake` or `webhook` beyond what core's Monitor has.
   declare readonly wake?: MonitorWake<T>
   declare readonly webhook?: WebhookMonitor<T>
+  declare readonly defaultPollIntervalSec?: number
 
   constructor(private readonly definition: SourceDefinition<T>, host: SourceHost) {
     super({ type: definition.type, schema: definition.schema })
@@ -90,6 +96,7 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
     this.input = definition.input
     // Assigned only when defined, so a source without a webhook leaves `wake` as core's old subclasses did.
     if (definition.wake) this.wake = definition.wake
+    if (definition.defaultPollIntervalSec !== undefined) this.defaultPollIntervalSec = definition.defaultPollIntervalSec
 
     // The host's clock is closed over `verify` and `parse`, so core's WebhookMonitor calls them as it always has.
     const webhook = definition.webhook
@@ -101,7 +108,7 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
       })
     }
 
-    const run = (source: T, cursor: unknown, monitorId: string) => definition.poll({ source, cursor, monitorId, http: host.http, now: host.now })
+    const run = (source: T, cursor: unknown, monitorId: string) => definition.poll({ source, cursor, monitorId, http: host.http, mcp: host.mcp, now: host.now })
     // Passed only when defined, so a source without one keeps core's replace-the-cursor rule.
     this.poll = new PollMonitor<T>(definition.mergeCursor ? { run, mergeCursor: definition.mergeCursor } : { run })
   }
