@@ -3,4 +3,5 @@ export { MonitorService, type CreateMonitorInput, type CreateMonitorResult } fro
 export { dedupeActiveMonitors, monitorIdentity } from "./utils/monitor-identity.ts"
 export { PollMonitor, PollSourceError, isPollSourceError, mergeCursors } from "./poll"
 export { WebhookMonitor } from "./webhook"
+export type { WebhookMonitorOptions } from "./webhook/types"
 export type { MonitorRecord, MonitorRegistry, MonitorWake } from "./types"

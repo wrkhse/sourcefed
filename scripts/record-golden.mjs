@@ -1,5 +1,5 @@
 import { build } from "esbuild"
-import { redactHeaders, replyResponse } from "@sourcefed/sdk"
+import { goldenRequest, replyResponse, webhookSteps } from "@sourcefed/sdk"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -18,6 +18,8 @@ const input = JSON.parse(readFileSync(path.resolve(root, casesPath), "utf8"))
 const recordedFrom = git(["rev-parse", "--short=7", ref]).trim()
 const temporary = mkdtempSync(path.join(os.tmpdir(), "sourcefed-golden-"))
 const RealDate = Date
+// The instant `new Date()` and `Date.now()` answer with while a case runs, or undefined for the real clock.
+let fixedAt
 
 try {
   git(["worktree", "add", "--detach", temporary, ref])
@@ -31,18 +33,20 @@ try {
     delete process.env[name]
   }
 
-  if (input.now) {
+  const caseInstants = [...input.cases, ...(input.webhooks ?? [])].some((kase) => kase.now)
+
+  if (input.now || caseInstants) {
     // The pre-SDK providers stamp events with `new Date()` by default, so a reproducible
-    // recording runs them at one fixed instant.
-    const fixed = RealDate.parse(input.now)
+    // recording runs each case at a fixed instant: its own `now`, else the file's.
+    setClock(input.now)
     globalThis.Date = class extends RealDate {
       constructor(...args) {
-        if (args.length === 0) super(fixed)
+        if (args.length === 0 && fixedAt !== undefined) super(fixedAt)
         else super(...args)
       }
 
       static now() {
-        return fixed
+        return fixedAt ?? RealDate.now()
       }
     }
   }
@@ -62,10 +66,19 @@ try {
     // A continuing case whose previous cursor was `null` also runs with an absent cursor:
     // the store gives a poll an absent cursor, never `null`, and the replay applies the same rule.
     const cursor = kase.continues ? previous.cursorAfter ?? undefined : undefined
+    setClock(kase.now ?? input.now)
     cases.push(await recordCase(monitor, kase, cursor))
   }
 
-  const fixture = { provider: input.provider, recordedFrom, base: input.base, ...(input.now ? { now: input.now } : {}), cases }
+  const webhook = input.webhooks ? recordWebhook(monitor, input.webhooks) : undefined
+  const fixture = {
+    provider: input.provider,
+    recordedFrom,
+    base: input.base,
+    ...(input.now ? { now: input.now } : {}),
+    cases,
+    ...(webhook ? { webhook } : {}),
+  }
   const constant = input.provider.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_GOLDEN"
   const header = `/** What the pre-SDK ${input.provider} provider did at ${recordedFrom}, recorded so the SDK port must reproduce it exactly. */`
   const text = `import type { GoldenFixture } from "@sourcefed/sdk"\n\n${header}\nexport const ${constant}: GoldenFixture = ${JSON.stringify(fixture, null, 2)}\n`
@@ -79,6 +92,10 @@ try {
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
+}
+
+function setClock(instant) {
+  fixedAt = instant === undefined ? undefined : RealDate.parse(instant)
 }
 
 function git(args) {
@@ -156,11 +173,7 @@ async function recordCase(monitor, kase, cursor) {
   let next = 0
 
   globalThis.fetch = async (input, init) => {
-    requests.push({
-      method: init?.method ?? "GET",
-      url: String(input),
-      headers: redactHeaders(init?.headers),
-    })
+    requests.push(goldenRequest(String(input), init))
 
     const reply = kase.replies[next]
     next += 1
@@ -174,6 +187,8 @@ async function recordCase(monitor, kase, cursor) {
     const source = monitor.validateSource(monitor.build(kase.build))
     const recorded = {
       name: kase.name,
+      // Recorded only when the cases file gave one, so a fixture without it keeps its bytes.
+      ...(kase.now ? { now: kase.now } : {}),
       build: kase.build,
       cursor: cursor ?? null,
       replies: kase.replies,
@@ -205,6 +220,28 @@ async function recordCase(monitor, kase, cursor) {
     }
   } finally {
     globalThis.fetch = originalFetch
+  }
+}
+
+// Runs after the poll cases, with the fixed clock still installed, through the same steps the
+// replay asserts, so the recorded deliveries are what the old webhook made of them.
+function recordWebhook(monitor, deliveries) {
+  const webhook = monitor.webhook
+
+  if (!webhook) throw new Error(`${input.provider} has no webhook to record`)
+
+  const cases = deliveries.map((delivery) => {
+    setClock(delivery.now ?? input.now)
+
+    return webhookSteps(webhook, { ...delivery, cursor: delivery.cursor ?? null }, webhook.path)
+  })
+
+  return {
+    path: webhook.path,
+    preferred: webhook.preferred,
+    acknowledgeBeforeDelivery: webhook.acknowledgeBeforeDelivery,
+    configured: webhook.configured(),
+    cases,
   }
 }
 
