@@ -6,7 +6,7 @@ import type { FeedEntry, YabCursor, YabEvent, YabSourceRecord } from "../../type
 // off and coming back (a mail marked unread again) is not new.
 const SEEN_LIMIT = 1000
 
-export function feedEvents(source: YabSourceRecord, entries: FeedEntry[], cursorRaw: unknown): { events: YabEvent[]; cursor: YabCursor } {
+export function feedEvents(source: YabSourceRecord, entries: FeedEntry[], cursorRaw: unknown, now: () => Date): { events: YabEvent[]; cursor: YabCursor } {
   const parsedCursor = v.safeParse(YabCursorSchema, cursorRaw)
   let previous: Partial<YabCursor> = {}
   if (parsedCursor.success) previous = parsedCursor.output
@@ -26,7 +26,7 @@ export function feedEvents(source: YabSourceRecord, entries: FeedEntry[], cursor
         return true
       })
       .sort((left, right) => (left.at && right.at ? left.at.localeCompare(right.at) : 0))
-      .map(entryEvent)
+      .map((entry) => entryEvent(entry, now))
   }
 
   cursor.primed = true
@@ -34,12 +34,13 @@ export function feedEvents(source: YabSourceRecord, entries: FeedEntry[], cursor
   return { events, cursor }
 }
 
-function entryEvent(entry: FeedEntry): YabEvent {
+// An undated entry is stamped by the host's clock, so a recorded poll replays at its own instant.
+function entryEvent(entry: FeedEntry, now: () => Date): YabEvent {
   const title = entry.title || "(untitled)"
   return {
     kind: "entry",
     id: `entry:${entry.id}`,
-    at: entry.at ?? new Date().toISOString(),
+    at: entry.at ?? now().toISOString(),
     summary: entry.author ? `Yab feed entry from ${entry.author}: ${title}` : `Yab feed entry: ${title}`,
     body: [entry.summary, entry.link].filter(Boolean).join("\n\n") || undefined,
     actionable: true,

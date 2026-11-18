@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sourcefed/core": "*",
+    "@sourcefed/sdk": "*",
     "valibot": "1.4.2"
   },
   "files": [

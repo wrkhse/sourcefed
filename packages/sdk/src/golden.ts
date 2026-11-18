@@ -1,6 +1,9 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
 import type { MonitorCreateInput, MonitorSource, SourceInputSchema, WebhookMonitor } from "@sourcefed/core"
 import { httpOver, type Http } from "./http.ts"
+import { stdioMcp, type McpChild, type McpSpawn } from "./mcp.ts"
 import { defineSource, type SourceDefinition } from "./source.ts"
 
 /** One upstream answer the replay serves, in order. */
@@ -20,6 +23,16 @@ export type GoldenRequest = {
   readonly body?: string
 }
 
+/** One answer the recorded server gives a tool call: its text, a tool failure, or a JSON-RPC error. */
+export type GoldenMcpReply = {
+  readonly text?: string
+  readonly isError?: boolean
+  readonly error?: { readonly code?: number | string; readonly message?: string }
+}
+
+/** One tool call the source made. */
+export type GoldenMcpCall = { readonly tool: string; readonly arguments: unknown }
+
 /** The create input a host passes, as the daemon builds it: the source's fields plus the monitor's name and type. */
 export type GoldenCreateInput = MonitorCreateInput & { readonly name?: string; readonly sourceType?: string }
 
@@ -31,12 +44,15 @@ export type GoldenCase = {
   readonly cursor: unknown
   readonly replies: readonly GoldenReply[]
   readonly requests: readonly GoldenRequest[]
+  readonly mcpReplies?: readonly GoldenMcpReply[]
+  readonly mcpCalls?: readonly GoldenMcpCall[]
   readonly source: Readonly<Record<string, unknown>>
   readonly key: string
   readonly label: string
   readonly detail: string
   readonly describe: string
   readonly icon: string
+  readonly defaultPollIntervalSec?: number
   readonly schema: SourceInputSchema
   readonly events?: readonly unknown[]
   readonly cursorAfter?: unknown
@@ -153,11 +169,68 @@ export function scriptedHttp(replies: readonly GoldenReply[]): { http: Http; req
   return { http, requests }
 }
 
+/**
+ * A server that answers MCP over in-memory streams: initialize, then each tools/call with the
+ * next reply, recording the call. Running out of replies is a fixture bug: the fake answers a
+ * JSON-RPC error with code "golden:no-reply" and marks itself so the harness fails loudly.
+ */
+export function fakeMcpSpawn(replies: readonly GoldenMcpReply[], calls: GoldenMcpCall[]): McpSpawn & { readonly missing: boolean } {
+  let next = 0
+  let missing = false
+
+  const spawn = (): McpChild => {
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, killed: false, kill: () => (child.killed = true) })
+    // Answered on the next tick, as a real server's line arrives after the write, so the client never re-enters itself.
+    const answer = (message: Record<string, unknown>) => process.nextTick(() => stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`))
+    let buffer = ""
+
+    stdin.setEncoding("utf8")
+    stdin.on("data", (chunk: string) => {
+      buffer += chunk
+      let newline = buffer.indexOf("\n")
+
+      while (newline >= 0) {
+        const message = JSON.parse(buffer.slice(0, newline))
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf("\n")
+
+        if (message.method === "initialize") {
+          answer({ id: message.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "golden", version: "0" } } })
+        } else if (message.method === "tools/call") {
+          calls.push({ tool: message.params?.name, arguments: message.params?.arguments })
+          answer({ id: message.id, ...mcpAnswer(replies[next]) })
+          if (!replies[next]) missing = true
+          next += 1
+        }
+      }
+    })
+
+    return child
+  }
+
+  const fake: McpSpawn = spawn
+
+  return Object.defineProperty(fake, "missing", { get: () => missing }) as McpSpawn & { readonly missing: boolean }
+}
+
+function mcpAnswer(reply: GoldenMcpReply | undefined): Record<string, unknown> {
+  if (!reply) return { error: { code: "golden:no-reply", message: "the fixture has no reply for this call" } }
+  if (reply.error) return { error: reply.error }
+
+  return { result: { content: [{ type: "text", text: reply.text ?? "" }], isError: reply.isError ?? false } }
+}
+
 export async function assertGolden<T extends MonitorSource>(fixture: GoldenFixture, definition: SourceDefinition<T>): Promise<void> {
   for (const kase of fixture.cases) {
     const now = clockAt(kase.now ?? fixture.now)
     const scripted = scriptedHttp(kase.replies)
-    const monitor = defineSource(definition, { http: scripted.http, now })
+    const calls: GoldenMcpCall[] = []
+    const spawn = fakeMcpSpawn(kase.mcpReplies ?? [], calls)
+    const mcp = stdioMcp(() => ({ command: "golden", args: [], timeoutMs: 45_000 }), spawn)
+    const monitor = defineSource(definition, { http: scripted.http, mcp, now })
     const at = `${fixture.provider} ${kase.name}`
 
     assert.deepEqual(monitor.build(kase.build), kase.source, `${at}: source`)
@@ -168,11 +241,12 @@ export async function assertGolden<T extends MonitorSource>(fixture: GoldenFixtu
     assert.equal(monitor.detail(source), kase.detail, `${at}: detail`)
     assert.equal(monitor.describe(source), kase.describe, `${at}: describe`)
     assert.equal(monitor.icon, kase.icon, `${at}: icon`)
+    if ("defaultPollIntervalSec" in kase) assert.equal(monitor.defaultPollIntervalSec, kase.defaultPollIntervalSec, `${at}: default poll interval`)
     assert.deepEqual(monitor.input, kase.schema, `${at}: input schema`)
 
     // A recorded `null` is a first poll, which the runtime gives as an absent cursor.
     const cursor = kase.cursor === null ? undefined : kase.cursor
-    const poll = () => definition.poll({ source, cursor, monitorId: "golden", http: scripted.http, now })
+    const poll = () => definition.poll({ source, cursor, monitorId: "golden", http: scripted.http, mcp, now })
 
     if (kase.error !== undefined) {
       await assert.rejects(poll(), { message: kase.error }, `${at}: error`)
@@ -189,6 +263,8 @@ export async function assertGolden<T extends MonitorSource>(fixture: GoldenFixtu
     }
 
     assert.deepEqual(scripted.requests, kase.requests, `${at}: requests`)
+    assert.equal(spawn.missing, false, `${at}: mcp replies ran out`)
+    assert.deepEqual(calls, kase.mcpCalls ?? [], `${at}: mcp calls`)
   }
 
   if (fixture.webhook) assertGoldenWebhook(fixture, fixture.webhook, definition)
@@ -197,7 +273,7 @@ export async function assertGolden<T extends MonitorSource>(fixture: GoldenFixtu
 function assertGoldenWebhook<T extends MonitorSource>(fixture: GoldenFixture, recorded: GoldenWebhook, definition: SourceDefinition<T>): void {
   const at = `${fixture.provider} webhook`
   // Each delivery gets a monitor of its own, as each poll case does, so it sees its own instant.
-  const webhookAt = (instant?: string) => defineSource(definition, { http: scriptedHttp([]).http, now: clockAt(instant) }).webhook
+  const webhookAt = (instant?: string) => defineSource(definition, { http: scriptedHttp([]).http, mcp: stdioMcp(() => undefined), now: clockAt(instant) }).webhook
   const webhook = webhookAt(fixture.now)
 
   if (!webhook) assert.fail(`${at}: missing`)

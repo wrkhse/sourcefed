@@ -3,11 +3,13 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
+import { hostMcpServers, stdioMcp } from "@sourcefed/sdk"
 import type { YabSourceRecord } from "./types"
 import { YabMonitor } from "./index"
-import { callYabTool, feedEvents, fetchThroughYab, parseFeed, parseYabFetch, pollYab } from "./poll"
+import { feedEvents, fetchThroughYab, parseFeed, parseYabFetch, pollYab } from "./poll"
 
 const source: YabSourceRecord = { type: "yab", url: "https://mail.google.com/mail/u/0/feed/atom", space: "Personal" }
+const now = () => new Date("2026-11-18T12:00:00.000Z")
 
 const atom = (entries: string): string =>
   `<?xml version="1.0" encoding="UTF-8"?><feed version="0.3" xmlns="http://purl.org/atom/ns#"><title>Gmail - Inbox</title>${entries}</feed>`
@@ -17,7 +19,7 @@ const gmailEntry = (id: string, title: string, name = "Ali from HiringCafe", ema
 
 describe("Yab monitor source", () => {
   test("builds a feed source with its optional space and filters", () => {
-    assert.deepEqual(new YabMonitor().build({ url: "https://example.com/feed.xml", space: "Work", match: "interview", exclude: "newsletter" }), {
+    assert.deepEqual(YabMonitor.build({ url: "https://example.com/feed.xml", space: "Work", match: "interview", exclude: "newsletter" }), {
       type: "yab",
       url: "https://example.com/feed.xml",
       space: "Work",
@@ -27,7 +29,7 @@ describe("Yab monitor source", () => {
   })
 
   test("rejects a missing or non-http URL and a broken pattern", () => {
-    const monitor = new YabMonitor()
+    const monitor = YabMonitor
     assert.deepEqual(monitor.build({}), { error: "url is required for a yab monitor" })
     assert.deepEqual(monitor.build({ url: "not a url" }), { error: "url must be a valid http(s) URL" })
     assert.deepEqual(monitor.build({ url: "file:///etc/passwd" }), { error: "url must be a valid http(s) URL" })
@@ -35,7 +37,7 @@ describe("Yab monitor source", () => {
   })
 
   test("validates stored sources and polls", () => {
-    const monitor = new YabMonitor()
+    const monitor = YabMonitor
     assert.deepEqual(monitor.validateSource(source), source)
     assert.equal(monitor.initialDelivery(source), "poll")
     assert.equal(monitor.describe(source), "Yab feed mail.google.com/mail/u/0/feed/atom (Personal)")
@@ -80,33 +82,42 @@ describe("feed parsing", () => {
 
 describe("feed cursor", () => {
   test("primes what is already there and reports only later entries", () => {
-    const first = feedEvents(source, parseFeed(atom(gmailEntry("1", "Old alert"))), undefined)
+    const first = feedEvents(source, parseFeed(atom(gmailEntry("1", "Old alert"))), undefined, now)
     assert.equal(first.events.length, 0)
     assert.deepEqual(first.cursor, { primed: true, seenIds: ["tag:gmail.google.com,2004:1"] })
 
-    const second = feedEvents(source, parseFeed(atom(gmailEntry("2", "New alert") + gmailEntry("1", "Old alert"))), first.cursor)
+    const second = feedEvents(source, parseFeed(atom(gmailEntry("2", "New alert") + gmailEntry("1", "Old alert"))), first.cursor, now)
     assert.equal(second.events.length, 1)
     assert.partialDeepStrictEqual(second.events[0], {
       kind: "entry",
       id: "entry:tag:gmail.google.com,2004:2",
+      at: "2026-11-06T09:40:00.000Z",
       summary: "Yab feed entry from Ali from HiringCafe <ali@hiring.cafe>: New alert",
       actionable: true,
     })
     assert.match(second.events[0]?.body ?? "", /message_id=2/)
 
-    const third = feedEvents(source, parseFeed(atom(gmailEntry("2", "New alert"))), second.cursor)
+    const third = feedEvents(source, parseFeed(atom(gmailEntry("2", "New alert"))), second.cursor, now)
     assert.equal(third.events.length, 0)
+  })
+
+  test("stamps an undated entry with the clock it is given", () => {
+    const primed = feedEvents(source, [], undefined, now).cursor
+
+    const result = feedEvents(source, [{ id: "undated", title: "No date" }], primed, now)
+
+    assert.deepEqual(result.events.map((event) => event.at), ["2026-11-18T12:00:00.000Z"])
   })
 
   test("keeps only entries that match and do not match the exclusion", () => {
     const filtered: YabSourceRecord = { ...source, match: "interview|assessment", exclude: "webinar" }
-    const primed = feedEvents(filtered, [], undefined).cursor
+    const primed = feedEvents(filtered, [], undefined, now).cursor
     const entries = parseFeed(atom(
       gmailEntry("a", "Interview for Staff SE", "Postman", "talent@postman.com") +
       gmailEntry("b", "Interview prep webinar", "Naukri", "info@naukri.com") +
       gmailEntry("c", "Your weekly digest", "Medium", "noreply@medium.com"),
     ))
-    const result = feedEvents(filtered, entries, primed)
+    const result = feedEvents(filtered, entries, primed, now)
     assert.deepEqual(result.events.map((event) => event.id), ["entry:tag:gmail.google.com,2004:a"])
     assert.equal(result.cursor.seenIds.length, 3)
   })
@@ -115,14 +126,14 @@ describe("feed cursor", () => {
 describe("polling through Yab", () => {
   test("names a sign-in problem", async () => {
     await assert.rejects(
-      pollYab(source, undefined, async () => ({ status: 401, type: "text/html", url: source.url, body: "" })),
+      pollYab(source, undefined, async () => ({ status: 401, type: "text/html", url: source.url, body: "" }), now),
       /answered 401; sign in to the site in Yab/,
     )
   })
 
   test("names the feed by host, never its path or query", async () => {
     const secret = { ...source, url: "https://example.test/feed/secret-path-token?token=secret-query-token" }
-    const error = await pollYab(secret, undefined, async () => ({ status: 404, type: "text/html", url: secret.url, body: "" })).then(() => undefined, (failure: unknown) => failure)
+    const error = await pollYab(secret, undefined, async () => ({ status: 404, type: "text/html", url: secret.url, body: "" }), now).then(() => undefined, (failure: unknown) => failure)
     assert.ok(error instanceof Error)
     assert.match(error.message, /example\.test/)
     assert.ok(!error.message.includes("secret-path-token"), "the path is not logged")
@@ -134,7 +145,7 @@ describe("polling through Yab", () => {
     const result = await pollYab(source, undefined, async (url, space) => {
       asked.push([url, space])
       return { status: 200, type: "text/xml", url, body: atom(gmailEntry("1", "Hello")) }
-    })
+    }, now)
     assert.deepEqual(asked, [[source.url, "Personal"]])
     assert.equal(result.cursor.primed, true)
     assert.equal(result.terminal, false)
@@ -217,9 +228,11 @@ function errorReply(id, error) {
 }
 `
 
+// The real process boundary, through the host's own MCP client: these start the fake Yab script.
 describe("Yab MCP client", () => {
   let dir = ""
   const realCommand = process.env.SOURCEFED_YAB_COMMAND
+  const yab = stdioMcp(hostMcpServers)
 
   before(() => {
     dir = mkdtempSync(path.join(tmpdir(), "sourcefed-yab-"))
@@ -240,7 +253,7 @@ describe("Yab MCP client", () => {
 
   test("calls Yab's fetch tool over stdio", async () => {
     delete process.env.FAKE_YAB_MODE
-    const page = await fetchThroughYab("https://e.com/feed", "Personal")
+    const page = await fetchThroughYab(yab, "https://e.com/feed", "Personal")
     assert.equal(page.status, 200)
     assert.deepEqual(JSON.parse(page.body), {
       tool: "fetch",
@@ -251,21 +264,21 @@ describe("Yab MCP client", () => {
 
   test("reports a tool error and a server that quits", async () => {
     process.env.FAKE_YAB_MODE = "error"
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab reported the fetch failed/)
+    await assert.rejects(fetchThroughYab(yab, "https://e.com"), /Yab reported the fetch failed/)
     process.env.FAKE_YAB_MODE = "exit"
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab exited \(3\) before answering/)
+    await assert.rejects(fetchThroughYab(yab, "https://e.com"), /Yab exited \(3\) before answering/)
   })
 
   test("no byte of Yab's own words reaches the failure unless asked", async () => {
     const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
     process.env.FAKE_YAB_MODE = "leak"
-    const toolFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+    const toolFailure = await fetchThroughYab(yab, url).then(() => undefined, (error: unknown) => error)
     assert.ok(toolFailure instanceof Error)
     assert.equal(toolFailure.message, "Yab reported the fetch failed")
 
     process.env.FAKE_YAB_MODE = "exit-leak"
     process.env.FAKE_YAB_URL = url
-    const exitFailure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+    const exitFailure = await fetchThroughYab(yab, url).then(() => undefined, (error: unknown) => error)
     assert.ok(exitFailure instanceof Error)
     assert.equal(exitFailure.message, "Yab exited (3) before answering")
     delete process.env.FAKE_YAB_MODE
@@ -278,7 +291,7 @@ describe("Yab MCP client", () => {
     process.env.FAKE_YAB_URL = url
     process.env.SOURCEFED_DEBUG = "1"
     try {
-      const failure = await callYabTool("fetch", { url }).then(() => undefined, (error: unknown) => error)
+      const failure = await fetchThroughYab(yab, url).then(() => undefined, (error: unknown) => error)
       assert.ok(failure instanceof Error)
       assert.match(failure.message, /example\.test/, "the URL is cut to its host")
       assert.match(failure.message, /GET \/feed returned 401/, "a short path is not stripped from the text")
@@ -291,7 +304,7 @@ describe("Yab MCP client", () => {
 
   test("an error without a message does not crash and is still refused", async () => {
     process.env.FAKE_YAB_MODE = "error-object"
-    const failure = await callYabTool("fetch", { url: "https://e.com" }).then(() => undefined, (error: unknown) => error)
+    const failure = await fetchThroughYab(yab, "https://e.com").then(() => undefined, (error: unknown) => error)
     delete process.env.FAKE_YAB_MODE
     assert.ok(failure instanceof Error)
     assert.equal(failure.message, "Yab answered with an error (code -1)")
@@ -299,7 +312,7 @@ describe("Yab MCP client", () => {
 
   test("reports a missing Yab", async () => {
     process.env.SOURCEFED_YAB_COMMAND = path.join(dir, "missing")
-    await assert.rejects(callYabTool("fetch", { url: "https://e.com" }), /Yab could not start/)
+    await assert.rejects(fetchThroughYab(yab, "https://e.com"), /Yab could not start/)
     process.env.SOURCEFED_YAB_COMMAND = path.join(dir, "yab")
   })
 })

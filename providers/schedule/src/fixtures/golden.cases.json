@@ -1,0 +1,60 @@
+{
+  "provider": "schedule",
+  "entry": "providers/schedule/src/index.ts",
+  "export": "ScheduleMonitor",
+  "fixture": "providers/schedule/src/fixtures/golden.ts",
+  "base": "",
+  "cases": [
+    {
+      "name": "priming",
+      "now": "2026-11-18T12:00:30.000Z",
+      "build": {
+        "name": "backup",
+        "sourceType": "schedule",
+        "cron": "30 * * * *",
+        "job": "backup",
+        "timezone": "Asia/Kolkata"
+      },
+      "replies": []
+    },
+    {
+      "name": "on-time",
+      "now": "2026-11-18T13:00:45.000Z",
+      "continues": true,
+      "build": {
+        "name": "backup",
+        "sourceType": "schedule",
+        "cron": "30 * * * *",
+        "job": "backup",
+        "timezone": "Asia/Kolkata"
+      },
+      "replies": []
+    },
+    {
+      "name": "missed",
+      "now": "2026-11-18T16:30:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "backup",
+        "sourceType": "schedule",
+        "cron": "30 * * * *",
+        "job": "backup",
+        "timezone": "Asia/Kolkata"
+      },
+      "replies": []
+    },
+    {
+      "name": "late-single",
+      "now": "2026-11-18T17:10:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "backup",
+        "sourceType": "schedule",
+        "cron": "30 * * * *",
+        "job": "backup",
+        "timezone": "Asia/Kolkata"
+      },
+      "replies": []
+    }
+  ]
+}

@@ -91,7 +91,7 @@ describe("schedule", () => {
 })
 
 describe("ScheduleMonitor", () => {
-  const monitor = new ScheduleMonitor()
+  const monitor = ScheduleMonitor
 
   test("builds a source and checks every 15 seconds by default", () => {
     assert.deepEqual(monitor.build({ cron: " 0 2 * * * ", job: "nightly-audit", timezone: "Asia/Kolkata" }), nightly)

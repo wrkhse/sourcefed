@@ -11,8 +11,8 @@ export const SOURCE_MAP = {
   github: GithubMonitor,
   "github-issues": GithubIssuesMonitor,
   slack: SlackMonitor,
-  yab: new YabMonitor(),
-  schedule: new ScheduleMonitor(),
+  yab: YabMonitor,
+  schedule: ScheduleMonitor,
 }
 
 export const SOURCE_TYPES = Object.keys(SOURCE_MAP) as [string, ...string[]]
