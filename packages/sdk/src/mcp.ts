@@ -12,12 +12,22 @@ export class McpError extends Error {
   readonly failure: McpFailure
   readonly code?: number | string
   readonly exitCode?: number | null
+  /** The command that could not start, so a source can name it without knowing the host's table. */
+  readonly command?: string
+  /** How long the call waited, so a source can say so without knowing the host's timeout. */
+  readonly timeoutMs?: number
   readonly detail: string
 
   constructor(
     failure: McpFailure,
     message: string,
-    options: { readonly code?: number | string; readonly exitCode?: number | null; readonly detail?: string } = {},
+    options: {
+      readonly code?: number | string
+      readonly exitCode?: number | null
+      readonly command?: string
+      readonly timeoutMs?: number
+      readonly detail?: string
+    } = {},
   ) {
     super(message)
     this.name = "McpError"
@@ -25,6 +35,8 @@ export class McpError extends Error {
     this.detail = options.detail ?? ""
     if (options.code !== undefined) this.code = options.code
     if (options.exitCode !== undefined) this.exitCode = options.exitCode
+    if (options.command !== undefined) this.command = options.command
+    if (options.timeoutMs !== undefined) this.timeoutMs = options.timeoutMs
   }
 }
 
@@ -106,8 +118,10 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
     const send = (message: Record<string, unknown>): void => {
       child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
     }
-    const timer = setTimeout(() => finish(new McpError("timeout", `${server} did not answer in ${config.timeoutMs / 1000} s`)), config.timeoutMs)
-    const failedToStart = () => finish(new McpError("start", `${server} could not start (${config.command})`))
+    const timer = setTimeout(() => {
+      finish(new McpError("timeout", `${server} did not answer in ${config.timeoutMs / 1000} s`, { timeoutMs: config.timeoutMs }))
+    }, config.timeoutMs)
+    const failedToStart = () => finish(new McpError("start", `${server} could not start (${config.command})`, { command: config.command }))
 
     try {
       child = spawnChild(config.command, config.args)

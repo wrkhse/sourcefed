@@ -99,6 +99,7 @@ describe("stdioMcp", () => {
     await assert.rejects(mcp.call("yab", "fetch", {}), (error: McpError) => {
       assert.equal(error.failure, "start")
       assert.equal(error.message, "yab could not start (fake-server)")
+      assert.equal(error.command, "fake-server")
       return true
     })
   })
@@ -110,7 +111,7 @@ describe("stdioMcp", () => {
     const answer = mcp.call("yab", "fetch", {})
     hand.child.emit("error", new Error("ENOENT"))
 
-    await assert.rejects(answer, { failure: "start" })
+    await assert.rejects(answer, { failure: "start", command: "fake-server" })
     assert.equal(hand.kills(), 1)
   })
 
@@ -170,6 +171,7 @@ describe("stdioMcp", () => {
       await assert.rejects(answer, (error: McpError) => {
         assert.equal(error.failure, "timeout")
         assert.equal(error.message, "yab did not answer in 2 s")
+        assert.equal(error.timeoutMs, 2_000)
         return true
       })
       assert.equal(hand.kills(), 1)

@@ -1,9 +1,6 @@
-import { spawn } from "node:child_process"
 import { PollSourceError } from "@sourcefed/core"
+import { McpError, type Mcp } from "@sourcefed/sdk"
 import type { YabPage } from "../../types"
-
-const DEFAULT_YAB_COMMAND = "/Applications/yab.app/Contents/MacOS/yab"
-const TIMEOUT_MS = 45_000
 
 // Yab quotes the page and its own stderr back at us, and both can carry the feed's URL, whose
 // path or query is often the feed's only credential. So its words are never part of a failure
@@ -15,10 +12,18 @@ const MAX_QUOTED = 300
 const MIN_SECRET = 8
 
 /** Read a URL through Yab, with the cookies of the given space (or wherever the site is signed in). */
-export async function fetchThroughYab(url: string, space?: string): Promise<YabPage> {
+export async function fetchThroughYab(mcp: Mcp, url: string, space?: string): Promise<YabPage> {
   const args: Record<string, unknown> = { url, html: true }
   if (space) args.space = space
-  return parseYabFetch(await callYabTool("fetch", args), url)
+
+  let text: string
+  try {
+    text = await mcp.call("yab", "fetch", args)
+  } catch (error) {
+    throw yabFailure(error, url)
+  }
+
+  return parseYabFetch(text, url)
 }
 
 /** Yab's fetch answers `STATUS · TYPE · URL`, a blank line, then the body. */
@@ -32,78 +37,23 @@ export function parseYabFetch(text: string, url?: string): YabPage {
   return { status: code, type: type.trim(), url: rest.join(" · ").trim(), body }
 }
 
-/**
- * Call one tool on Yab's MCP server over stdio: `yab mcp` is started for the call and
- * stopped after it, so nothing stays connected between polls.
- */
-export function callYabTool(name: string, args: Record<string, unknown>): Promise<string> {
-  const command = process.env.SOURCEFED_YAB_COMMAND || DEFAULT_YAB_COMMAND
-  const url = typeof args.url === "string" ? args.url : undefined
+// The host's failure in Yab's own words, as the provider has always worded them. Anything that
+// is not a failed call, such as the host not running Yab at all, is a bug and passes through.
+function yabFailure(error: unknown, url: string): unknown {
+  if (!(error instanceof McpError)) return error
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, ["mcp"], { stdio: ["pipe", "pipe", "pipe"] })
-    let buffer = ""
-    let stderr = ""
-    let settled = false
-
-    const finish = (error: Error | undefined, value = ""): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      child.kill()
-      if (error) reject(error)
-      else resolve(value)
-    }
-    const send = (message: Record<string, unknown>): void => {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
-    }
-    const timer = setTimeout(() => finish(new PollSourceError(`Yab did not answer in ${TIMEOUT_MS / 1000} s`)), TIMEOUT_MS)
-
-    child.on("error", () => finish(new PollSourceError(`Yab could not start (${command})`)))
-    child.on("exit", (code) => {
-      finish(new PollSourceError(`Yab exited (${code ?? "signal"}) before answering${detail(stderr, url)}`))
-    })
-    child.stdin.on("error", () => {})
-    child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk
-    })
-    child.stdout.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => {
-      buffer += chunk
-      let newline = buffer.indexOf("\n")
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim()
-        buffer = buffer.slice(newline + 1)
-        newline = buffer.indexOf("\n")
-        if (!line) continue
-
-        let message: any
-        try {
-          message = JSON.parse(line)
-        } catch {
-          continue
-        }
-        if (message.id === 1) {
-          if (message.error) return finish(new PollSourceError(`Yab answered with an error${errorCode(message.error)}`))
-          send({ method: "notifications/initialized" })
-          send({ id: 2, method: "tools/call", params: { name, arguments: args } })
-        } else if (message.id === 2) {
-          if (message.error) return finish(new PollSourceError(`Yab answered with an error${errorCode(message.error)}`))
-          const content: any[] = Array.isArray(message.result?.content) ? message.result.content : []
-          const text = content.filter((part) => part?.type === "text").map((part) => String(part.text)).join("\n")
-          if (message.result?.isError) return finish(new PollSourceError(`Yab reported the ${name} failed${detail(text, url)}`))
-          return finish(undefined, text)
-        }
-      }
-    })
-
-    send({
-      id: 1,
-      method: "initialize",
-      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "sourcefed", version: "0.3" } },
-    })
-  })
+  switch (error.failure) {
+    case "start":
+      return new PollSourceError(`Yab could not start (${error.command})`)
+    case "timeout":
+      return new PollSourceError(`Yab did not answer in ${(error.timeoutMs ?? 0) / 1000} s`)
+    case "exit":
+      return new PollSourceError(`Yab exited (${error.exitCode ?? "signal"}) before answering${detail(error.detail, url)}`)
+    case "error":
+      return new PollSourceError(`Yab answered with an error${errorCode(error.code)}`)
+    case "tool":
+      return new PollSourceError(`Yab reported the fetch failed${detail(error.detail, url)}`)
+  }
 }
 
 // Yab's own words, only when the operator asked for them, redacted and bounded.
@@ -140,12 +90,10 @@ function secretParts(url: string | undefined): string[] {
   }
 }
 
-// A JSON-RPC error carries a code and sometimes a message; only the code is safe to quote, and
-// the error may not be an object at all.
-function errorCode(error: unknown): string {
-  if (typeof error !== "object" || error === null) return ""
-  const code = (error as { code?: unknown }).code
-  return typeof code === "number" || typeof code === "string" ? ` (code ${code})` : ""
+// A JSON-RPC error's message may quote the request, so only its code is quoted, and an error
+// without one is named by nothing.
+function errorCode(code: number | string | undefined): string {
+  return code === undefined ? "" : ` (code ${code})`
 }
 
 function debugEnabled(): boolean {

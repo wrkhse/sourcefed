@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sourcefed/core": "*",
+    "@sourcefed/sdk": "*",
     "croner": "11.0.0",
     "valibot": "1.4.2"
   },
