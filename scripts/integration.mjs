@@ -28,6 +28,7 @@ if (requestedScenarioNames.length > 0) console.log(`integration: ${selection}: $
 
 const PACKAGES = [
   "packages/core",
+  "packages/sdk",
   "packages/daemon",
   "packages/mcp",
   "packages/cli",
