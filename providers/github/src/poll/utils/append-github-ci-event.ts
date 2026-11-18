@@ -3,7 +3,7 @@ import { confirmStillFailing } from "./confirm-still-failing.ts"
 import type { GithubClient } from "../../api"
 import type { GithubCursor, GithubEvent } from "../../types"
 
-export async function appendGithubCiEvent(github: GithubClient, repo: string, prNumber: number, cursor: GithubCursor, events: GithubEvent[], rollup: any[]): Promise<void> {
+export async function appendGithubCiEvent(github: GithubClient, repo: string, prNumber: number, cursor: GithubCursor, events: GithubEvent[], rollup: any[], at: string): Promise<void> {
   const ciState = rollup.map((check) => check.conclusion ?? check.state ?? "PENDING").sort().join(",")
   if (!ciState || ciState === cursor.ciState) return
 
@@ -22,7 +22,7 @@ export async function appendGithubCiEvent(github: GithubClient, repo: string, pr
         id: `ci:${failureState}`,
       repo,
       prNumber,
-      at: new Date().toISOString(),
+      at,
       summary: `CI failed on #${prNumber}: ${names}`,
       body: await ciFailureDetail(github, repo, failed),
       actionable: true,

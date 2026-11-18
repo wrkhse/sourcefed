@@ -8,6 +8,8 @@ export type GoldenReply = {
   readonly status?: number
   readonly headers?: Readonly<Record<string, string>>
   readonly body?: unknown
+  /** A plain-text body, such as a job log, served as it is instead of as JSON. */
+  readonly text?: string
 }
 
 /** One request the plugin made, with its secrets removed, and its body when it sent a string (a GraphQL POST). */
@@ -100,6 +102,13 @@ export function replyResponse(reply: GoldenReply): Response {
   // A 204 or 304 may not carry a body, so it gets only the headers the reply recorded.
   if (status === 204 || status === 304) {
     return new Response(null, { status, headers: { ...reply.headers } })
+  }
+
+  if (reply.text !== undefined) {
+    return new Response(reply.text, {
+      status,
+      headers: { "content-type": "text/plain; charset=utf-8", ...reply.headers },
+    })
   }
 
   return new Response(JSON.stringify(reply.body ?? null), {

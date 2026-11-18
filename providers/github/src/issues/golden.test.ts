@@ -10,13 +10,12 @@ test("the github-issues source replays its recorded transcript", async () => {
     {
       GH_TOKEN: "test-token",
       GITHUB_TOKEN: undefined,
-      SOURCEFED_GITHUB_REQUESTS_PER_MINUTE: "75",
+      SOURCEFED_GITHUB_REQUESTS_PER_MINUTE: undefined,
     },
     async () => {
-      // At the default rate the token's burst is four polls and the recording's clock is frozen,
-      // so a fifth case would be refused for budget instead of reaching its 429. At 75 a minute
-      // the burst is eight, and no case depends on how much time passes. The limiter reads the
-      // rate when it is built, so it is set before the reset builds a fresh one.
+      // Each case runs at its own instant, so the token's budget refills between polls as it
+      // does for real monitors, and no case depends on how much real time passes. The limiter
+      // reads the rate when it is built, so the reset after the variables builds it at the default.
       resetGithubApi()
 
       await assertGolden(GITHUB_ISSUES_GOLDEN, githubIssuesSource)

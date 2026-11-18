@@ -7,6 +7,7 @@ export function appendGithubReviews(
   events: GithubEvent[],
   reviews: any[],
   historyPrimed: boolean,
+  at: string,
 ): void {
   const ref = `#${prNumber}`
   for (const review of reviews) {
@@ -23,7 +24,7 @@ export function appendGithubReviews(
           id,
       repo,
       prNumber,
-      at: review.submittedAt ?? new Date().toISOString(),
+      at: review.submittedAt ?? at,
       summary: `Review by ${review.author?.login ?? "someone"} [${review.state}] on ${ref}`,
       body: review.body,
       actionable,

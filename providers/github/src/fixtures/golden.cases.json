@@ -1,0 +1,543 @@
+{
+  "provider": "github",
+  "entry": "providers/github/src/index.ts",
+  "export": "GithubMonitor",
+  "fixture": "providers/github/src/fixtures/golden.ts",
+  "base": "https://api.github.com",
+  "env": {
+    "GH_TOKEN": "test-token",
+    "SOURCEFED_GITHUB_WEBHOOK_SECRET": "test-webhook-secret"
+  },
+  "unset": [
+    "GITHUB_TOKEN",
+    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"
+  ],
+  "cases": [
+    {
+      "name": "priming",
+      "now": "2026-11-18T12:00:00.000Z",
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "OPEN",
+                  "mergeable": "MERGEABLE",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "SUCCESS",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/41"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "body": []
+        },
+        {
+          "body": []
+        }
+      ]
+    },
+    {
+      "name": "review-and-comments",
+      "now": "2026-11-18T12:01:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "OPEN",
+                  "mergeable": "MERGEABLE",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "databaseId": 501,
+                        "author": {
+                          "login": "alice"
+                        },
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-11-18T12:00:30Z",
+                        "body": "Please add a test."
+                      }
+                    ],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "SUCCESS",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/41"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "body": [
+            {
+              "id": 601,
+              "user": {
+                "login": "bob"
+              },
+              "path": "src/a.ts",
+              "line": 3,
+              "body": "Typo here.",
+              "created_at": "2026-11-18T12:00:40Z"
+            }
+          ]
+        },
+        {
+          "body": [
+            {
+              "id": 701,
+              "user": {
+                "login": "carol"
+              },
+              "body": "Looks close.",
+              "created_at": "2026-11-18T12:00:50Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ci-failure",
+      "now": "2026-11-18T12:02:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "OPEN",
+                  "mergeable": "MERGEABLE",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "databaseId": 501,
+                        "author": {
+                          "login": "alice"
+                        },
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-11-18T12:00:30Z",
+                        "body": "Please add a test."
+                      }
+                    ],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/42"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "body": [
+            {
+              "id": 601,
+              "user": {
+                "login": "bob"
+              },
+              "path": "src/a.ts",
+              "line": 3,
+              "body": "Typo here.",
+              "created_at": "2026-11-18T12:00:40Z"
+            }
+          ]
+        },
+        {
+          "body": [
+            {
+              "id": 701,
+              "user": {
+                "login": "carol"
+              },
+              "body": "Looks close.",
+              "created_at": "2026-11-18T12:00:50Z"
+            }
+          ]
+        },
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "OPEN",
+                  "mergeable": "MERGEABLE",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "databaseId": 501,
+                        "author": {
+                          "login": "alice"
+                        },
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-11-18T12:00:30Z",
+                        "body": "Please add a test."
+                      }
+                    ],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/42"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "text": "##[group]Run npm test\nnot ok 1 - adds a schedule\n##[error]Process completed with exit code 1."
+        }
+      ]
+    },
+    {
+      "name": "conflict",
+      "now": "2026-11-18T12:03:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "OPEN",
+                  "mergeable": "CONFLICTING",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "databaseId": 501,
+                        "author": {
+                          "login": "alice"
+                        },
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-11-18T12:00:30Z",
+                        "body": "Please add a test."
+                      }
+                    ],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/42"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "body": [
+            {
+              "id": 601,
+              "user": {
+                "login": "bob"
+              },
+              "path": "src/a.ts",
+              "line": 3,
+              "body": "Typo here.",
+              "created_at": "2026-11-18T12:00:40Z"
+            }
+          ]
+        },
+        {
+          "body": [
+            {
+              "id": 701,
+              "user": {
+                "login": "carol"
+              },
+              "body": "Looks close.",
+              "created_at": "2026-11-18T12:00:50Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "merged",
+      "now": "2026-11-18T12:04:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "body": {
+            "data": {
+              "repository": {
+                "pullRequest": {
+                  "title": "Add schedules",
+                  "state": "MERGED",
+                  "mergeable": "CONFLICTING",
+                  "mergeStateStatus": "CLEAN",
+                  "reviews": {
+                    "nodes": [
+                      {
+                        "databaseId": 501,
+                        "author": {
+                          "login": "alice"
+                        },
+                        "state": "CHANGES_REQUESTED",
+                        "submittedAt": "2026-11-18T12:00:30Z",
+                        "body": "Please add a test."
+                      }
+                    ],
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    }
+                  },
+                  "statusCheckRollup": {
+                    "contexts": {
+                      "nodes": [
+                        {
+                          "name": "build",
+                          "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/example-org/example-repo/actions/runs/9/job/42"
+                        }
+                      ],
+                      "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "body": [
+            {
+              "id": 601,
+              "user": {
+                "login": "bob"
+              },
+              "path": "src/a.ts",
+              "line": 3,
+              "body": "Typo here.",
+              "created_at": "2026-11-18T12:00:40Z"
+            }
+          ]
+        },
+        {
+          "body": [
+            {
+              "id": 701,
+              "user": {
+                "login": "carol"
+              },
+              "body": "Looks close.",
+              "created_at": "2026-11-18T12:00:50Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rate-limited",
+      "now": "2026-11-18T12:05:00.000Z",
+      "build": {
+        "name": "PR 7",
+        "sourceType": "github",
+        "repo": "example-org/example-repo",
+        "prNumber": 7
+      },
+      "replies": [
+        {
+          "headers": {
+            "retry-after": "60"
+          },
+          "body": {
+            "errors": [
+              {
+                "type": "RATE_LIMITED",
+                "message": "API rate limit exceeded"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "webhooks": [
+    {
+      "name": "bad-signature",
+      "now": "2026-11-18T12:06:00.000Z",
+      "headers": {
+        "x-github-event": "pull_request_review",
+        "x-github-delivery": "delivery-1",
+        "x-hub-signature-256": "sha256=0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "body": "{\"action\":\"submitted\",\"review\":{\"id\":503,\"state\":\"commented\",\"body\":\"Unsigned.\",\"user\":{\"login\":\"mallory\"}},\"pull_request\":{\"number\":7,\"title\":\"Add schedules\"},\"repository\":{\"full_name\":\"example-org/example-repo\"},\"sender\":{\"login\":\"mallory\"}}"
+    },
+    {
+      "name": "review",
+      "now": "2026-11-18T12:07:00.000Z",
+      "headers": {
+        "x-github-event": "pull_request_review",
+        "x-github-delivery": "delivery-2",
+        "x-hub-signature-256": "sha256=92ea9ea5659d7d59058324959009cfbc07d17b934213969ec32c98d6ba58b7bc"
+      },
+      "body": "{\"action\":\"submitted\",\"review\":{\"id\":502,\"state\":\"commented\",\"body\":\"One more nit.\",\"user\":{\"login\":\"alice\"}},\"pull_request\":{\"number\":7,\"title\":\"Add schedules\"},\"repository\":{\"full_name\":\"example-org/example-repo\",\"updated_at\":\"2026-11-18T12:07:00Z\"},\"sender\":{\"login\":\"alice\"}}",
+      "cursor": {
+        "reviewIds": [
+          "rev:501"
+        ],
+        "commentIds": [
+          "c:601",
+          "issue:701"
+        ],
+        "historyPrimed": true,
+        "lineCommentsPrimed": true,
+        "conversationCommentsPrimed": true,
+        "ciState": "SUCCESS",
+        "ciFailureState": "",
+        "mergeable": "MERGEABLE",
+        "prState": "OPEN"
+      }
+    },
+    {
+      "name": "ping",
+      "now": "2026-11-18T12:08:00.000Z",
+      "headers": {
+        "x-github-event": "ping",
+        "x-github-delivery": "delivery-3",
+        "x-hub-signature-256": "sha256=e9f46345f1b3b0fcaa3f17c1f5673a041f084ffb28d51406bfe6f464a52083a5"
+      },
+      "body": "{\"zen\":\"Design for failure.\",\"hook_id\":1}"
+    },
+    {
+      "name": "merged",
+      "now": "2026-11-18T12:09:00.000Z",
+      "headers": {
+        "x-github-event": "pull_request",
+        "x-github-delivery": "delivery-4",
+        "x-hub-signature-256": "sha256=92f1a692cc922c648ebfd42771a14b38a342ebf9d5ff105ac897e6d857313b08"
+      },
+      "body": "{\"action\":\"closed\",\"pull_request\":{\"number\":7,\"merged\":true,\"title\":\"Add schedules\"},\"repository\":{\"full_name\":\"example-org/example-repo\"}}"
+    }
+  ]
+}

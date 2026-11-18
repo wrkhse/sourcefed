@@ -3,6 +3,10 @@ import { describe, test } from "node:test"
 import { parseGithubWebhook } from "./webhook"
 import { githubPullRequestNumber } from "./webhook/utils/pull-request-number.ts"
 
+// The host's clock, the time an event falls back to when its payload names none.
+const NOW = "2026-11-18T12:00:00.000Z"
+const now = () => new Date(NOW)
+
 describe("GitHub webhook events", () => {
   test("extracts pull request numbers from check payloads", () => {
     assert.equal(githubPullRequestNumber({ check_run: { pull_requests: [{ number: 1671 }] } }, "check_run"), 1671)
@@ -19,7 +23,7 @@ describe("GitHub webhook events", () => {
         pull_requests: [{ number: 1671 }],
       },
       sender: { login: "github-actions[bot]" },
-    }, "check_run", "delivery-1")
+    }, "check_run", "delivery-1", now)
 
     assert.partialDeepStrictEqual(event, {
       source: { type: "github", repo: "example-org/example-repo", prNumber: 1671 },
@@ -37,7 +41,7 @@ describe("GitHub webhook events", () => {
         pull_requests: [{ number: 1671 }],
       },
       sender: { login: "github-actions[bot]" },
-    }, "check_suite", "delivery-2")
+    }, "check_suite", "delivery-2", now)
 
     assert.partialDeepStrictEqual(event, {
       source: { type: "github", repo: "example-org/example-repo", prNumber: 1671 },
@@ -52,11 +56,12 @@ describe("GitHub webhook events", () => {
       repository: { full_name: "example-org/example-repo" },
       pull_request: { number: 1671, merged: false },
       sender: { login: "someone" },
-    }, "pull_request", "delivery-3")
+    }, "pull_request", "delivery-3", now)
 
     assert.partialDeepStrictEqual(event, {
       kind: "closed",
       id: "pr:CLOSED",
+      at: NOW,
       terminal: true,
     })
   })
@@ -67,7 +72,7 @@ describe("GitHub webhook events", () => {
       repository: { full_name: "example-org/example-repo" },
       pull_request: { number: 1678 },
       sender: { login: "github-actions[bot]" },
-    }, "pull_request", "delivery-4")
+    }, "pull_request", "delivery-4", now)
 
     assert.equal(event, undefined)
   })
@@ -79,7 +84,7 @@ describe("GitHub webhook events", () => {
       pull_request: { number: 1678 },
       review: { id: 42, state: "commented", body: "" },
       sender: { login: "claude[bot]" },
-    }, "pull_request_review", "delivery-5")
+    }, "pull_request_review", "delivery-5", now)
 
     assert.equal(event, undefined)
   })
@@ -90,7 +95,7 @@ describe("GitHub webhook events", () => {
       repository: { full_name: "example-org/example-repo" },
       pull_request: { number: 1671, title: "  Add navigate " },
       sender: { login: "someone" },
-    }, "pull_request", "delivery-7")
+    }, "pull_request", "delivery-7", now)
 
     assert.deepEqual(event?.subject, {
       type: "github-pull-request",
@@ -108,7 +113,7 @@ describe("GitHub webhook events", () => {
       issue: { number: 1672, title: "Fix the tick race" },
       comment: { id: 1, body: "Please bound it." },
       sender: { login: "someone" },
-    }, "issue_comment", "delivery-8")
+    }, "issue_comment", "delivery-8", now)
 
     assert.deepEqual(event?.subject, {
       type: "github-pull-request",
@@ -126,7 +131,7 @@ describe("GitHub webhook events", () => {
       pull_request: { number: 1678 },
       review: { id: 43, state: "commented", body: "Please update the assertion." },
       sender: { login: "claude[bot]" },
-    }, "pull_request_review", "delivery-6")
+    }, "pull_request_review", "delivery-6", now)
 
     assert.partialDeepStrictEqual(event, {
       body: "Please update the assertion.",

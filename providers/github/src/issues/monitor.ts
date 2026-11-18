@@ -54,7 +54,7 @@ export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
     if (!token) throw new PollSourceError("GH_TOKEN or GITHUB_TOKEN is required for github-issues monitors")
 
     // An issues poll sends only REST requests, so a GraphQL wait does not hold it.
-    const github = GithubClient.open(token, monitorId, ["rest"], cursor === undefined, http)
+    const github = GithubClient.open(token, monitorId, ["rest"], cursor === undefined, http, now)
     if (!github) return DEFERRED
 
     const result = await deferOnWait(() => pollGithubIssues(source, cursor, (url, headers) => github.request(url, headers), now))

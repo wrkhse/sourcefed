@@ -10,6 +10,7 @@ export function appendComments(
   historyPrimed: boolean,
   summary: (comment: any) => string,
   body: (comment: any) => string,
+  at: string,
 ): void {
   for (const comment of comments) {
     const id = idPrefix + String(comment.id)
@@ -22,7 +23,7 @@ export function appendComments(
         id,
       repo,
       prNumber,
-      at: comment.created_at ?? new Date().toISOString(),
+      at: comment.created_at ?? at,
       summary: summary(comment),
       body: text,
       actionable: Boolean(text.trim()),

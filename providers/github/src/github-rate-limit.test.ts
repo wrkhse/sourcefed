@@ -143,7 +143,7 @@ function newRuntime(delivered: MonitorEvent[]): MonitorRuntime {
   return new MonitorRuntime({
     store: new InMemoryMonitorStore(),
     sink: { deliver: async ({ event }) => { delivered.push(event); return { ok: true } } },
-    sources: { github: new GithubMonitor(), "github-issues": GithubIssuesMonitor },
+    sources: { github: GithubMonitor, "github-issues": GithubIssuesMonitor },
     sourceForWebhookPath: () => undefined,
   })
 }

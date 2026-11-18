@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { afterEach, describe, test } from "node:test"
+import { fetchHttp } from "@sourcefed/sdk"
 import { GithubClient, resetGithubApi } from "./client.ts"
 import { fetchJobLog } from "./logs.ts"
 import { fetchPrData } from "./pr.ts"
@@ -16,7 +17,7 @@ afterEach(() => {
 
 function client(): GithubClient {
   resetGithubApi()
-  return GithubClient.open("test-token", "m1", ["graphql", "rest"])!
+  return GithubClient.open("test-token", "m1", ["graphql", "rest"], false, fetchHttp(), () => new Date())!
 }
 
 describe("GitHub direct API", () => {

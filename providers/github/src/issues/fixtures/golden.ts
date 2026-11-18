@@ -5,10 +5,10 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
   "provider": "github-issues",
   "recordedFrom": "0a1a5e7",
   "base": "https://api.github.com",
-  "now": "2026-11-18T12:00:00.000Z",
   "cases": [
     {
       "name": "priming",
+      "now": "2026-11-18T12:00:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -140,6 +140,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
     },
     {
       "name": "not-modified",
+      "now": "2026-11-18T12:01:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -242,6 +243,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
     },
     {
       "name": "change",
+      "now": "2026-11-18T12:02:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -364,8 +366,8 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             ]
           },
           "kind": "item.unmatched",
-          "id": "item.unmatched:example-org/example-repo#48:2026-11-18T12:00:00.000Z",
-          "at": "2026-11-18T12:00:00.000Z",
+          "id": "item.unmatched:example-org/example-repo#48:2026-11-18T12:02:00.000Z",
+          "at": "2026-11-18T12:02:00.000Z",
           "summary": "GitHub issue example-org/example-repo#48 no longer matches label agent",
           "body": "https://github.com/example-org/example-repo/issues/48",
           "actionable": false,
@@ -386,8 +388,8 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             ]
           },
           "kind": "item.matched",
-          "id": "item.matched:example-org/example-repo#51:2026-11-18T12:00:00.000Z",
-          "at": "2026-11-18T12:00:00.000Z",
+          "id": "item.matched:example-org/example-repo#51:2026-11-18T12:02:00.000Z",
+          "at": "2026-11-18T12:02:00.000Z",
           "summary": "GitHub issue example-org/example-repo#51 matches label agent: Issue 51",
           "body": "https://github.com/example-org/example-repo/issues/51",
           "actionable": true,
@@ -414,6 +416,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
     },
     {
       "name": "search",
+      "now": "2026-11-18T12:03:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -522,8 +525,8 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "includeExisting": true
           },
           "kind": "item.matched",
-          "id": "item.matched:example-org/example-repo#52:2026-11-18T12:00:00.000Z",
-          "at": "2026-11-18T12:00:00.000Z",
+          "id": "item.matched:example-org/example-repo#52:2026-11-18T12:03:00.000Z",
+          "at": "2026-11-18T12:03:00.000Z",
           "summary": "GitHub issue example-org/example-repo#52 matches label agent, \"milestone:v2\": Issue 52",
           "body": "https://github.com/example-org/example-repo/issues/52",
           "actionable": true,
@@ -548,6 +551,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
     },
     {
       "name": "rate-limited",
+      "now": "2026-11-18T12:04:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",

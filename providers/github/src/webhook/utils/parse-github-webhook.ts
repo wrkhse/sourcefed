@@ -5,7 +5,7 @@ import { fallbackGithubEvent } from "./fallback-github-event.ts"
 import { githubEventHandlers } from "./github-event-handlers.ts"
 import { githubPullRequestNumber } from "./pull-request-number.ts"
 
-export function parseGithubWebhook(payload: any, eventName: string, _deliveryId: string): MonitorEvent | undefined {
+export function parseGithubWebhook(payload: any, eventName: string, _deliveryId: string, now: () => Date): MonitorEvent | undefined {
   const repo = payload.repository?.full_name
   const prNumber = githubPullRequestNumber(payload, eventName)
   if (!repo || prNumber === undefined) return undefined
@@ -22,7 +22,7 @@ export function parseGithubWebhook(payload: any, eventName: string, _deliveryId:
     source: { type: "github", repo, prNumber },
     kind: shape.kind,
     id: shape.id,
-    at: payload.repository?.updated_at ?? new Date().toISOString(),
+    at: payload.repository?.updated_at ?? now().toISOString(),
     summary: shape.summary,
     body: htmlToMarkdown(body || undefined),
     actionable: shape.actionable,

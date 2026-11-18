@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { afterEach, describe, test } from "node:test"
+import { fetchHttp } from "@sourcefed/sdk"
 import { GithubClient, resetGithubApi } from "../../api"
 import { ciFailureDetail } from "./ci-failure-detail.ts"
 import { RECORDED_FAILURES, type RecordedJob, type RecordedRun } from "./fixtures/recorded-ci-runs.ts"
@@ -15,7 +16,7 @@ afterEach(() => {
 
 function client(): GithubClient {
   resetGithubApi()
-  return GithubClient.open("test-token", "m1", ["graphql", "rest"])!
+  return GithubClient.open("test-token", "m1", ["graphql", "rest"], false, fetchHttp(), () => new Date())!
 }
 
 describe("CI failure detail", () => {

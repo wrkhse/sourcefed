@@ -215,6 +215,37 @@ describe("assertGolden", () => {
     await assertGolden(clocked, stamped)
   })
 
+  test("serves a text reply as its plain body", async () => {
+    const [first] = fixture.cases
+    const logged: SourceDefinition<FakeSource> = {
+      ...definition,
+      poll: async ({ source, http }) => {
+        const response = await http.fetch(`https://fake.test/${source.channel}/log`)
+
+        return {
+          events: [],
+          cursor: { type: response.headers.get("content-type"), text: await response.text() },
+          terminal: false,
+        }
+      },
+    }
+    const plain: GoldenFixture = {
+      ...fixture,
+      cases: [
+        {
+          ...first,
+          name: "log",
+          replies: [{ text: "not ok 1\nexit code 1" }],
+          requests: [{ method: "GET", url: "https://fake.test/general/log", headers: {} }],
+          events: [],
+          cursorAfter: { type: "text/plain; charset=utf-8", text: "not ok 1\nexit code 1" },
+        },
+      ],
+    }
+
+    await assertGolden(plain, logged)
+  })
+
   test("records a string request body and holds the replay to it", async () => {
     const [first] = fixture.cases
     const graphql: SourceDefinition<FakeSource> = {
