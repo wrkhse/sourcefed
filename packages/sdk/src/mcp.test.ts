@@ -109,15 +109,75 @@ describe("stdioMcp", () => {
     })
   })
 
-  test("a child that emits error is a start failure", async () => {
+  test("an error before the child spawned is a start failure", async () => {
     const hand = handChild()
     const mcp = stdioMcp(() => server, spawnOnce(hand.child))
 
     const answer = mcp.call("yab", "fetch", {})
     hand.child.emit("error", new Error("ENOENT"))
 
-    await assert.rejects(answer, { failure: "start", command: "fake-server" })
+    await assert.rejects(answer, (error: McpError) => {
+      assert.equal(error.failure, "start")
+      assert.equal(error.message, "yab could not start (fake-server)")
+      assert.equal(error.command, "fake-server")
+      return true
+    })
     assert.equal(hand.kills(), 1)
+  })
+
+  test("an error after the child spawned is a broken call with the error in detail", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+
+    const answer = mcp.call("yab", "fetch", {})
+    hand.child.emit("spawn")
+    hand.child.emit("error", new Error("write EPIPE"))
+
+    await assert.rejects(answer, (error: McpError) => {
+      assert.equal(error.failure, "broken")
+      assert.equal(error.message, "yab failed while answering")
+      assert.equal(error.detail, "write EPIPE")
+      assert.equal(error.command, undefined)
+      return true
+    })
+    assert.deepEqual(hand.signals, ["SIGTERM"])
+  })
+
+  test("an error after the child wrote output is a broken call too", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+
+    const answer = mcp.call("yab", "fetch", {})
+    hand.child.stderr.write("starting")
+    await tick()
+    hand.child.emit("error", new Error("write EPIPE"))
+
+    await assert.rejects(answer, { failure: "broken", detail: "write EPIPE" })
+  })
+
+  test("once the call has answered, nothing the child does reaches it", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+
+    const answer = mcp.call("yab", "fetch", {})
+    await tick()
+    hand.say({ jsonrpc: "2.0", id: 1, result: {} })
+    await tick()
+    hand.say({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "ok" }] } })
+    assert.equal(await answer, "ok")
+
+    assert.equal(hand.child.listenerCount("spawn"), 0)
+    assert.equal(hand.child.listenerCount("exit"), 0)
+    assert.equal(hand.child.stdout.listenerCount("data"), 0)
+    assert.equal(hand.child.stderr.listenerCount("data"), 0)
+
+    // A late error must not throw for want of a listener, nor signal the dropped child.
+    hand.child.stdout.write("late\n")
+    hand.child.stderr.write("late")
+    hand.child.emit("exit", 1)
+    hand.child.emit("error", new Error("late"))
+    await tick()
+    assert.deepEqual(hand.signals, ["SIGTERM"])
   })
 
   test("an exit before answering keeps stderr in detail, out of the message", async () => {

@@ -161,6 +161,17 @@ describe("polling through Yab", () => {
     assert.throws(() => parseYabFetch("no tab, see tabs"), /not the expected shape/)
   })
 
+  test("a Yab that broke while answering says so and quotes nothing", async () => {
+    const url = "https://example.test/feed/secret-path-token"
+    const broken = new McpError("broken", "yab failed while answering", { detail: `EPIPE writing ${url}` })
+    const yab = { call: () => Promise.reject(broken) }
+
+    await assert.rejects(fetchThroughYab(yab, url), (error: Error) => {
+      assert.equal(error.message, "Yab failed while answering")
+      return true
+    })
+  })
+
   test("an unexpected answer quotes nothing unless SOURCEFED_DEBUG is set", () => {
     const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
     const failure = (() => {
@@ -207,7 +218,7 @@ process.stdin.on("data", (chunk) => {
     const mode = process.env.FAKE_YAB_MODE
     if (mode === "error-object") return errorReply(message.id, { code: -1 })
     if (mode === "split") {
-      const line = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: page(message) }] } }) + "\n"
+      const line = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: page(message) }] } }) + "\\n"
       process.stdout.write(line.slice(0, 40))
       setTimeout(() => process.stdout.write(line.slice(40)), 50)
       continue

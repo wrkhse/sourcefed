@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 
 /** Why a tool call failed, in the terms a source's own message needs. */
-export type McpFailure = "start" | "timeout" | "exit" | "error" | "tool" | "overflow"
+export type McpFailure = "start" | "broken" | "timeout" | "exit" | "error" | "tool" | "overflow"
 
 /**
  * A tool call that produced no text. `detail` is the server's own words (its stderr, or the
@@ -55,6 +55,7 @@ export type McpServer = { readonly command: string; readonly args: readonly stri
 type McpStream = {
   setEncoding(encoding: "utf8"): unknown
   on(event: "data", listener: (chunk: string) => void): unknown
+  removeListener(event: "data", listener: (chunk: string) => void): unknown
 }
 
 /** The part of a child process the client uses, so a test can supply one without a process. */
@@ -65,8 +66,12 @@ export type McpChild = {
   }
   readonly stdout: McpStream
   readonly stderr: McpStream
+  on(event: "spawn", listener: () => void): unknown
   on(event: "error", listener: (error: Error) => void): unknown
   on(event: "exit", listener: (code: number | null) => void): unknown
+  removeListener(event: "spawn", listener: () => void): unknown
+  removeListener(event: "error", listener: (error: Error) => void): unknown
+  removeListener(event: "exit", listener: (code: number | null) => void): unknown
   kill(signal?: NodeJS.Signals): unknown
 }
 
@@ -126,6 +131,7 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
     let buffer = ""
     let bufferBytes = 0
     let stderr = ""
+    let started = false
     let settled = false
     let gone = false
     let delivered = false
@@ -136,6 +142,7 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
       if (delivered || !outcome) return
       delivered = true
       clearTimeout(graceTimer)
+      detach()
       if (outcome.error) reject(outcome.error)
       else resolve(outcome.value)
     }
@@ -165,12 +172,6 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
     }, config.timeoutMs)
     const failedToStart = () => finish(new McpError("start", `${server} could not start (${config.command})`, { command: config.command }))
 
-    try {
-      child = spawnChild(config.command, config.args)
-    } catch {
-      return failedToStart()
-    }
-
     const onLine = (line: string): void => {
       let message: any
       try {
@@ -191,28 +192,33 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
         finish(undefined, text)
       }
     }
+    const onSpawn = (): void => {
+      started = true
+    }
+    const onError = (error: Error): void => {
+      // A child that has started is a process still: the call fails, then stops it and waits as
+      // any settled call does.
+      if (started) return finish(new McpError("broken", `${server} failed while answering`, { detail: error.message }))
 
-    // A child that could not start has no process to wait for: it is asked to stop, and the
-    // call answers at once.
-    child.on("error", () => {
+      // A child that could not start has no process to wait for: it is asked to stop, and the
+      // call answers at once.
       const first = !settled
       gone = true
       failedToStart()
       if (first) child?.kill("SIGTERM")
       deliver()
-    })
-    child.on("exit", (code) => {
+    }
+    const onExit = (code: number | null): void => {
       gone = true
       finish(new McpError("exit", `${server} exited (${code ?? "signal"}) before answering`, { exitCode: code, detail: stderr }))
       deliver()
-    })
-    child.stdin.on("error", () => {})
-    child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk) => {
+    }
+    const onStderr = (chunk: string): void => {
+      started = true
       if (stderr.length < MAX_DETAIL_CHARS) stderr = (stderr + chunk).slice(0, MAX_DETAIL_CHARS)
-    })
-    child.stdout.setEncoding("utf8")
-    child.stdout.on("data", (chunk) => {
+    }
+    const onStdout = (chunk: string): void => {
+      started = true
       if (settled) return
       buffer += chunk
       bufferBytes += Buffer.byteLength(chunk)
@@ -231,7 +237,34 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
         const mib = MAX_OUTPUT_BYTES / 1024 / 1024
         finish(new McpError("overflow", `${server} answered more than ${mib} MiB`, { limitBytes: MAX_OUTPUT_BYTES }))
       }
-    })
+    }
+    // Once the call has answered the child is dropped, so nothing it does afterwards reaches the
+    // call. Only the call's own listeners go: removeAllListeners would also take node's, which
+    // its "close" event counts on. An error with no listener throws, so a late one is ignored.
+    const detach = (): void => {
+      if (!child) return
+      child.removeListener("spawn", onSpawn)
+      child.removeListener("error", onError)
+      child.removeListener("exit", onExit)
+      child.stdout.removeListener("data", onStdout)
+      child.stderr.removeListener("data", onStderr)
+      child.on("error", ignore)
+    }
+
+    try {
+      child = spawnChild(config.command, config.args)
+    } catch {
+      return failedToStart()
+    }
+
+    child.on("spawn", onSpawn)
+    child.on("error", onError)
+    child.on("exit", onExit)
+    child.stdin.on("error", ignore)
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", onStderr)
+    child.stdout.setEncoding("utf8")
+    child.stdout.on("data", onStdout)
 
     send({
       id: 1,
@@ -240,6 +273,9 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
     })
   })
 }
+
+// A stopped child's pipe may still fail a write, and an error event with no listener throws.
+function ignore(): void {}
 
 // Only the code goes in the message; the server's own words may quote the request, so they are detail.
 function rpcError(server: string, error: unknown): McpError {

@@ -45,6 +45,8 @@ function yabFailure(error: unknown, url: string): unknown {
   switch (error.failure) {
     case "start":
       return new PollSourceError(`Yab could not start (${error.command})`)
+    case "broken":
+      return new PollSourceError(`Yab failed while answering${detail(error.detail, url)}`)
     case "timeout":
       return new PollSourceError(`Yab did not answer in ${(error.timeoutMs ?? 0) / 1000} s`)
     case "exit":

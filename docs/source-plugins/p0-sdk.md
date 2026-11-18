@@ -221,13 +221,19 @@ export function hostMcpServers(name: string): McpServer | undefined;
 ```
 
 A call that produces no text rejects with an `McpError`. The server's own
-words (its stderr, or the tool's failure text) are in `detail` and never in
-`message`, because they can quote what the source sent, such as a feed URL
-whose path is its credential.
+words (its stderr, its error's message, or the tool's failure text) are in
+`detail` and never in `message`, because they can quote what the source sent,
+such as a feed URL whose path is its credential.
+
+An `error` from the child means one of two things. Before the child has
+started (node's `spawn` event, or any output) there is no process, so the call
+answers `start` at once, naming the command. After it the process is still
+there, so the call answers `broken`, "yab failed while answering", with the
+error's message in `detail`, and stops the child as any settled call does.
 
 ```ts
 export type McpFailure =
-  "start" | "timeout" | "exit" | "error" | "tool" | "overflow"
+  "start" | "broken" | "timeout" | "exit" | "error" | "tool" | "overflow"
 
 export class McpError extends Error {
   readonly failure: McpFailure
@@ -244,17 +250,28 @@ Each call is bounded:
 
 | Bound | Value |
 | --- | --- |
-| Output a server may send unfinished | 16 MiB, then `overflow` |
-| Stderr kept as `detail` | the first 4096 characters |
-| Stopping a child | SIGTERM, then SIGKILL two seconds later |
-| A call that never sees its child exit | answers two seconds after SIGKILL |
+| Output not yet ended by a newline | past 16 MiB the call fails with `overflow` |
+| Stderr kept as `detail` | its first 4096 characters |
+| A settled call's child | SIGTERM, then SIGKILL two seconds later |
+| The answer | when the child exits, or two seconds after SIGKILL whatever happens |
 | A call's total time | at most `timeoutMs` plus four seconds |
+
+Stderr keeps 4096 characters, not the 300 a source quotes, because a source
+redacts before it quotes: text cut before redaction could end inside a URL and
+leave a credential that no longer looks like one. 4096 leaves redaction whole
+text to work on and still bounds memory.
+
+Once a call answers, it removes the listeners it put on the child and its
+streams, so nothing the child does afterwards reaches it. Node's own listeners
+stay, and a late `error` lands in a listener that ignores it, since an error
+event with no listener throws.
 
 **`now`.** The clock a source stamps events with. The host passes
 `new Date()`; a recorded poll replays at its recorded instant.
 
 **Verified by** `http.test.ts` and `mcp.test.ts` in `packages/sdk/src`: a line
-split across chunks, each bound, the signal order, and a child that never exits.
+split across chunks, each bound, the signal order, a child that never exits, an
+error before and after the child started, and late events after the answer.
 The "Yab MCP client" tests in `providers/yab/src/yab.test.ts` run the same
 client against a fake Yab started as a real process, including a child that
 ignores SIGTERM.
@@ -523,6 +540,18 @@ cannot skip the audit. The keys it checks:
 - `slack:D999`
 - `yab:Personal:https://mail.google.com/mail/u/0/feed/atom`
 - `schedule:backup:30 * * * *:Asia/Kolkata`
+
+What it proves: the records the pre-SDK code writes keep their keys under the
+SDK, and their cursors parse. It does not by itself cover every existing
+install's file, since it builds its records from the recorded polls and reads no
+install.
+
+One live install was checked once, by hand. A read-only copy of one owner's
+`monitors.json`, 81 records (github 28, jira 24, slack 26, yab 3), was checked
+against the new definitions with the same rules: 73 passed, 8 had never been
+polled and had no cursor yet (github 1, slack 7), and none failed. The registry
+schema passed. The file had no jira-query, github-issues or schedule monitors.
+No value was recorded, and the copy was deleted.
 
 **Verified by** the test itself, which runs in `npm run check`.
 
