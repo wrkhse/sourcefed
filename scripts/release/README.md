@@ -47,3 +47,21 @@ Run safety tests independently with:
 ```sh
 node --test scripts/release/tooling.test.mjs
 ```
+
+## Candidates and final releases
+
+Pushing a tag runs [release.yml](../../.github/workflows/release.yml), and the
+tag picks the job:
+
+| Tag | Job | Result |
+| --- | --- | --- |
+| `v0.6.0-rc.1`, any tag with a `-` | `candidate` | GitHub prerelease only |
+| `v0.6.0` | `publish` | Staged on npm for approval |
+
+`candidate` runs `npm run check`, packs `@fdcn/sourcefed`, and publishes a
+GitHub prerelease with the tarball and its `SHA256SUMS`; nothing goes to npm.
+`publish` runs the same check and stages the package on npm for approval.
+
+The local scripts (`pins`, `homebrew`, `registry`, `publish`) are for final
+releases. `pins`, `homebrew` and `publish` match final versions only
+(`[\d.]+`), and `registry` checks npm, which holds no candidate.

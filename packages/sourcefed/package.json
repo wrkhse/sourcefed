@@ -1,6 +1,6 @@
 {
   "name": "@fdcn/sourcefed",
-  "version": "0.5.2",
+  "version": "0.6.0-rc.1",
   "description": "Live Jira, GitHub, and Slack monitoring for agent hosts: CLI, daemon, MCP server, and host plugins.",
   "license": "MIT",
   "repository": {
