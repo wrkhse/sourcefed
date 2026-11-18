@@ -127,151 +127,205 @@ const KILL_GRACE_MS = 2_000
 
 function callTool(server: string, config: McpServer, tool: string, args: Readonly<Record<string, unknown>>, spawnChild: McpSpawn): Promise<string> {
   return new Promise((resolve, reject) => {
-    let child: McpChild | undefined
-    let buffer = ""
-    let bufferBytes = 0
-    let stderr = ""
-    let started = false
-    let settled = false
-    let gone = false
-    let delivered = false
-    let outcome: { readonly error: Error | undefined; readonly value: string } | undefined
-    let graceTimer: ReturnType<typeof setTimeout> | undefined
+    new ToolCall(server, config, tool, args, resolve, reject).start(spawnChild)
+  })
+}
 
-    const deliver = (): void => {
-      if (delivered || !outcome) return
-      delivered = true
-      clearTimeout(graceTimer)
-      detach()
-      if (outcome.error) reject(outcome.error)
-      else resolve(outcome.value)
-    }
-    // The outcome is decided here but delivered only once the child has gone, so a server that
-    // ignores SIGTERM cannot outlive the call.
-    const finish = (error: Error | undefined, value = ""): void => {
-      if (settled) return
-      settled = true
-      outcome = { error, value }
-      clearTimeout(timer)
-      if (gone || !child) return deliver()
+type Outcome = { readonly error: Error | undefined; readonly value: string }
 
-      // A child may exit inside kill(); then it has gone and nothing is left to wait for.
-      child.kill("SIGTERM")
-      if (delivered) return
-      graceTimer = setTimeout(() => {
-        child?.kill("SIGKILL")
-        if (delivered) return
-        graceTimer = setTimeout(deliver, KILL_GRACE_MS)
-      }, KILL_GRACE_MS)
-    }
-    const send = (message: Record<string, unknown>): void => {
-      child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
-    }
-    const timer = setTimeout(() => {
-      finish(new McpError("timeout", `${server} did not answer in ${config.timeoutMs / 1000} s`, { timeoutMs: config.timeoutMs }))
+/**
+ * One tool call: the protocol turns the child's output into the next message or an outcome, the
+ * lifetime stops the child, and the outcome is decided once and delivered once the child has gone.
+ */
+class ToolCall {
+  private readonly server: string
+  private readonly config: McpServer
+  private readonly tool: string
+  private readonly args: Readonly<Record<string, unknown>>
+  private readonly resolve: (value: string) => void
+  private readonly reject: (error: Error) => void
+  private readonly timer: ReturnType<typeof setTimeout>
+  private child: McpChild | undefined
+  private buffer = ""
+  private bufferBytes = 0
+  private stderr = ""
+  private started = false
+  private settled = false
+  private gone = false
+  private delivered = false
+  private outcome: Outcome | undefined
+  private graceTimer: ReturnType<typeof setTimeout> | undefined
+
+  constructor(
+    server: string,
+    config: McpServer,
+    tool: string,
+    args: Readonly<Record<string, unknown>>,
+    resolve: (value: string) => void,
+    reject: (error: Error) => void,
+  ) {
+    this.server = server
+    this.config = config
+    this.tool = tool
+    this.args = args
+    this.resolve = resolve
+    this.reject = reject
+    this.timer = setTimeout(() => {
+      this.finish(new McpError("timeout", `${server} did not answer in ${config.timeoutMs / 1000} s`, { timeoutMs: config.timeoutMs }))
     }, config.timeoutMs)
-    const failedToStart = () => finish(new McpError("start", `${server} could not start (${config.command})`, { command: config.command }))
+  }
 
-    const onLine = (line: string): void => {
-      let message: any
-      try {
-        message = JSON.parse(line)
-      } catch {
-        return
-      }
-
-      if (message.id === 1) {
-        if (message.error) return finish(rpcError(server, message.error))
-        send({ method: "notifications/initialized" })
-        send({ id: 2, method: "tools/call", params: { name: tool, arguments: args } })
-      } else if (message.id === 2) {
-        if (message.error) return finish(rpcError(server, message.error))
-        const content: any[] = Array.isArray(message.result?.content) ? message.result.content : []
-        const text = content.filter((part) => part?.type === "text").map((part) => String(part.text)).join("\n")
-        if (message.result?.isError) return finish(new McpError("tool", `${server} reported the ${tool} failed`, { detail: text }))
-        finish(undefined, text)
-      }
-    }
-    const onSpawn = (): void => {
-      started = true
-    }
-    const onError = (error: Error): void => {
-      // A child that has started is a process still: the call fails, then stops it and waits as
-      // any settled call does.
-      if (started) return finish(new McpError("broken", `${server} failed while answering`, { detail: error.message }))
-
-      // A child that could not start has no process to wait for: it is asked to stop, and the
-      // call answers at once.
-      const first = !settled
-      gone = true
-      failedToStart()
-      if (first) child?.kill("SIGTERM")
-      deliver()
-    }
-    const onExit = (code: number | null): void => {
-      gone = true
-      finish(new McpError("exit", `${server} exited (${code ?? "signal"}) before answering`, { exitCode: code, detail: stderr }))
-      deliver()
-    }
-    const onStderr = (chunk: string): void => {
-      started = true
-      if (stderr.length < MAX_DETAIL_CHARS) stderr = (stderr + chunk).slice(0, MAX_DETAIL_CHARS)
-    }
-    const onStdout = (chunk: string): void => {
-      started = true
-      if (settled) return
-      buffer += chunk
-      bufferBytes += Buffer.byteLength(chunk)
-      let newline = buffer.indexOf("\n")
-
-      while (newline >= 0 && !settled) {
-        const raw = buffer.slice(0, newline + 1)
-        const line = raw.trim()
-        buffer = buffer.slice(newline + 1)
-        bufferBytes -= Buffer.byteLength(raw)
-        newline = buffer.indexOf("\n")
-        if (line) onLine(line)
-      }
-
-      if (bufferBytes > MAX_OUTPUT_BYTES) {
-        const mib = MAX_OUTPUT_BYTES / 1024 / 1024
-        finish(new McpError("overflow", `${server} answered more than ${mib} MiB`, { limitBytes: MAX_OUTPUT_BYTES }))
-      }
-    }
-    // Once the call has answered the child is dropped, so nothing it does afterwards reaches the
-    // call. Only the call's own listeners go: removeAllListeners would also take node's, which
-    // its "close" event counts on. An error with no listener throws, so a late one is ignored.
-    const detach = (): void => {
-      if (!child) return
-      child.removeListener("spawn", onSpawn)
-      child.removeListener("error", onError)
-      child.removeListener("exit", onExit)
-      child.stdout.removeListener("data", onStdout)
-      child.stderr.removeListener("data", onStderr)
-      child.on("error", ignore)
-    }
-
+  start(spawnChild: McpSpawn): void {
     try {
-      child = spawnChild(config.command, config.args)
+      this.child = spawnChild(this.config.command, this.config.args)
     } catch {
-      return failedToStart()
+      return this.failedToStart()
     }
 
-    child.on("spawn", onSpawn)
-    child.on("error", onError)
-    child.on("exit", onExit)
+    const child = this.child
+    child.on("spawn", this.onSpawn)
+    child.on("error", this.onError)
+    child.on("exit", this.onExit)
     child.stdin.on("error", ignore)
     child.stderr.setEncoding("utf8")
-    child.stderr.on("data", onStderr)
+    child.stderr.on("data", this.onStderr)
     child.stdout.setEncoding("utf8")
-    child.stdout.on("data", onStdout)
+    child.stdout.on("data", this.onStdout)
 
-    send({
+    this.send({
       id: 1,
       method: "initialize",
       params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "sourcefed", version: "0.3" } },
     })
-  })
+  }
+
+  // The protocol.
+
+  private send(message: Record<string, unknown>): void {
+    this.child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
+  }
+
+  private readonly onStdout = (chunk: string): void => {
+    this.started = true
+    if (this.settled) return
+    this.buffer += chunk
+    this.bufferBytes += Buffer.byteLength(chunk)
+    let newline = this.buffer.indexOf("\n")
+
+    while (newline >= 0 && !this.settled) {
+      const raw = this.buffer.slice(0, newline + 1)
+      const line = raw.trim()
+      this.buffer = this.buffer.slice(newline + 1)
+      this.bufferBytes -= Buffer.byteLength(raw)
+      newline = this.buffer.indexOf("\n")
+      if (line) this.onLine(line)
+    }
+
+    if (this.bufferBytes > MAX_OUTPUT_BYTES) {
+      const mib = MAX_OUTPUT_BYTES / 1024 / 1024
+      this.finish(new McpError("overflow", `${this.server} answered more than ${mib} MiB`, { limitBytes: MAX_OUTPUT_BYTES }))
+    }
+  }
+
+  private onLine(line: string): void {
+    let message: any
+    try {
+      message = JSON.parse(line)
+    } catch {
+      return
+    }
+
+    if (message.id === 1) {
+      if (message.error) return this.finish(rpcError(this.server, message.error))
+      this.send({ method: "notifications/initialized" })
+      this.send({ id: 2, method: "tools/call", params: { name: this.tool, arguments: this.args } })
+    } else if (message.id === 2) {
+      if (message.error) return this.finish(rpcError(this.server, message.error))
+      const content: any[] = Array.isArray(message.result?.content) ? message.result.content : []
+      const text = content.filter((part) => part?.type === "text").map((part) => String(part.text)).join("\n")
+      if (message.result?.isError) return this.finish(new McpError("tool", `${this.server} reported the ${this.tool} failed`, { detail: text }))
+      this.finish(undefined, text)
+    }
+  }
+
+  // The child's lifetime.
+
+  private failedToStart(): void {
+    this.finish(new McpError("start", `${this.server} could not start (${this.config.command})`, { command: this.config.command }))
+  }
+
+  private readonly onSpawn = (): void => {
+    this.started = true
+  }
+
+  private readonly onError = (error: Error): void => {
+    // A child that has started is a process still: the call fails, then stops it and waits as
+    // any settled call does.
+    if (this.started) return this.finish(new McpError("broken", `${this.server} failed while answering`, { detail: error.message }))
+
+    // A child that could not start has no process to wait for: it is asked to stop, and the
+    // call answers at once.
+    const first = !this.settled
+    this.gone = true
+    this.failedToStart()
+    if (first) this.child?.kill("SIGTERM")
+    this.deliver()
+  }
+
+  private readonly onExit = (code: number | null): void => {
+    this.gone = true
+    this.finish(new McpError("exit", `${this.server} exited (${code ?? "signal"}) before answering`, { exitCode: code, detail: this.stderr }))
+    this.deliver()
+  }
+
+  private readonly onStderr = (chunk: string): void => {
+    this.started = true
+    if (this.stderr.length < MAX_DETAIL_CHARS) this.stderr = (this.stderr + chunk).slice(0, MAX_DETAIL_CHARS)
+  }
+
+  // Once the call has answered the child is dropped, so nothing it does afterwards reaches the
+  // call. Only the call's own listeners go: removeAllListeners would also take node's, which
+  // its "close" event counts on. An error with no listener throws, so a late one is ignored.
+  private detach(): void {
+    const child = this.child
+    if (!child) return
+    child.removeListener("spawn", this.onSpawn)
+    child.removeListener("error", this.onError)
+    child.removeListener("exit", this.onExit)
+    child.stdout.removeListener("data", this.onStdout)
+    child.stderr.removeListener("data", this.onStderr)
+    child.on("error", ignore)
+  }
+
+  // The outcome.
+
+  // The outcome is decided here but delivered only once the child has gone, so a server that
+  // ignores SIGTERM cannot outlive the call.
+  private finish(error: Error | undefined, value = ""): void {
+    if (this.settled) return
+    this.settled = true
+    this.outcome = { error, value }
+    clearTimeout(this.timer)
+    if (this.gone || !this.child) return this.deliver()
+
+    // A child may exit inside kill(); then it has gone and nothing is left to wait for.
+    this.child.kill("SIGTERM")
+    if (this.delivered) return
+    this.graceTimer = setTimeout(() => {
+      this.child?.kill("SIGKILL")
+      if (this.delivered) return
+      this.graceTimer = setTimeout(() => this.deliver(), KILL_GRACE_MS)
+    }, KILL_GRACE_MS)
+  }
+
+  private deliver(): void {
+    if (this.delivered || !this.outcome) return
+    this.delivered = true
+    clearTimeout(this.graceTimer)
+    this.detach()
+    if (this.outcome.error) this.reject(this.outcome.error)
+    else this.resolve(this.outcome.value)
+  }
 }
 
 // A stopped child's pipe may still fail a write, and an error event with no listener throws.
