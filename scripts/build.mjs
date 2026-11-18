@@ -4,6 +4,7 @@ import { define } from "./build-define.mjs"
 
 const ENTRIES = [
   { entry: "packages/core/src/index.ts", outfile: "packages/core/dist/index.js" },
+  { entry: "packages/sdk/src/index.ts", outfile: "packages/sdk/dist/index.js" },
   { entry: "packages/core/src/storage/index.ts", outfile: "packages/core/dist/storage/index.js" },
   { entry: "providers/jira/src/index.ts", outfile: "providers/jira/dist/index.js" },
   { entry: "providers/github/src/index.ts", outfile: "providers/github/dist/index.js" },

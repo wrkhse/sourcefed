@@ -6,7 +6,7 @@ import { SlackMonitor } from "@sourcefed/provider-slack"
 import { YabMonitor } from "@sourcefed/provider-yab"
 
 export const SOURCE_MAP = {
-  jira: new JiraMonitor(),
+  jira: JiraMonitor,
   "jira-query": new JiraQueryMonitor(),
   github: new GithubMonitor(),
   "github-issues": new GithubIssuesMonitor(),

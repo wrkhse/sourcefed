@@ -1,3 +1,3 @@
-export { JiraMonitor } from "./monitor.ts"
+export { JiraMonitor, jiraSource } from "./monitor.ts"
 export { JiraQueryMonitor } from "./query"
 export type { JiraSourceRecord, JiraEvent, JiraCursor } from "./types"
