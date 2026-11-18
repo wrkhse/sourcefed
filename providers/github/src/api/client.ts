@@ -32,7 +32,6 @@ export function resetGithubApi(next: GithubRateLimiter = defaultLimiter()): void
 function defaultLimiter(): GithubRateLimiter {
   return new GithubRateLimiter({
     requestsPerMinute: githubRequestsPerMinute(),
-    now: () => Date.now(),
     log: (line) => console.warn(line),
   })
 }
@@ -59,7 +58,7 @@ export class GithubClient {
   // The default http exists because the pull request source still opens a client with
   // no http until its own port.
   static open(token: string, monitorId: string, apis: readonly GithubApi[], first = false, http: Http = fetchHttp()): GithubClient | undefined {
-    if (!limiter.acquire(token, monitorId, apis, first)) return undefined
+    if (!limiter.acquire(Date.now(), token, monitorId, apis, first)) return undefined
     return new GithubClient(token, monitorId, apis, http)
   }
 
@@ -88,7 +87,7 @@ export class GithubClient {
     const body = (await response.json().catch(() => undefined)) as { data?: unknown; errors?: Array<{ type?: string; message?: string }> } | undefined
     const errors = Array.isArray(body?.errors) ? body.errors : []
     if (errors.some((error) => error?.type === "RATE_LIMITED")) {
-      this.waitOut("graphql", waitSeconds(response.headers, Date.now(), () => limiter.backoff(this.token, "graphql")))
+      this.waitOut("graphql", waitSeconds(response.headers, Date.now(), () => limiter.backoff(Date.now(), this.token, "graphql")))
     }
     if (!response.ok) throw new PollSourceError(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
     if (errors.length > 0 && (body?.data === null || body?.data === undefined)) throw new PollSourceError(`GitHub GraphQL: ${errorText(errors)}`)
@@ -98,7 +97,7 @@ export class GithubClient {
   }
 
   private async send(api: GithubApi, url: string, init: { method?: string; headers: Record<string, string>; body?: string }): Promise<Response> {
-    if (!limiter.charge(this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
+    if (!limiter.charge(Date.now(), this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
 
     let response: Response
     try {
@@ -118,14 +117,14 @@ export class GithubClient {
     }
     if (response.status === 403 || response.status === 429) {
       const detail = await response.clone().text().catch(() => "")
-      const waitSec = rateLimitWait(response, detail, Date.now(), () => limiter.backoff(this.token, api))
+      const waitSec = rateLimitWait(response, detail, Date.now(), () => limiter.backoff(Date.now(), this.token, api))
       if (waitSec !== undefined) this.waitOut(api, waitSec)
     }
     return response
   }
 
   private waitOut(api: GithubApi, waitSec: number): never {
-    limiter.pause(this.token, api, waitSec, this.monitorId)
+    limiter.pause(Date.now(), this.token, api, waitSec, this.monitorId)
     throw new GithubWaiting(api)
   }
 }
