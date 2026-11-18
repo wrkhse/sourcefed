@@ -71,7 +71,7 @@ let logs: string[]
 let failures: string[]
 
 function limiter(requestsPerMinute = 20): SlackRateLimiter {
-  return new SlackRateLimiter({ requestsPerMinute, now: () => Date.now(), log: (line) => logs.push(line) })
+  return new SlackRateLimiter({ requestsPerMinute, log: (line) => logs.push(line) })
 }
 
 function advance(ms: number): void {
@@ -182,41 +182,41 @@ describe("Slack rate limits", () => {
   test("a monitor that stops asking does not hold the queue", () => {
     const shared = limiter()
     assert.equal(shared.burst, 3)
-    assert.equal(shared.acquire("xoxb-a", "m0"), true)
-    assert.equal(shared.acquire("xoxb-a", "m1"), true)
-    assert.equal(shared.acquire("xoxb-a", "m2"), true)
-    assert.equal(shared.acquire("xoxb-a", "m3"), false)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m0"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m3"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
 
     // m3 is removed and never asks again; m4 keeps asking every tick.
     advance(5_000)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false, "m3 keeps its turn through overlapping ticks")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false, "m3 keeps its turn through overlapping ticks")
     advance(15_000)
-    assert.equal(shared.acquire("xoxb-a", "m4"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), true)
   })
 
   test("logs one line per wait, once every monitor held back has asked", () => {
     const shared = limiter()
-    assert.equal(shared.acquire("xoxb-a", "m1"), true)
-    shared.pause("xoxb-a", 30, "conversations.replies", "m1")
-    assert.equal(shared.acquire("xoxb-a", "m2"), false)
-    assert.equal(shared.acquire("xoxb-a", "m3"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), true)
+    shared.pause(Date.now(), "xoxb-a", 30, "conversations.replies", "m1")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m3"), false)
     advance(10_000)
-    shared.pause("xoxb-a", 30, "conversations.replies", "m2")
+    shared.pause(Date.now(), "xoxb-a", 30, "conversations.replies", "m2")
     assert.deepEqual(logs, [], "nothing is logged before a whole tick of the wait")
 
-    assert.equal(shared.acquire("xoxb-a", "m1"), false)
-    assert.equal(shared.acquire("xoxb-a", "m2"), false)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
     assert.deepEqual(logs, [
       "[sourcefed] Slack rate-limited conversations.replies: waiting 40s before polling 3 Slack monitors on this token again",
     ])
 
     advance(31_000)
-    assert.equal(shared.acquire("xoxb-a", "m1"), false, "the budget refills after the wait")
-    shared.pause("xoxb-a", 5, "conversations.history", "m1")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), false, "the budget refills after the wait")
+    shared.pause(Date.now(), "xoxb-a", 5, "conversations.history", "m1")
     advance(6_000)
-    shared.acquire("xoxb-a", "m2")
+    shared.acquire(Date.now(), "xoxb-a", "m2")
     assert.equal(logs.length, 2, "a wait that ends before the monitor asks again is logged when it ends")
     assert.match(logs[1]!, /conversations\.history: waiting 5s before polling 4 Slack monitors on/)
   })
@@ -292,15 +292,15 @@ describe("Slack rate limits", () => {
 
   test("a first read jumps the queue only until it is granted", () => {
     const shared = limiter()
-    for (const key of ["m1", "m2", "m3"]) assert.equal(shared.acquire("xoxb-a", key), true)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
-    assert.equal(shared.acquire("xoxb-a", "m5"), false)
+    for (const key of ["m1", "m2", "m3"]) assert.equal(shared.acquire(Date.now(), "xoxb-a", key), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m5"), false)
 
     advance(3_000)
-    assert.equal(shared.acquire("xoxb-a", "new", true), true, "a new monitor goes ahead of m4 and m5")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "new", true), true, "a new monitor goes ahead of m4 and m5")
     advance(3_000)
-    assert.equal(shared.acquire("xoxb-a", "new", true), false, "its next read, still unprimed, waits its turn")
-    assert.equal(shared.acquire("xoxb-a", "m4"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "new", true), false, "its next read, still unprimed, waits its turn")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), true)
   })
 })
 

@@ -80,10 +80,10 @@ flowchart LR
 - A monitor that is granted and polls again later joins the back of the queue.
 
 ```ts
-const limiter = new SlackRateLimiter({ requestsPerMinute: 20, now: () => Date.now(), log: console.warn })
+const limiter = new SlackRateLimiter({ requestsPerMinute: 20, log: console.warn })
 
-if (limiter.acquire(token, monitorId, first)) {
+if (limiter.acquire(Date.now(), token, monitorId, first)) {
   // call Slack; on a 429:
-  limiter.pause(token, retryAfterSec, "conversations.replies", monitorId)
+  limiter.pause(Date.now(), token, retryAfterSec, "conversations.replies", monitorId)
 }
 ```

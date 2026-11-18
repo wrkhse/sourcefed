@@ -17,7 +17,7 @@ function stubSlack(replies: Record<string, unknown>): void {
 
 beforeEach(() => {
   calls = []
-  resetSlackApi(new SlackRateLimiter({ requestsPerMinute: 20, now: () => Date.now(), log: () => {} }))
+  resetSlackApi(new SlackRateLimiter({ requestsPerMinute: 20, log: () => {} }))
   process.env.SOURCEFED_SLACK_TOKEN = "xoxb-test"
 })
 

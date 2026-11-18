@@ -64,7 +64,6 @@ export function resetSlackApi(next: SlackRateLimiter = defaultLimiter()): void {
 function defaultLimiter(): SlackRateLimiter {
   return new SlackRateLimiter({
     requestsPerMinute: slackRequestsPerMinute(),
-    now: () => Date.now(),
     log: (line) => console.warn(line),
   })
 }
@@ -78,17 +77,17 @@ async function readSlack(plan: ReadPlan): Promise<SlackRead | SourcePollDeferred
   const token = process.env.SOURCEFED_SLACK_TOKEN
   if (!token) throw new PollSourceError(`slack ${plan.method} failed: SOURCEFED_SLACK_TOKEN is not set`)
   const priming = plan.request.after === undefined
-  if (!limiter.acquire(token, plan.request.monitorId, plan.request.first === true)) return DEFERRED
+  if (!limiter.acquire(Date.now(), token, plan.request.monitorId, plan.request.first === true)) return DEFERRED
 
   const keepsPartial = plan.oldestFirst && !priming
   const messages: any[] = []
   let cursor = ""
   do {
-    if (cursor && keepsPartial && !limiter.spend(token)) break
-    if (cursor && !keepsPartial && !limiter.charge(token)) return DEFERRED
+    if (cursor && keepsPartial && !limiter.spend(Date.now(), token)) break
+    if (cursor && !keepsPartial && !limiter.charge(Date.now(), token)) return DEFERRED
     const page = await slackApi(token, plan.method, { ...plan.params, limit: "1000", ...(cursor ? { cursor } : {}) })
     if (!page.ok) {
-      if (page.retryAfterSec !== undefined) limiter.pause(token, page.retryAfterSec, plan.method, plan.request.monitorId)
+      if (page.retryAfterSec !== undefined) limiter.pause(Date.now(), token, page.retryAfterSec, plan.method, plan.request.monitorId)
       if (messages.length > 0 && keepsPartial) break
       if (page.retryAfterSec !== undefined) return DEFERRED
       throw new PollSourceError(`slack ${plan.method} failed: ${page.error}`)
