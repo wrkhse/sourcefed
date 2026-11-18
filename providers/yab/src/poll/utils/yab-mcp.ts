@@ -53,6 +53,8 @@ function yabFailure(error: unknown, url: string): unknown {
       return new PollSourceError(`Yab answered with an error${errorCode(error.code)}`)
     case "tool":
       return new PollSourceError(`Yab reported the fetch failed${detail(error.detail, url)}`)
+    case "overflow":
+      return new PollSourceError(`Yab answered more than ${(error.limitBytes ?? 0) / 1024 / 1024} MiB`)
   }
 }
 

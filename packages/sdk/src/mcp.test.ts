@@ -6,19 +6,24 @@ import { fakeMcpSpawn, hostMcpServers, McpError, stdioMcp, type GoldenMcpCall, t
 
 const server = { command: "fake-server", args: ["mcp", "--quiet"], timeoutMs: 45_000 }
 
-/** A child that records what the client wrote and answers only what the test scripts. */
-function handChild() {
+/**
+ * A child that records what the client wrote and answers only what the test scripts. By default
+ * it exits on SIGTERM, as a well-behaved server does; "ignore-term" exits only on SIGKILL, and
+ * "never" does not exit at all.
+ */
+function handChild(onKill: "exit" | "ignore-term" | "never" = "exit") {
   const stdin = new PassThrough()
   const stdout = new PassThrough()
   const stderr = new PassThrough()
   const written: any[] = []
-  let kills = 0
+  const signals: Array<NodeJS.Signals | undefined> = []
   const child = Object.assign(new EventEmitter(), {
     stdin,
     stdout,
     stderr,
-    kill: () => {
-      kills += 1
+    kill: (signal?: NodeJS.Signals) => {
+      signals.push(signal)
+      if (onKill === "exit" || (onKill === "ignore-term" && signal === "SIGKILL")) child.emit("exit", null)
     },
   })
 
@@ -27,7 +32,7 @@ function handChild() {
     for (const line of chunk.split("\n").filter(Boolean)) written.push(JSON.parse(line))
   })
 
-  return { child, written, kills: () => kills, say: (message: unknown) => stdout.write(`${JSON.stringify(message)}\n`) }
+  return { child, written, signals, kills: () => signals.length, say: (message: unknown) => stdout.write(`${JSON.stringify(message)}\n`) }
 }
 
 function spawnOnce(child: McpChild, seen: Array<[string, readonly string[]]> = []): McpSpawn {
@@ -189,7 +194,141 @@ describe("stdioMcp", () => {
     hand.child.emit("error", new Error("late"))
 
     await assert.rejects(answer, { failure: "exit" })
-    assert.equal(hand.kills(), 1)
+    // It had already exited, so there is nothing to stop.
+    assert.equal(hand.kills(), 0)
+  })
+
+  test("parses an answer split mid-line across two chunks", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+
+    const answer = mcp.call("yab", "fetch", {})
+    await tick()
+    hand.say({ jsonrpc: "2.0", id: 1, result: {} })
+    await tick()
+    const line = `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "whole" }] } })}\n`
+    hand.child.stdout.write(line.slice(0, 20))
+    await tick()
+    hand.child.stdout.write(line.slice(20))
+
+    assert.equal(await answer, "whole")
+  })
+
+  test("more than 16 MiB without a newline is an overflow", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+
+    const answer = mcp.call("yab", "fetch", {})
+    const mib = "x".repeat(1024 * 1024)
+    for (let i = 0; i <= 16; i += 1) hand.child.stdout.write(mib)
+
+    await assert.rejects(answer, (error: McpError) => {
+      assert.equal(error.failure, "overflow")
+      assert.equal(error.message, "yab answered more than 16 MiB")
+      assert.equal(error.limitBytes, 16 * 1024 * 1024)
+      return true
+    })
+  })
+
+  test("keeps only the first 4096 characters of stderr", async () => {
+    const hand = handChild()
+    const mcp = stdioMcp(() => server, spawnOnce(hand.child))
+    const written = Array.from({ length: 10_000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("")
+
+    const answer = mcp.call("yab", "fetch", {})
+    hand.child.stderr.write(written.slice(0, 3_000))
+    hand.child.stderr.write(written.slice(3_000))
+    await tick()
+    hand.child.emit("exit", 3)
+
+    await assert.rejects(answer, (error: McpError) => {
+      assert.equal(error.detail.length, 4096)
+      assert.equal(error.detail, written.slice(0, 4096))
+      return true
+    })
+  })
+
+  describe("stopping the child", () => {
+    const answered = async (hand: ReturnType<typeof handChild>) => {
+      await tick()
+      hand.say({ jsonrpc: "2.0", id: 1, result: {} })
+      await tick()
+      hand.say({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "ok" }] } })
+      await tick()
+    }
+    const watch = (answer: Promise<string>) => {
+      const state = { settled: false }
+      answer.then(() => (state.settled = true), () => (state.settled = true))
+      return state
+    }
+
+    test("a child that ignores SIGTERM gets SIGKILL after 2 s and the call settles on its exit", async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      const hand = handChild("ignore-term")
+      const answer = stdioMcp(() => server, spawnOnce(hand.child)).call("yab", "fetch", {})
+      const state = watch(answer)
+
+      await answered(hand)
+      assert.deepEqual(hand.signals, ["SIGTERM"])
+      assert.equal(state.settled, false)
+
+      t.mock.timers.tick(1_999)
+      await tick()
+      assert.deepEqual(hand.signals, ["SIGTERM"])
+
+      t.mock.timers.tick(1)
+      assert.equal(await answer, "ok")
+      assert.deepEqual(hand.signals, ["SIGTERM", "SIGKILL"])
+    })
+
+    test("a child that never exits: the call settles 2 s after SIGKILL anyway", async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      const hand = handChild("never")
+      const answer = stdioMcp(() => server, spawnOnce(hand.child)).call("yab", "fetch", {})
+      const state = watch(answer)
+
+      await answered(hand)
+      t.mock.timers.tick(2_000)
+      await tick()
+      assert.deepEqual(hand.signals, ["SIGTERM", "SIGKILL"])
+
+      t.mock.timers.tick(1_999)
+      await tick()
+      assert.equal(state.settled, false)
+
+      t.mock.timers.tick(1)
+      assert.equal(await answer, "ok")
+    })
+
+    test("a child that exits on SIGTERM gets no SIGKILL, and no timer is left", async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      const hand = handChild()
+      const answer = stdioMcp(() => server, spawnOnce(hand.child)).call("yab", "fetch", {})
+
+      await answered(hand)
+      assert.equal(await answer, "ok")
+
+      t.mock.timers.tick(10 * 60_000)
+      await tick()
+      assert.deepEqual(hand.signals, ["SIGTERM"])
+    })
+
+    test("no timer outlives a call whose child needed SIGKILL", async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      const hand = handChild("ignore-term")
+      let exits = 0
+      hand.child.on("exit", () => (exits += 1))
+      const answer = stdioMcp(() => server, spawnOnce(hand.child)).call("yab", "fetch", {})
+
+      await answered(hand)
+      t.mock.timers.tick(2_000)
+      assert.equal(await answer, "ok")
+
+      t.mock.timers.tick(10 * 60_000)
+      await tick()
+      assert.deepEqual(hand.signals, ["SIGTERM", "SIGKILL"])
+      assert.equal(exits, 1)
+    })
   })
 
   test("an unknown server rejects with a plain error naming it", async () => {

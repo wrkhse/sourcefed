@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 
 /** Why a tool call failed, in the terms a source's own message needs. */
-export type McpFailure = "start" | "timeout" | "exit" | "error" | "tool"
+export type McpFailure = "start" | "timeout" | "exit" | "error" | "tool" | "overflow"
 
 /**
  * A tool call that produced no text. `detail` is the server's own words (its stderr, or the
@@ -16,6 +16,8 @@ export class McpError extends Error {
   readonly command?: string
   /** How long the call waited, so a source can say so without knowing the host's timeout. */
   readonly timeoutMs?: number
+  /** How much output the call allowed, so a source can say so without knowing the client's limit. */
+  readonly limitBytes?: number
   readonly detail: string
 
   constructor(
@@ -26,6 +28,7 @@ export class McpError extends Error {
       readonly exitCode?: number | null
       readonly command?: string
       readonly timeoutMs?: number
+      readonly limitBytes?: number
       readonly detail?: string
     } = {},
   ) {
@@ -37,6 +40,7 @@ export class McpError extends Error {
     if (options.exitCode !== undefined) this.exitCode = options.exitCode
     if (options.command !== undefined) this.command = options.command
     if (options.timeoutMs !== undefined) this.timeoutMs = options.timeoutMs
+    if (options.limitBytes !== undefined) this.limitBytes = options.limitBytes
   }
 }
 
@@ -63,7 +67,7 @@ export type McpChild = {
   readonly stderr: McpStream
   on(event: "error", listener: (error: Error) => void): unknown
   on(event: "exit", listener: (code: number | null) => void): unknown
-  kill(): unknown
+  kill(signal?: NodeJS.Signals): unknown
 }
 
 export type McpSpawn = (command: string, args: readonly string[]) => McpChild
@@ -85,7 +89,9 @@ export function hostMcpServers(name: string): McpServer | undefined {
 
 /**
  * Calls a tool over stdio: the server's command is started for the call and stopped after it,
- * so nothing stays connected between polls.
+ * so nothing stays connected between polls. A call answers only once its child has gone, so it
+ * takes at most `timeoutMs + 2 × KILL_GRACE_MS`: the timeout, then SIGTERM's grace, then
+ * SIGKILL's.
  */
 export function stdioMcp(servers: (name: string) => McpServer | undefined, spawnChild: McpSpawn = spawnStdio): Mcp {
   return {
@@ -100,20 +106,56 @@ export function stdioMcp(servers: (name: string) => McpServer | undefined, spawn
   }
 }
 
+// One answer carries a whole page, and a server that sends this much without finishing its
+// answer is broken.
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+
+// Not the 300 characters a source quotes: a source redacts before it quotes, removing URLs and
+// the request's path and query, and text cut before redaction could end inside a URL, leaving a
+// credential that no longer looks like one. Keeping well more than any quote leaves redaction
+// whole text to work on, while still bounding memory.
+const MAX_DETAIL_CHARS = 4096
+
+// How long a stopping child has after SIGTERM before SIGKILL, and after SIGKILL before the call
+// answers anyway.
+const KILL_GRACE_MS = 2_000
+
 function callTool(server: string, config: McpServer, tool: string, args: Readonly<Record<string, unknown>>, spawnChild: McpSpawn): Promise<string> {
   return new Promise((resolve, reject) => {
     let child: McpChild | undefined
     let buffer = ""
+    let bufferBytes = 0
     let stderr = ""
     let settled = false
+    let gone = false
+    let delivered = false
+    let outcome: { readonly error: Error | undefined; readonly value: string } | undefined
+    let graceTimer: ReturnType<typeof setTimeout> | undefined
 
+    const deliver = (): void => {
+      if (delivered || !outcome) return
+      delivered = true
+      clearTimeout(graceTimer)
+      if (outcome.error) reject(outcome.error)
+      else resolve(outcome.value)
+    }
+    // The outcome is decided here but delivered only once the child has gone, so a server that
+    // ignores SIGTERM cannot outlive the call.
     const finish = (error: Error | undefined, value = ""): void => {
       if (settled) return
       settled = true
+      outcome = { error, value }
       clearTimeout(timer)
-      child?.kill()
-      if (error) reject(error)
-      else resolve(value)
+      if (gone || !child) return deliver()
+
+      // A child may exit inside kill(); then it has gone and nothing is left to wait for.
+      child.kill("SIGTERM")
+      if (delivered) return
+      graceTimer = setTimeout(() => {
+        child?.kill("SIGKILL")
+        if (delivered) return
+        graceTimer = setTimeout(deliver, KILL_GRACE_MS)
+      }, KILL_GRACE_MS)
     }
     const send = (message: Record<string, unknown>): void => {
       child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`)
@@ -150,25 +192,44 @@ function callTool(server: string, config: McpServer, tool: string, args: Readonl
       }
     }
 
-    child.on("error", failedToStart)
+    // A child that could not start has no process to wait for: it is asked to stop, and the
+    // call answers at once.
+    child.on("error", () => {
+      const first = !settled
+      gone = true
+      failedToStart()
+      if (first) child?.kill("SIGTERM")
+      deliver()
+    })
     child.on("exit", (code) => {
+      gone = true
       finish(new McpError("exit", `${server} exited (${code ?? "signal"}) before answering`, { exitCode: code, detail: stderr }))
+      deliver()
     })
     child.stdin.on("error", () => {})
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk) => {
-      stderr += chunk
+      if (stderr.length < MAX_DETAIL_CHARS) stderr = (stderr + chunk).slice(0, MAX_DETAIL_CHARS)
     })
     child.stdout.setEncoding("utf8")
     child.stdout.on("data", (chunk) => {
+      if (settled) return
       buffer += chunk
+      bufferBytes += Buffer.byteLength(chunk)
       let newline = buffer.indexOf("\n")
 
       while (newline >= 0 && !settled) {
-        const line = buffer.slice(0, newline).trim()
+        const raw = buffer.slice(0, newline + 1)
+        const line = raw.trim()
         buffer = buffer.slice(newline + 1)
+        bufferBytes -= Buffer.byteLength(raw)
         newline = buffer.indexOf("\n")
         if (line) onLine(line)
+      }
+
+      if (bufferBytes > MAX_OUTPUT_BYTES) {
+        const mib = MAX_OUTPUT_BYTES / 1024 / 1024
+        finish(new McpError("overflow", `${server} answered more than ${mib} MiB`, { limitBytes: MAX_OUTPUT_BYTES }))
       }
     })
 

@@ -182,7 +182,13 @@ export function fakeMcpSpawn(replies: readonly GoldenMcpReply[], calls: GoldenMc
     const stdin = new PassThrough()
     const stdout = new PassThrough()
     const stderr = new PassThrough()
-    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, killed: false, kill: () => (child.killed = true) })
+    // Killing it exits it, as a real server would, so a call over the fake still settles.
+    const kill = () => {
+      if (child.killed) return
+      child.killed = true
+      process.nextTick(() => child.emit("exit", null))
+    }
+    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, killed: false, kill })
     // Answered on the next tick, as a real server's line arrives after the write, so the client never re-enters itself.
     const answer = (message: Record<string, unknown>) => process.nextTick(() => stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`))
     let buffer = ""
