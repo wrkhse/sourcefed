@@ -26,6 +26,7 @@ describe("GitHub direct API", () => {
       data: {
         repository: {
           pullRequest: {
+            title: "Add navigate",
             state: "OPEN",
             mergeable: "CONFLICTING",
             mergeStateStatus: "DIRTY",
@@ -54,6 +55,7 @@ describe("GitHub direct API", () => {
 
     const data = await fetchPrData(client(), "org/repo", 12)
     assert.deepEqual(data, {
+      title: "Add navigate",
       reviews: [{
         id: 7,
         author: { login: "alice" },

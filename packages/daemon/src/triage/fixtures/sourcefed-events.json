@@ -1,0 +1,365 @@
+{
+  "description": "Twelve synthetic labelled events from v1's event-gate categories. evidence is what sourcefed's evidence builder makes from v1.params, monitor_source and subject (wrkhse/sourcefed#27, sourcefed#29): event as five \"name: value\" lines, thread as \"<label>: <title>\", the label alone when the event has no title, the title alone when there is no label, and empty when neither, monitor as the source's describe(). The cases cover two of sourcefed's thread-table rows: label and title (GitHub and Jira) and label alone (Slack); none covers title alone or neither. v1 replies, each with the params it answered, are in sourcefed-events.v1.json.",
+  "cases": [
+    {
+      "id": "bot-coverage",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "comment",
+          "summary": "codecov[bot] commented on PR #42",
+          "body": "Coverage 81.2% (+0.3%).",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: comment\nsummary: codecov[bot] commented on PR #42\nbody: Coverage 81.2% (+0.3%).\nactionable: no (informational)",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "approval",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "review",
+          "summary": "PR #42 approved",
+          "body": "LGTM, approved.",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: review\nsummary: PR #42 approved\nbody: LGTM, approved.\nactionable: no (informational)",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "status-churn",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "jira",
+        "issueKey": "ENG-42"
+      },
+      "subject": {
+        "title": "Daemon navigations ignore their deadline"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "jira",
+          "kind": "updated",
+          "summary": "ENG-42 status changed",
+          "body": "Status: In Progress → In Review.",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: jira\nkind: updated\nsummary: ENG-42 status changed\nbody: Status: In Progress → In Review.\nactionable: no (informational)",
+        "thread": "ENG-42: Daemon navigations ignore their deadline",
+        "monitor": "Jira ENG-42"
+      }
+    },
+    {
+      "id": "assignee-churn",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "jira",
+        "issueKey": "ENG-42"
+      },
+      "subject": {
+        "title": "Daemon navigations ignore their deadline"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "jira",
+          "kind": "updated",
+          "summary": "ENG-42 assignee changed",
+          "body": "Assignee: Alex → Sam. No request or new task.",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: jira\nkind: updated\nsummary: ENG-42 assignee changed\nbody: Assignee: Alex → Sam. No request or new task.\nactionable: no (informational)",
+        "thread": "ENG-42: Daemon navigations ignore their deadline",
+        "monitor": "Jira ENG-42"
+      }
+    },
+    {
+      "id": "thanks",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "slack",
+        "channelId": "C0123ABC",
+        "threadTs": "1700000000.000100"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "slack",
+          "kind": "message",
+          "summary": "A colleague replied",
+          "body": "Thanks, looks good 👍",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: slack\nkind: message\nsummary: A colleague replied\nbody: Thanks, looks good 👍\nactionable: no (informational)",
+        "thread": "thread",
+        "monitor": "Slack C0123ABC thread 1700000000.000100"
+      }
+    },
+    {
+      "id": "empty-message",
+      "expected": {
+        "deliver": false
+      },
+      "monitor_source": {
+        "type": "slack",
+        "channelId": "C0123ABC",
+        "threadTs": "1700000000.000100"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "slack",
+          "kind": "message",
+          "summary": "A Slack message arrived",
+          "body": "[message without text]",
+          "actionable": false
+        }
+      },
+      "evidence": {
+        "event": "source: slack\nkind: message\nsummary: A Slack message arrived\nbody: [message without text]\nactionable: no (informational)",
+        "thread": "thread",
+        "monitor": "Slack C0123ABC thread 1700000000.000100"
+      }
+    },
+    {
+      "id": "ci-failure",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "check_run",
+          "summary": "CI failed on PR #42",
+          "body": "The protocol tests fail: missing required field protocol. Please fix before merging.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: check_run\nsummary: CI failed on PR #42\nbody: The protocol tests fail: missing required field protocol. Please fix before merging.\nactionable: yes",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "requested-changes",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "review",
+          "summary": "Changes requested on PR #42",
+          "body": "Please bound the request line before parsing and add a regression test.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: review\nsummary: Changes requested on PR #42\nbody: Please bound the request line before parsing and add a regression test.\nactionable: yes",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "direct-question",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "slack",
+        "channelId": "C0123ABC",
+        "threadTs": "1700000000.000100"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "slack",
+          "kind": "message",
+          "summary": "A teammate asks the coding agent",
+          "body": "@agent Which commit fixes the daemon shutdown race? Please reply with the hash.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: slack\nkind: message\nsummary: A teammate asks the coding agent\nbody: @agent Which commit fixes the daemon shutdown race? Please reply with the hash.\nactionable: yes",
+        "thread": "thread",
+        "monitor": "Slack C0123ABC thread 1700000000.000100"
+      }
+    },
+    {
+      "id": "merge-conflict",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "conflict",
+          "summary": "PR #42 has merge conflicts",
+          "body": "The base branch changed socket.rs; rebase and resolve the conflict.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: conflict\nsummary: PR #42 has merge conflicts\nbody: The base branch changed socket.rs; rebase and resolve the conflict.\nactionable: yes",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "merged-followup",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "merged",
+          "summary": "PR #42 merged with follow-up work",
+          "body": "The fix is merged. @agent please update ENG-42 and run the deployment smoke test.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: merged\nsummary: PR #42 merged with follow-up work\nbody: The fix is merged. @agent please update ENG-42 and run the deployment smoke test.\nactionable: yes",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "new-fact",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "jira",
+        "issueKey": "ENG-42"
+      },
+      "subject": {
+        "title": "Daemon navigations ignore their deadline"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "jira",
+          "kind": "comment",
+          "summary": "New reproduction on ENG-42",
+          "body": "The failure only occurs when the peer half-closes after its request. Update the socket fix to cover this case.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: jira\nkind: comment\nsummary: New reproduction on ENG-42\nbody: The failure only occurs when the peer half-closes after its request. Update the socket fix to cover this case.\nactionable: yes",
+        "thread": "ENG-42: Daemon navigations ignore their deadline",
+        "monitor": "Jira ENG-42"
+      }
+    }
+  ]
+}

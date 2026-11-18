@@ -14,6 +14,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The daemon the contract test runs against, from the same prerelease as the client tarball.
+      # A contract test that skips because the fetch broke would prove nothing, so the test itself
+      # fails when CHAUFFEUR_REQUIRED is set and CHAUFFEUR_BIN is not.
+      - name: The pinned Chauffeur v2 daemon
+        run: |
+          curl -sSLo "$RUNNER_TEMP/chauffeur.tar.gz" "$CHAUFFEUR_TARBALL"
+          echo "$CHAUFFEUR_SHA256  $RUNNER_TEMP/chauffeur.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/chauffeur"
+          tar xzf "$RUNNER_TEMP/chauffeur.tar.gz" -C "$RUNNER_TEMP/chauffeur"
+          echo "CHAUFFEUR_BIN=$RUNNER_TEMP/chauffeur/bin/chauffeur" >> "$GITHUB_ENV"
+          echo "CHAUFFEUR_REQUIRED=1" >> "$GITHUB_ENV"
+        env:
+          CHAUFFEUR_TARBALL: https://github.com/wrkhse/chauffeur/releases/download/v1.0.0-rc.5/chauffeur-1.0.0-rc.5-linux-x64.tar.gz
+          CHAUFFEUR_SHA256: 4f192618ccfa921ccd9540ad1a20f2da400d962b62513611bc07cbbecf3c717f
       - run: npm run check
 
   pi-integration:

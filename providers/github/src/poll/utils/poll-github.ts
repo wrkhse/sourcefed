@@ -9,6 +9,7 @@ import { emptyGithubCursor } from "./empty-cursor.ts"
 import { DEFERRED, GithubClient, deferOnWait, fetchGithubComments, fetchPrData, githubToken, type GithubApi } from "../../api"
 import { GithubCursorSchema } from "../../schema.ts"
 import type { GithubCursor, GithubEvent } from "../../types"
+import { pullRequestSubject } from "../../utils/pull-request-subject.ts"
 
 // A pull request poll sends one GraphQL query and at least two REST requests.
 const PR_APIS: readonly GithubApi[] = ["graphql", "rest"]
@@ -77,6 +78,11 @@ async function readPullRequest(github: GithubClient, repo: string, prNumber: num
 
   const prState = data.state ?? "OPEN"
   const terminal = appendGithubStateEvent(repo, prNumber, cursor, events, prState)
+
+  const subject = pullRequestSubject(repo, prNumber, data.title)
+  for (const event of events) {
+    if (!event.subject) event.subject = { ...subject }
+  }
 
   return { events, cursor, terminal }
 }

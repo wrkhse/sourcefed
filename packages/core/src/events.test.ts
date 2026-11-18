@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { InMemoryMonitorEventQueue, TARGET_QUEUE_LIMIT } from "./events.ts"
+import { JsonMonitorEventQueue } from "./storage/json.ts"
 
 const monitor = {
   id: "m-test",
@@ -70,3 +74,53 @@ describe("InMemoryMonitorEventQueue", () => {
     assert.equal(TARGET_QUEUE_LIMIT, 1_000)
   })
 })
+
+describe("Chauffeur triage marker", () => {
+  test("marks an event triaged only when the enqueue says so", async () => {
+    const queue = new InMemoryMonitorEventQueue()
+
+    const triaged = await queue.enqueue({ monitor, event: commentEvent("triaged"), chauffeurTriaged: true })
+    await queue.enqueue({ monitor, event: commentEvent("untriaged") })
+    await queue.enqueue({ monitor, event: commentEvent("refused"), chauffeurTriaged: false })
+
+    assert.equal(triaged.chauffeurTriaged, true)
+    const held = new Map((await queue.read(monitor.target)).map((queued) => [queued.event.id, queued]))
+    assert.equal(held.get("triaged")?.chauffeurTriaged, true)
+
+    const untriaged = held.get("untriaged")
+    assert.ok(untriaged)
+    assert.equal(Object.hasOwn(untriaged, "chauffeurTriaged"), false)
+
+    const refused = held.get("refused")
+    assert.ok(refused)
+    assert.equal(Object.hasOwn(refused, "chauffeurTriaged"), false)
+  })
+
+  test("keeps the triage marker across a JSON queue write and reload", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "sourcefed-events-"))
+    try {
+      const queue = new JsonMonitorEventQueue(directory)
+      await queue.enqueue({ monitor, event: commentEvent("triaged"), chauffeurTriaged: true })
+      await queue.enqueue({ monitor, event: commentEvent("untriaged") })
+      await queue.enqueue({ monitor, event: commentEvent("refused"), chauffeurTriaged: false })
+
+      const reloaded = new JsonMonitorEventQueue(directory)
+      const held = new Map((await reloaded.read(monitor.target)).map((queued) => [queued.event.id, queued]))
+      assert.equal(held.get("triaged")?.chauffeurTriaged, true)
+
+      const untriaged = held.get("untriaged")
+      assert.ok(untriaged)
+      assert.equal(Object.hasOwn(untriaged, "chauffeurTriaged"), false)
+
+      const refused = held.get("refused")
+      assert.ok(refused)
+      assert.equal(Object.hasOwn(refused, "chauffeurTriaged"), false)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+function commentEvent(id: string) {
+  return { source: monitor.source, kind: "comment", id, at: "2026-08-04T12:01:00.000Z", summary: id, actionable: true }
+}

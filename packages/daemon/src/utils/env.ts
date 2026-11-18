@@ -9,6 +9,9 @@ const DAEMON_ENVIRONMENT = [
   "LANG",
   "XDG_CONFIG_HOME",
   "XDG_STATE_HOME",
+  // A spawned daemon finds the Chauffeur v2 socket through them.
+  "XDG_RUNTIME_DIR",
+  "CHAUFFEUR_SOCKET",
   "ATLASSIAN_EMAIL",
   "ATLASSIAN_API_KEY",
   "GH_TOKEN",

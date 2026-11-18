@@ -1,4 +1,8 @@
 import type { MonitorEventQueue, MonitorRecord, MonitorStore, MonitorTarget, QueuedMonitorEvent } from "@sourcefed/core"
+import type { ChauffeurTriage } from "../triage/triage.ts"
+
+/** Chauffeur v2 triage at the sink: the real ChauffeurTriage, or a fake in tests. */
+export type EventTriage = Pick<ChauffeurTriage, "decide" | "close">
 
 export type DaemonCreateInput = {
   name: string
@@ -30,6 +34,8 @@ export type SourcefedDaemonOptions = {
   eventQueue?: MonitorEventQueue
   stateDir?: string
   pollLoopSec?: number
+  /** Chauffeur v2 triage at the sink; absent, every event is delivered untriaged. */
+  triage?: EventTriage
 }
 
 export type MonitorView = {

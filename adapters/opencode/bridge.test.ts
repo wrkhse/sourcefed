@@ -42,7 +42,7 @@ function harness() {
     return originalSubscribe(target, callback, options)
   }
   const hub = new OpenCodeSubscriptions(async () => { connections += 1; return daemon })
-  function instance(at = location, deliver = true) {
+  function instance(at = location, deliver = true, failGate = false) {
     const delivered: Delivered[] = []
     const gated: Array<Record<string, unknown>> = []
     const session: Bridge[0] = {
@@ -61,6 +61,7 @@ function harness() {
       gate: async (args) => {
         assert.ok(args && typeof args === "object")
         gated.push({ ...args })
+        if (failGate) throw new Error("gate unavailable")
         return { deliver }
       },
     })
@@ -80,6 +81,42 @@ test("the gate learns which monitor produced the event and can withhold it", asy
   const withheld = h.instance(location, false)
   await withheld.bridge.routeEvents([queued])
   assert.equal(withheld.delivered.length, 0)
+})
+
+test("an event Chauffeur v2 triaged at the daemon is delivered without asking the v1 gate", async () => {
+  const h = harness()
+  const { bridge, delivered, gated } = h.instance()
+  await bridge.routeEvents([{ ...queued, chauffeurTriaged: true }])
+  assert.equal(gated.length, 0, "the v1 gate is not asked to triage the same event twice")
+  assert.equal(delivered.length, 1)
+  assert.deepEqual(delivered[0], {
+    sessionID: "ses_live",
+    text: "[sourcefed monitor] CI failed",
+    description: "sourcefed ci",
+    metadata: { sourcefed: { eventID: "evt_1", monitorID: "mon_42", kind: "ci" } },
+    resume: true,
+  })
+})
+
+test("an unmarked event makes exactly one v1 gate call that can withhold it", async () => {
+  const h = harness()
+  const allowed = h.instance()
+  await allowed.bridge.routeEvents([queued])
+  assert.equal(allowed.gated.length, 1)
+  assert.equal(allowed.delivered.length, 1)
+
+  const withheld = h.instance(location, false)
+  await withheld.bridge.routeEvents([queued])
+  assert.equal(withheld.gated.length, 1)
+  assert.equal(withheld.delivered.length, 0)
+})
+
+test("an unmarked event is delivered when the v1 gate throws", async () => {
+  const h = harness()
+  const { bridge, delivered, gated } = h.instance(location, true, true)
+  await bridge.routeEvents([queued])
+  assert.equal(gated.length, 1)
+  assert.equal(delivered.length, 1)
 })
 
 test("multiple projects and duplicate plugin instances share one stream per owned session", async () => {
