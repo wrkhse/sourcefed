@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
-import { hostMcpServers, stdioMcp } from "@sourcefed/sdk"
+import { hostMcpServers, McpError, stdioMcp } from "@sourcefed/sdk"
 import type { YabSourceRecord } from "./types"
 import { YabMonitor } from "./index"
 import { feedEvents, fetchThroughYab, parseFeed, parseYabFetch, pollYab } from "./poll"
@@ -161,6 +161,17 @@ describe("polling through Yab", () => {
     assert.throws(() => parseYabFetch("no tab, see tabs"), /not the expected shape/)
   })
 
+  test("a Yab that broke while answering says so and quotes nothing", async () => {
+    const url = "https://example.test/feed/secret-path-token"
+    const broken = new McpError("broken", "yab failed while answering", { detail: `EPIPE writing ${url}` })
+    const yab = { call: () => Promise.reject(broken) }
+
+    await assert.rejects(fetchThroughYab(yab, url), (error: Error) => {
+      assert.equal(error.message, "Yab failed while answering")
+      return true
+    })
+  })
+
   test("an unexpected answer quotes nothing unless SOURCEFED_DEBUG is set", () => {
     const url = "https://example.test/feed/secret-path-token?token=secret-query-token"
     const failure = (() => {
@@ -206,6 +217,26 @@ process.stdin.on("data", (chunk) => {
     if (message.method !== "tools/call") continue
     const mode = process.env.FAKE_YAB_MODE
     if (mode === "error-object") return errorReply(message.id, { code: -1 })
+    if (mode === "split") {
+      const line = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: page(message) }] } }) + "\\n"
+      process.stdout.write(line.slice(0, 40))
+      setTimeout(() => process.stdout.write(line.slice(40)), 50)
+      continue
+    }
+    if (mode === "flood") {
+      process.stdout.write("x".repeat(17 * 1024 * 1024))
+      continue
+    }
+    if (mode === "flood-stderr") {
+      // Exit only once the pipe has taken it all, or a pipe written asynchronously loses the end.
+      process.stderr.write("y".repeat(1024 * 1024), () => process.exit(3))
+      continue
+    }
+    if (mode === "ignore-term") {
+      process.on("SIGTERM", () => {})
+      require("node:fs").writeFileSync(process.env.FAKE_YAB_PIDFILE, String(process.pid))
+      setInterval(() => {}, 1000)
+    }
     if (mode === "exit") process.exit(3)
     if (mode === "exit-leak") {
       process.stderr.write("fetching " + process.env.FAKE_YAB_URL + ": connection reset")
@@ -217,9 +248,12 @@ process.stdin.on("data", (chunk) => {
     }
     if (mode === "leak") reply(message.id, { isError: true, content: [{ type: "text", text: "failed to read " + message.params.arguments.url + " and again " + message.params.arguments.url.replace(/^https?:\\/\\/[^/]+/, "") }] })
     else if (mode === "error") reply(message.id, { isError: true, content: [{ type: "text", text: "no such space" }] })
-    else reply(message.id, { content: [{ type: "text", text: "200 · application/json · " + message.params.arguments.url + "\\n\\n" + JSON.stringify({ tool: message.params.name, args: message.params.arguments, argv: process.argv.slice(2) }) }] })
+    else reply(message.id, { content: [{ type: "text", text: page(message) }] })
   }
 })
+function page(message) {
+  return "200 · application/json · " + message.params.arguments.url + "\\n\\n" + JSON.stringify({ tool: message.params.name, args: message.params.arguments, argv: process.argv.slice(2) })
+}
 function reply(id, result) {
   process.stdout.write("not json noise\\n" + JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n")
 }
@@ -248,6 +282,7 @@ describe("Yab MCP client", () => {
     delete process.env.FAKE_YAB_MODE
     delete process.env.FAKE_YAB_URL
     delete process.env.SOURCEFED_DEBUG
+    delete process.env.FAKE_YAB_PIDFILE
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -308,6 +343,72 @@ describe("Yab MCP client", () => {
     delete process.env.FAKE_YAB_MODE
     assert.ok(failure instanceof Error)
     assert.equal(failure.message, "Yab answered with an error (code -1)")
+  })
+
+  test("reads an answer written in two parts, cut mid-JSON", async () => {
+    process.env.FAKE_YAB_MODE = "split"
+    try {
+      const page = await fetchThroughYab(yab, "https://e.com/feed", "Personal")
+      assert.equal(page.status, 200)
+      assert.deepEqual(JSON.parse(page.body), {
+        tool: "fetch",
+        args: { url: "https://e.com/feed", html: true, space: "Personal" },
+        argv: ["mcp"],
+      })
+    } finally {
+      delete process.env.FAKE_YAB_MODE
+    }
+  })
+
+  test("refuses more than 16 MiB without a newline", async () => {
+    process.env.FAKE_YAB_MODE = "flood"
+    try {
+      await assert.rejects(fetchThroughYab(yab, "https://e.com"), (error: Error) => {
+        assert.equal(error.message, "Yab answered more than 16 MiB")
+        return true
+      })
+    } finally {
+      delete process.env.FAKE_YAB_MODE
+    }
+  })
+
+  test("keeps 4096 characters of a flood of stderr and quotes at most 300", async () => {
+    process.env.FAKE_YAB_MODE = "flood-stderr"
+    try {
+      const raw = await yab.call("yab", "fetch", { url: "https://e.com" }).then(() => undefined, (error: unknown) => error)
+      assert.ok(raw instanceof McpError)
+      assert.equal(raw.failure, "exit")
+      assert.equal(raw.detail.length, 4096)
+
+      process.env.SOURCEFED_DEBUG = "1"
+      const failure = await fetchThroughYab(yab, "https://e.com").then(() => undefined, (error: unknown) => error)
+      assert.ok(failure instanceof Error)
+      const prefix = "Yab exited (3) before answering: "
+      assert.equal(failure.message.startsWith(prefix), true)
+      assert.ok(failure.message.length - prefix.length <= 300)
+    } finally {
+      delete process.env.FAKE_YAB_MODE
+      delete process.env.SOURCEFED_DEBUG
+    }
+  })
+
+  test("a Yab that ignores SIGTERM is killed before the fetch answers", { timeout: 15_000 }, async () => {
+    const pidfile = path.join(dir, "pid")
+    process.env.FAKE_YAB_MODE = "ignore-term"
+    process.env.FAKE_YAB_PIDFILE = pidfile
+    try {
+      const page = await fetchThroughYab(yab, "https://e.com/feed")
+      assert.equal(page.status, 200)
+
+      const pid = Number(readFileSync(pidfile, "utf8"))
+      assert.throws(() => process.kill(pid, 0), (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, "ESRCH")
+        return true
+      })
+    } finally {
+      delete process.env.FAKE_YAB_MODE
+      delete process.env.FAKE_YAB_PIDFILE
+    }
   })
 
   test("reports a missing Yab", async () => {

@@ -14,6 +14,8 @@ type FakeSource = v.InferOutput<typeof FakeSourceSchema>
 const definition: SourceDefinition<FakeSource> = {
   type: "fake",
   schema: FakeSourceSchema,
+  // The cases below give the fake source cursors of several shapes; the shape check has its own test.
+  cursor: v.unknown(),
   input: {
     description: "A fake source",
     properties: { channel: { type: "string", description: "Channel name" } },
@@ -139,6 +141,12 @@ describe("assertGolden", () => {
     }
 
     await assert.rejects(assertGolden(mismatched, definition), /fake first: events/)
+  })
+
+  test("names the provider and case when a recorded cursor is not the declared shape", async () => {
+    const strict: SourceDefinition<FakeSource> = { ...definition, cursor: v.object({ seen: v.array(v.string()) }) }
+
+    await assert.rejects(assertGolden(fixture, strict), /fake first: cursor shape/)
   })
 
   test("replays a deferral with no request", async () => {

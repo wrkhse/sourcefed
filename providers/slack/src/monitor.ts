@@ -2,7 +2,7 @@ import { toMonitorEvent } from "@sourcefed/core"
 import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import type { SlackSourceRecord } from "./types"
-import { SlackSourceSchema } from "./schema.ts"
+import { SlackCursorSchema, SlackSourceSchema } from "./schema.ts"
 import { pollSlack } from "./poll"
 import { parseSlackWebhook, validSlackSignature } from "./webhook"
 import { updateSlackCursor } from "./webhook/utils/update-slack-cursor.ts"
@@ -11,6 +11,7 @@ import { updateSlackCursor } from "./webhook/utils/update-slack-cursor.ts"
 export const slackSource: SourceDefinition<SlackSourceRecord> = {
   type: "slack",
   schema: SlackSourceSchema,
+  cursor: SlackCursorSchema,
   input: {
     description: "A Slack thread's new replies, or a whole DM's new messages; read-only, never replies. Give threadUrl, or channelId with threadTs, or a D… DM channelId alone",
     properties: {

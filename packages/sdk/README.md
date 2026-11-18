@@ -1,31 +1,42 @@
 # Source plugin SDK
 
+The slice as a whole, its parts and its checks are in
+[P0: the SDK](../../docs/source-plugins/p0-sdk.md).
+
 A source is a definition plus a poll function. `defineSource` turns it into the
-core `Monitor`, so the daemon, the store, the webhook router and
-`runtime.tick()` keep running the same object a provider used to subclass.
+core `Monitor`, and the daemon, the store, the webhook router and
+`runtime.tick()` run the `Monitor` it returns, unchanged.
 
 ```ts
 import * as v from "valibot"
 import { defineSource } from "@sourcefed/sdk"
 
 const FeedSchema = v.object({ type: v.literal("feed"), url: v.string() })
+const SeenSchema = v.array(v.string())
 
 export const feed = defineSource({
   type: "feed",
   schema: FeedSchema,
+  cursor: SeenSchema,
   input: {
     description: "An Atom feed",
     properties: { url: { type: "string", description: "Feed URL" } },
     required: ["url"],
   },
-  build: (input) => (input.url ? { type: "feed", url: input.url } : { error: "url is required for a feed monitor" }),
+  build: (input) =>
+    input.url
+      ? { type: "feed", url: input.url }
+      : { error: "url is required for a feed monitor" },
   key: (source) => `feed:${source.url}`,
   label: (source) => source.url,
   detail: (source) => ` ${source.url}`,
   describe: (source) => `Feed ${source.url}`,
   poll: async ({ source, cursor, http }) => {
-    const body = await http.json<{ entries: Array<{ id: string; title: string }> }>(source.url)
-    const seen = Array.isArray(cursor) ? cursor.map(String) : []
+    const body = await http.json<{ entries: Array<{ id: string; title: string }> }>(
+      source.url,
+    )
+    const stored = v.safeParse(SeenSchema, cursor)
+    const seen = stored.success ? stored.output : []
 
     return {
       events: body.entries
@@ -45,12 +56,21 @@ export const feed = defineSource({
 })
 ```
 
-| Module | Responsibility |
-| --- | --- |
-| `source.ts` | `defineSource` and the `SourceDefinition` / `SourceContext` / `SourceWebhook` a provider writes. |
-| `http.ts` | `Http`, `httpOver`, `fetchHttp` and the three failures a plugin tells apart. |
-| `mcp.ts` | `Mcp`, `stdioMcp`, `hostMcpServers` and `McpError`: the MCP servers the host runs for a source. |
-| `golden.ts` | `assertGolden`, `fakeMcpSpawn`, `webhookSteps`, `withEnvironment`, `scriptedHttp`, `goldenRequest`, `replyResponse`, `redactHeaders` and the transcript types. |
+- `source.ts`: `defineSource` and the `SourceDefinition` / `SourceContext` /
+  `SourceWebhook` a provider writes.
+- `http.ts`: `Http`, `httpOver`, `fetchHttp` and the three failures a plugin
+  tells apart.
+- `mcp.ts`: `Mcp`, `stdioMcp`, `hostMcpServers` and `McpError`: the MCP
+  servers the host runs for a source.
+- `golden.ts`: `assertGolden`, `fakeMcpSpawn`, `webhookSteps`,
+  `withEnvironment`, `scriptedHttp`, `goldenRequest`, `replyResponse`,
+  `redactHeaders` and the transcript types.
+
+A definition's `cursor` is the shape of the cursor the source stores under
+its key: a valibot schema, the one its poll already parses the stored cursor
+with. `assertGolden` checks every recorded cursor against it, so a port cannot
+write a cursor its own source would refuse. A later change of shape is a
+migration the source declares.
 
 A definition's optional `defaultPollIntervalSec` is how often a new monitor
 of the source polls when the caller names no interval, such as `900` for a
@@ -73,8 +93,12 @@ webhook: {
   verify: (body, request, now) => validSignature(body, request, now()),
   deliveryId: (request) => request.headers.get("x-feed-delivery") ?? undefined,
   eventName: (request) => request.headers.get("x-feed-event") ?? "feed",
-  parse: (payload, eventName, deliveryId, now) => toEvent(payload, eventName, deliveryId, now()),
-  updateCursor: (event, cursor) => [...(Array.isArray(cursor) ? cursor : []), event.id],
+  parse: (payload, eventName, deliveryId, now) =>
+    toEvent(payload, eventName, deliveryId, now()),
+  updateCursor: (event, cursor) => [
+    ...(Array.isArray(cursor) ? cursor : []),
+    event.id,
+  ],
 },
 mergeCursor: mergeCursors,
 ```
@@ -86,8 +110,8 @@ one.
 
 ## What the host owns
 
-Today: the `http` transport, the `mcp` servers and the `now` clock, and
-nothing else. Every poll and every webhook's `verify` and `parse` receive the
+The host owns the `http` transport, the `mcp` servers and the `now` clock,
+and nothing else. Every poll and every webhook's `verify` and `parse` receive the
 host's clock, and every poll the host's `Http` and `Mcp`; a test or the
 golden harness supplies its own, and `fetchHttp`, `stdioMcp(hostMcpServers)`
 and `new Date()` are the only ones in production.
@@ -109,12 +133,24 @@ Yab is the host's only server. `hostMcpServers` runs it from
 `SOURCEFED_YAB_COMMAND`, read at each call, or the app's own binary, with a
 45 s limit per call. `stdioMcp` speaks MCP over stdio and starts one process
 per call, stopped once the call settles, so nothing stays connected between
-polls. A server the host does not run rejects with a plain `Error`: that is a
+polls.
+
+Each call is bounded. Past 16 MiB of output without a finished answer it fails
+with `overflow`, and `McpError.limitBytes` says how much it allowed. Stderr
+keeps its first 4096 characters, well more than the few hundred a source
+quotes: a source redacts before it quotes, and text cut first could end inside
+a URL, leaving a credential that no longer looks like one. Once the outcome is
+decided the child gets SIGTERM, SIGKILL two seconds later, and the call answers
+two seconds after that whatever happens, so no call outlives `timeoutMs` plus
+four seconds and no timer outlives the call.
+
+A server the host does not run rejects with a plain `Error`: that is a
 configuration bug, not a failed call.
 
 A call that produces no text rejects with an `McpError` whose `failure` is
 `start`, `timeout`, `exit` (with `exitCode`), `error` (a JSON-RPC error,
-with its `code`) or `tool` (the tool reported a failure). The server's own
+with its `code`), `tool` (the tool reported a failure) or `overflow` (with
+`limitBytes`). The server's own
 words, its stderr or the tool's failure text, are in `detail` and never in
 `message`: they may quote what the source sent, such as a feed URL whose path
 is its credential, so the source decides whether and how to show them.
@@ -174,11 +210,26 @@ that run after it.
 
 ```ts
 test("the jira source replays its recorded transcript", async () => {
-  await withEnvironment({ ATLASSIAN_API_KEY: "test-key", SOURCEFED_JIRA_TERMINAL_STATUS: undefined }, async () => {
+  const env = {
+    ATLASSIAN_API_KEY: "test-key",
+    SOURCEFED_JIRA_TERMINAL_STATUS: undefined,
+  }
+
+  await withEnvironment(env, async () => {
     await assertGolden(jiraFixture, jiraDefinition)
   })
 })
 ```
+
+## The monitors.json audit
+
+`packages/daemon/src/monitors-audit.test.ts` checks that a stored
+`monitors.json` survives the port. It builds a record from each fixture's last
+cursor under its recorded key, saves the records through `JsonMonitorStore` in
+a temporary folder and loads them back with a fresh store. Each record must
+keep the SDK source's key, hold its cursor under that key and parse with the
+source's `cursor` schema, and every source type must be covered. The live
+state is never read.
 
 ## Recording a fixture
 

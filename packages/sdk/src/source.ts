@@ -39,6 +39,11 @@ export type SourceWebhook = Omit<WebhookMonitorOptions, "verify" | "parse"> & {
 export type SourceDefinition<T extends MonitorSource> = {
   readonly type: T["type"]
   readonly schema: GenericSchema<T>
+  /**
+   * The shape of the cursor this source stores under its key. A stored cursor is checked
+   * against it, and a later change of shape is a migration the source declares.
+   */
+  readonly cursor: GenericSchema<unknown>
   readonly input: SourceInputSchema
   readonly build: (input: MonitorCreateInput) => SourceInput
   readonly key: (source: T) => string

@@ -1,7 +1,7 @@
 import { toMonitorEvent } from "@sourcefed/core"
 import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
-import { JiraSourceSchema } from "./schema.ts"
+import { JiraCursorSchema, JiraSourceSchema } from "./schema.ts"
 import { pollJira } from "./poll/utils"
 import type { JiraSourceRecord } from "./types"
 
@@ -9,6 +9,7 @@ import type { JiraSourceRecord } from "./types"
 export const jiraSource: SourceDefinition<JiraSourceRecord> = {
   type: "jira",
   schema: JiraSourceSchema,
+  cursor: JiraCursorSchema,
   input: {
     description: "A Jira issue: new comments, description edits, and status, assignee, priority or label changes",
     properties: { issueKey: { type: "string", description: "Jira issue key, e.g. PROJ-12345" } },
