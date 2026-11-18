@@ -139,7 +139,7 @@ describe("triage at the runtime transport", () => {
       },
     })
     const queue = new InMemoryMonitorEventQueue()
-    const triage = countingTriage({ "event-1": { deliver: false } })
+    const triage = countingTriage({ "event-1": { deliver: false, rule: "sourcefed/triage" } })
     const { runtime, record } = await createRuntime({ source, queue, triage })
 
     try {
@@ -174,7 +174,7 @@ describe("triage at the runtime transport", () => {
     const inner = new InMemoryMonitorEventQueue()
     const queue = new FailingOnceQueue(inner, "event-b")
     const triage = countingTriage({
-      "event-a": { deliver: false },
+      "event-a": { deliver: false, rule: "sourcefed/triage" },
       "event-b": { deliver: true, triaged: true },
     })
     const { runtime, record } = await createRuntime({ source, queue, triage })
@@ -217,7 +217,7 @@ describe("triage at the runtime transport", () => {
     })
     const source = new TestMonitor({ webhook })
     const queue = new InMemoryMonitorEventQueue()
-    const triage = countingTriage({ "event-1": { deliver: false } })
+    const triage = countingTriage({ "event-1": { deliver: false, rule: "sourcefed/triage" } })
     const { runtime, record } = await createRuntime({ source, queue, triage, delivery: "webhook" })
 
     try {

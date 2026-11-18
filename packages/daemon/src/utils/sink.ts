@@ -1,4 +1,5 @@
 import type { MonitorEvent, MonitorEventQueue, MonitorEventSink, MonitorRecord, MonitorTarget } from "@sourcefed/core"
+import type { TriageDecision } from "../triage/triage.ts"
 import type { EventTriage } from "../types/daemon.ts"
 
 export class NotifyingEventSink implements MonitorEventSink {
@@ -6,6 +7,8 @@ export class NotifyingEventSink implements MonitorEventSink {
     private readonly queue: MonitorEventQueue,
     private readonly notify: (target: MonitorTarget) => void,
     private readonly triage?: Pick<EventTriage, "decide">,
+    /** A withheld event is invisible to every host, so the log is the only place it can be accounted for. */
+    private readonly log: (line: string) => void = console.error,
   ) {}
 
   async deliver(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<{ ok: boolean; error?: string }> {
@@ -13,7 +16,10 @@ export class NotifyingEventSink implements MonitorEventSink {
 
     // A withheld event is queued for no host at all. The source cursor still
     // advances, so Chauffeur's verdict is the last word on it.
-    if (!decision.deliver) return { ok: true }
+    if (!decision.deliver) {
+      this.log(`[sourcefed] withheld event=${input.event.id ?? "none"} monitor=${input.monitor.id} rule=${decision.rule || "none"}: ${input.event.summary}`)
+      return { ok: true }
+    }
 
     try {
       // The mark tells a host Chauffeur already vetted the event, so it must skip its own gate.
@@ -36,7 +42,7 @@ export class NotifyingEventSink implements MonitorEventSink {
    * of fail-open. An unanswered verdict delivers the event unmarked instead, so
    * the host still applies its own gate.
    */
-  private async decisionFor(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<{ deliver: boolean; triaged?: boolean }> {
+  private async decisionFor(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<TriageDecision> {
     if (!this.triage) return { deliver: true, triaged: false }
 
     try {

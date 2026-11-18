@@ -56,14 +56,24 @@ function commentEvent(): MonitorEvent {
   }
 }
 
-/** Lets the daemon's promise-chained delivery run before asserting. */
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 10))
+/** Resolves with the next delivery, and fails the test instead of waiting forever. */
+function nextDelivery(daemon: SourcefedDaemon, ms = 2_000): Promise<QueuedMonitorEvent[]> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe()
+      reject(new Error(`no delivery within ${ms}ms`))
+    }, ms)
+    const unsubscribe = daemon.subscribe(target, (events) => {
+      clearTimeout(timer)
+      unsubscribe()
+      resolve(events)
+    })
+  })
 }
 
 describe("SourcefedDaemon triage", () => {
   test("a withheld event reaches neither the queue nor a subscriber", async () => {
-    const fake = fakeTriage(async () => ({ deliver: false }))
+    const fake = fakeTriage(async () => ({ deliver: false, rule: "sourcefed/triage" }))
     const daemon = createDaemon(fake.triage)
     const record = await jiraMonitor(daemon)
 
@@ -71,7 +81,6 @@ describe("SourcefedDaemon triage", () => {
     const unsubscribe = daemon.subscribe(target, (events) => received.push(...events))
 
     const result = await daemon.runtime.context.sink.deliver({ monitor: record, event: commentEvent() })
-    await settle()
 
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(await daemon.readEvents(target), [])
@@ -86,11 +95,9 @@ describe("SourcefedDaemon triage", () => {
     const daemon = createDaemon(fake.triage)
     const record = await jiraMonitor(daemon)
 
-    const received: QueuedMonitorEvent[] = []
-    const unsubscribe = daemon.subscribe(target, (events) => received.push(...events))
-
+    const delivery = nextDelivery(daemon)
     await daemon.runtime.context.sink.deliver({ monitor: record, event: commentEvent() })
-    await settle()
+    const received = await delivery
 
     const queued = await daemon.readEvents(target)
     assert.equal(queued.length, 1)
@@ -99,7 +106,6 @@ describe("SourcefedDaemon triage", () => {
     assert.equal(received[0].id, queued[0].id)
     assert.equal(received[0].chauffeurTriaged, true)
 
-    unsubscribe()
     await daemon.stop()
   })
 

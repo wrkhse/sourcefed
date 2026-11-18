@@ -40,11 +40,11 @@ function unresponsiveNavigator(): Navigator {
   }
 }
 
-function sinkWith(decision?: TriageDecision) {
+function sinkWith(decision?: TriageDecision, lines: string[] = []) {
   const queue = new InMemoryMonitorEventQueue()
   const notified: MonitorTarget[] = []
   const triage = decision ? { decide: async () => decision } : undefined
-  const sink = new NotifyingEventSink(queue, (delivered) => notified.push(delivered), triage)
+  const sink = new NotifyingEventSink(queue, (delivered) => notified.push(delivered), triage, (line) => lines.push(line))
 
   return { queue, notified, sink }
 }
@@ -60,15 +60,33 @@ function sinkWithFailingDecide(decide: () => Promise<TriageDecision>) {
 
 describe("NotifyingEventSink", () => {
   test("a withheld event is neither queued nor announced", async () => {
-    const { queue, notified, sink } = sinkWith({ deliver: false })
+    const { queue, notified, sink } = sinkWith({ deliver: false, rule: "sourcefed/triage" })
 
     assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
     assert.deepEqual(await queue.read(target), [])
     assert.deepEqual(notified, [])
   })
 
+  test("a withheld event logs one line naming the event, the monitor, the rule and the summary", async () => {
+    const lines: string[] = []
+    const { queue, sink } = sinkWith({ deliver: false, rule: "sourcefed/triage" }, lines)
+
+    assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent({ id: "review:1" }) }), { ok: true })
+    assert.deepEqual(lines, ["[sourcefed] withheld event=review:1 monitor=monitor-1 rule=sourcefed/triage: Changes requested on PR #42"])
+    assert.deepEqual(await queue.read(target), [])
+  })
+
+  test("a withheld event whose intent names no rule logs rule=none", async () => {
+    const lines: string[] = []
+    const { sink } = sinkWith({ deliver: false, rule: "" }, lines)
+
+    assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
+    assert.deepEqual(lines, ["[sourcefed] withheld event=none monitor=monitor-1 rule=none: Changes requested on PR #42"])
+  })
+
   test("a triaged event is queued and announced with the mark", async () => {
-    const { queue, notified, sink } = sinkWith({ deliver: true, triaged: true })
+    const lines: string[] = []
+    const { queue, notified, sink } = sinkWith({ deliver: true, triaged: true }, lines)
 
     assert.deepEqual(await sink.deliver({ monitor: monitorRecord(), event: monitorEvent() }), { ok: true })
 
@@ -76,6 +94,7 @@ describe("NotifyingEventSink", () => {
     assert.equal(queued.length, 1)
     assert.equal(queued[0].chauffeurTriaged, true)
     assert.deepEqual(notified, [target])
+    assert.deepEqual(lines, [])
   })
 
   test("an untriaged event is queued without the mark", async () => {

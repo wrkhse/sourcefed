@@ -70,6 +70,9 @@ flowchart TD
 
 - A withhold answers the sink `{ ok: true }` and the event is not queued. The source
   cursor advances, so the verdict is the last word on that event.
+- The sink logs exactly one line per withheld event,
+  `[sourcefed] withheld event=<event id or none> monitor=<monitor id> rule=<rule id or none>: <summary>`,
+  because a withheld event reaches no host and the log is the only place it is accounted for.
 - Any other intent, or none at all, queues the event with `chauffeurTriaged: true`.
 - With no Chauffeur, a v1 daemon, an error or a timeout, the event queues unmarked.
 - A triage that throws or rejects delivers the event unmarked, because the sink catches
@@ -149,17 +152,18 @@ wiring lands: it imports `connect` from `@fdcn/chauffeur/client` and passes
 The client is a release asset, not a registry package. wrkhse/chauffeur#31 attaches
 `fdcn-chauffeur-1.0.0-rc.5.tgz` to each prerelease, the package stays `private: true`, and
 `packages/cli/package.json` names that URL as a `devDependency`, so `npm ci` installs it from
-GitHub and the bundles carry it. Its sha256 is
-`8f24e8ed8f4a6c36ab2238722e90dddf026e8bbbc17f7522aab96798baa26d68`, pinned in the pull request
-that added it.
+GitHub and the bundles carry it. `npm ci` verifies the lockfile's `sha512` integrity for that URL,
+and the sha256, `8f24e8ed8f4a6c36ab2238722e90dddf026e8bbbc17f7522aab96798baa26d68`, is the value
+published in the release's `SHA256SUMS`, recorded for reference.
 
 `chauffeur.contract.test.ts` proves the wiring against a real daemon: it points
 `XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME` at a temporary folder, writes the rule
 `installTriageRule` writes to `<config>/chauffeur-next/rules/sourcefed/triage.json`, starts
 `$CHAUFFEUR_BIN` under the name `chauffeur-next` with placeholder models, and asserts that the
 sink withholds what the rule refuses and delivers marked what it allows. The check workflow
-fetches the pinned `chauffeur-1.0.0-rc.5-linux-x64.tar.gz`, verifies its sha256 and exports
-`CHAUFFEUR_BIN`, so the test never skips in the check job and never runs on a developer's machine.
+fetches the pinned `chauffeur-1.0.0-rc.5-linux-x64.tar.gz`, verifies its sha256, and exports
+`CHAUFFEUR_BIN` and `CHAUFFEUR_REQUIRED=1`, which is what makes the test fail rather than skip if the
+fetch breaks; it never runs on a developer's machine.
 
 `navigator.ts`'s `ChauffeurConnect` is the client surface this branch was written against, so
 if the client's `connect` does not fit it, the shape changed - report it, do not loosen a test
@@ -181,4 +185,5 @@ that a subscriber and the queue record the same mark, over a real SSE round trip
 `sink.test.ts` covers the sink and `daemon-triage.test.ts` the daemon option.
 `chauffeur.contract.test.ts` runs the sink against a real daemon, which it starts and stops
 with signals, so it skips unless `CHAUFFEUR_BIN` names one; the check workflow sets that from the pinned
-platform tarball, and nothing starts a Chauffeur daemon on a developer's machine.
+platform tarball, and nothing starts a Chauffeur daemon on a developer's machine; the tests wait on
+the subscriber or on the queue with a bounded deadline rather than on a fixed sleep.

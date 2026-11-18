@@ -134,7 +134,7 @@ describe("ChauffeurTriage", () => {
   test("a withhold intent withholds the event and the request carries its evidence", async () => {
     const h = harness({ reply: async () => ({ intents: [{ rule: "sourcefed/triage", withhold: "event" }] }) })
 
-    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: false })
+    assert.deepEqual(await h.triage.decide(monitor, event), { deliver: false, rule: "sourcefed/triage" })
     assert.deepEqual(h.logs, [
       `[sourcefed] Chauffeur v2 ${endpoint.version} at ${endpoint.socket}: events are triaged before delivery`,
     ])

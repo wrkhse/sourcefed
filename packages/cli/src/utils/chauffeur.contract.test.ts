@@ -5,8 +5,8 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { after, before, describe, test } from "node:test"
 import { connect } from "@fdcn/chauffeur/client"
-import { InMemoryMonitorEventQueue, InMemoryMonitorStore, type MonitorEvent, type MonitorRecord, type MonitorTarget } from "@sourcefed/core"
-import { ChauffeurTriage, chauffeurNavigators, chauffeurSocket, probeChauffeur } from "@sourcefed/daemon"
+import { InMemoryMonitorEventQueue, InMemoryMonitorStore, type MonitorEvent, type MonitorRecord, type MonitorTarget, type QueuedMonitorEvent } from "@sourcefed/core"
+import { ChauffeurTriage, SourcefedDaemon, chauffeurNavigators, chauffeurSocket, probeChauffeur } from "@sourcefed/daemon"
 import { installTriageRule, triageRulePath } from "./chauffeur-rule.ts"
 import { createDaemon } from "./daemon.ts"
 
@@ -25,10 +25,21 @@ const noDaemon = BIN === undefined
 /** How long the real daemon gets to answer a probe after it is spawned. */
 const READY_MS = 20_000
 const STEP_MS = 50
-const SETTLE_MS = 10
 
 function sleep(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms))
+}
+
+/** The queue's events once it holds `count`, or a failed test rather than a hang. */
+async function waitForEvents(daemon: SourcefedDaemon, count: number, ms = 2_000): Promise<QueuedMonitorEvent[]> {
+  const deadline = Date.now() + ms
+
+  for (;;) {
+    const queued = await daemon.readEvents(target)
+    if (queued.length >= count) return queued
+    if (Date.now() >= deadline) throw new Error(`the queue held ${queued.length} events after ${ms}ms, expected ${count}`)
+    await sleep(STEP_MS)
+  }
 }
 
 /** The models one phase loads: a placeholder that answers `answer` confidently. */
@@ -68,9 +79,10 @@ function commentEvent(): MonitorEvent {
 }
 
 describe("the sourcefed/triage contract", () => {
-  test("the check job provides the daemon these tests run against", () => {
-    // The release workflow runs npm run check too, without a daemon, so only this job fails closed.
-    if (process.env.GITHUB_JOB === "check") assert.ok(BIN, "CHAUFFEUR_BIN must name the fetched Chauffeur daemon")
+  test("the workflow that requires a daemon provides one", () => {
+    // Only the workflow that sets CHAUFFEUR_REQUIRED must supply CHAUFFEUR_BIN: a renamed job
+    // cannot make this contract skip silently, and a daemon-less check keeps working elsewhere.
+    if (process.env.CHAUFFEUR_REQUIRED) assert.ok(BIN, "CHAUFFEUR_REQUIRED is set, so CHAUFFEUR_BIN must name the fetched Chauffeur daemon")
   })
 
   describe("with a real daemon", () => {
@@ -126,7 +138,7 @@ describe("the sourcefed/triage contract", () => {
       await startDaemon("no")
       const triage = new ChauffeurTriage({ connect: chauffeurNavigators(connect), log: () => {} })
       try {
-        assert.deepEqual(await triage.decide(monitorRecord(), commentEvent()), { deliver: false })
+        assert.deepEqual(await triage.decide(monitorRecord(), commentEvent()), { deliver: false, rule: "sourcefed/triage" })
       } finally {
         triage.close()
       }
@@ -137,7 +149,6 @@ describe("the sourcefed/triage contract", () => {
       const daemon = createDaemon({ store: new InMemoryMonitorStore(), eventQueue: new InMemoryMonitorEventQueue(), stateDir: state })
       try {
         assert.deepEqual(await daemon.runtime.context.sink.deliver({ monitor: monitorRecord(), event: commentEvent() }), { ok: true })
-        await sleep(SETTLE_MS)
         assert.deepEqual(await daemon.readEvents(target), [])
       } finally {
         await daemon.stop()
@@ -149,8 +160,7 @@ describe("the sourcefed/triage contract", () => {
       const daemon = createDaemon({ store: new InMemoryMonitorStore(), eventQueue: new InMemoryMonitorEventQueue(), stateDir: state })
       try {
         assert.deepEqual(await daemon.runtime.context.sink.deliver({ monitor: monitorRecord(), event: commentEvent() }), { ok: true })
-        await sleep(SETTLE_MS)
-        const queued = await daemon.readEvents(target)
+        const queued = await waitForEvents(daemon, 1)
         assert.equal(queued.length, 1)
         assert.equal(queued[0].chauffeurTriaged, true)
       } finally {

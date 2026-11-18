@@ -24,7 +24,8 @@ export type Navigator = {
   close(): void
 }
 
-export type TriageDecision = { deliver: false } | { deliver: true; triaged: boolean }
+/** One decide's verdict. `rule` is the id of the intent that withheld the event, `""` when that intent names none. */
+export type TriageDecision = { deliver: false; rule: string } | { deliver: true; triaged: boolean }
 
 /** One decide's deadline: a ref'd timer that aborts its signal, cleared when the decide or close ends it. */
 type Deadline = { readonly signal: AbortSignal; abort(): void; clear(): void }
@@ -43,7 +44,6 @@ export type ChauffeurTriageOptions = {
 
 const UNTRIAGED: TriageDecision = { deliver: true, triaged: false }
 const TRIAGED: TriageDecision = { deliver: true, triaged: true }
-const WITHHELD: TriageDecision = { deliver: false }
 
 type Verdict =
   | { kind: "result"; result: unknown }
@@ -219,23 +219,36 @@ export class ChauffeurTriage {
 }
 
 function triageDecision(result: unknown): TriageDecision {
-  const withholds = withholdsEvent(result)
-  if (withholds === undefined) return UNTRIAGED
-  return withholds ? WITHHELD : TRIAGED
+  const intents = intentsOf(result)
+  if (intents === undefined) return UNTRIAGED
+
+  const rule = withheldRule(intents)
+  return rule === undefined ? TRIAGED : { deliver: false, rule }
 }
 
-/** Whether any intent explicitly withholds the event, or undefined for a malformed result. */
-function withholdsEvent(result: unknown): boolean | undefined {
+/** The intents of a well-formed answer, or undefined when the daemon answered with something else. */
+function intentsOf(result: unknown): readonly unknown[] | undefined {
   if (typeof result !== "object" || result === null) return undefined
 
   const intents = (result as { intents?: unknown }).intents
-  if (!Array.isArray(intents)) return undefined
+  return Array.isArray(intents) ? intents : undefined
+}
 
-  return intents.some((intent: unknown) => (
-    typeof intent === "object"
-    && intent !== null
-    && (intent as { withhold?: unknown }).withhold === "event"
-  ))
+/**
+ * The rule the first withholding intent names, `""` when it names none, or undefined when no
+ * intent withholds. An intent that withholds always withholds, even unlabelled: the verdict
+ * must not depend on the rule field arriving.
+ */
+function withheldRule(intents: readonly unknown[]): string | undefined {
+  for (const intent of intents) {
+    if (typeof intent !== "object" || intent === null) continue
+    if ((intent as { withhold?: unknown }).withhold !== "event") continue
+
+    const rule = (intent as { rule?: unknown }).rule
+    return typeof rule === "string" ? rule : ""
+  }
+
+  return undefined
 }
 
 /** Probes without ever rejecting: a discovery failure is simply no endpoint. */

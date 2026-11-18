@@ -84,7 +84,7 @@ describe("chauffeurNavigators", () => {
       log: () => {},
     })
 
-    assert.deepEqual(await triage.decide(monitorRecord(), monitorEvent()), { deliver: false })
+    assert.deepEqual(await triage.decide(monitorRecord(), monitorEvent()), { deliver: false, rule: "sourcefed/triage" })
 
     triage.close()
     assert.equal(connection.closeCount(), 1)
