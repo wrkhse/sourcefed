@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import type { MonitorCreateInput, MonitorSource, SourceInputSchema, WebhookMonitor } from "@sourcefed/core"
 import { httpOver, type Http } from "./http.ts"
+import * as v from "valibot"
 import { stdioMcp, type McpChild, type McpSpawn } from "./mcp.ts"
 import { defineSource, type SourceDefinition } from "./source.ts"
 
@@ -265,6 +266,7 @@ export async function assertGolden<T extends MonitorSource>(fixture: GoldenFixtu
 
       assert.deepEqual(asJSON(result.events), kase.events, `${at}: events`)
       assert.deepEqual(asJSON(result.cursor), kase.cursorAfter, `${at}: cursor after`)
+      assertCursorShape(definition, kase.cursorAfter, at)
       assert.equal("terminal" in result ? result.terminal : false, kase.terminal ?? false, `${at}: terminal`)
     }
 
@@ -294,7 +296,18 @@ function assertGoldenWebhook<T extends MonitorSource>(fixture: GoldenFixture, re
     if (!delivered) assert.fail(`${at}: missing`)
 
     assert.deepEqual(webhookSteps(delivered, kase, recorded.path), kase, `${at} ${kase.name}`)
+    assertCursorShape(definition, kase.cursorAfter, `${at} ${kase.name}`)
   }
+}
+
+/**
+ * A recorded cursor must be one the source declares, or a stored cursor would fail its own
+ * check after the port. A missing or null cursor is no cursor written, so it has no shape.
+ */
+function assertCursorShape<T extends MonitorSource>(definition: SourceDefinition<T>, cursorAfter: unknown, at: string): void {
+  if (cursorAfter === undefined || cursorAfter === null) return
+
+  assert.ok(v.safeParse(definition.cursor, cursorAfter).success, `${at}: cursor shape`)
 }
 
 /** A recorded instant's clock, or the real one when nothing was recorded. */

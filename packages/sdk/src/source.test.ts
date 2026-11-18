@@ -64,6 +64,7 @@ function fakeDefinition(calls: SourceContext<FakeSource>[] = []): SourceDefiniti
   return {
     type: "fake",
     schema: FakeSourceSchema,
+    cursor: v.string(),
     input,
     build: (create) => (create.channelId ? { type: "fake", channel: create.channelId } : { error: "channelId is required for a fake monitor" }),
     key: (source) => `fake:${source.channel}`,

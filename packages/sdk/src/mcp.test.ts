@@ -185,7 +185,7 @@ describe("stdioMcp", () => {
     }
   })
 
-  test("settles once and kills the child once", async () => {
+  test("settles once and signals no child that has already exited", async () => {
     const hand = handChild()
     const mcp = stdioMcp(() => server, spawnOnce(hand.child))
 

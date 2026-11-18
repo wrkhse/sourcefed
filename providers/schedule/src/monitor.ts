@@ -2,12 +2,13 @@ import { toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sour
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { checkSchedule, systemTimezone } from "./firings.ts"
 import { pollSchedule } from "./poll.ts"
-import { ScheduleSourceSchema, type ScheduleSource } from "./schema.ts"
+import { ScheduleCursorSchema, ScheduleSourceSchema, type ScheduleSource } from "./schema.ts"
 
 /** A cron schedule as data, plus the poll the host drives with its own clock. */
 export const scheduleSource: SourceDefinition<ScheduleSource> = {
   type: "schedule",
   schema: ScheduleSourceSchema,
+  cursor: ScheduleCursorSchema,
   input: {
     description: "A cron schedule: schedule.fired at each time, or one schedule.missed for times that came while sourcefed was stopped",
     properties: {

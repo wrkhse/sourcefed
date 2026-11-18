@@ -3,7 +3,7 @@ import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
 import { filterText } from "./events.ts"
 import { pollGithubIssues } from "./poll.ts"
-import { GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
+import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
 
 const REPO = /^[\w.-]+\/[\w.-]+$/
 
@@ -11,6 +11,7 @@ const REPO = /^[\w.-]+\/[\w.-]+$/
 export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
   type: "github-issues",
   schema: GithubIssuesSourceSchema,
+  cursor: GithubIssuesCursorSchema,
   wake: {
     path: "/webhooks/github",
     matches: (source: GithubIssuesSource, payload: unknown, eventName: string): boolean => {

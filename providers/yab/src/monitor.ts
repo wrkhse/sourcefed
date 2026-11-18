@@ -2,13 +2,14 @@ import { toMonitorEvent } from "@sourcefed/core"
 import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import type { YabSourceRecord } from "./types"
-import { YabSourceSchema } from "./schema.ts"
+import { YabCursorSchema, YabSourceSchema } from "./schema.ts"
 import { fetchThroughYab, pollYab } from "./poll"
 
 /** A feed read through Yab as data, plus the poll the host drives with its own MCP servers and clock. */
 export const yabSource: SourceDefinition<YabSourceRecord> = {
   type: "yab",
   schema: YabSourceSchema,
+  cursor: YabCursorSchema,
   input: {
     description: "New entries of an Atom, RSS or JSON feed read through the user's Yab browser with their sign-ins; Yab must be running",
     properties: {

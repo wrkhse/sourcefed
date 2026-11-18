@@ -2,7 +2,7 @@ import { mergeCursors, toMonitorEvent } from "@sourcefed/core"
 import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import type { GithubSourceRecord } from "./types"
-import { GithubSourceSchema } from "./schema.ts"
+import { GithubCursorSchema, GithubSourceSchema } from "./schema.ts"
 import { pollGithub } from "./poll"
 import { parseGithubWebhook, verifyGithubWebhook } from "./webhook"
 import { updateGithubCursor } from "./webhook/utils/update-github-cursor.ts"
@@ -12,6 +12,7 @@ import { htmlToMarkdown } from "./utils/html-to-markdown.ts"
 export const githubSource: SourceDefinition<GithubSourceRecord> = {
   type: "github",
   schema: GithubSourceSchema,
+  cursor: GithubCursorSchema,
   input: {
     description: "A GitHub pull request: reviews, comments, CI failures, conflicts, merge or close",
     properties: {

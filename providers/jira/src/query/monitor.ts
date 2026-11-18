@@ -1,4 +1,4 @@
-import { toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { CollectionCursorSchema, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { jiraSearchFetch } from "./api.ts"
 import { pollJiraQuery } from "./poll.ts"
@@ -8,6 +8,7 @@ import { JiraQuerySourceSchema, type JiraQuerySource } from "./schema.ts"
 export const jiraQuerySource: SourceDefinition<JiraQuerySource> = {
   type: "jira-query",
   schema: JiraQuerySourceSchema,
+  cursor: CollectionCursorSchema,
   input: {
     description: "Jira issues matching a JQL query: item.matched when an issue starts matching, item.unmatched when it stops",
     properties: {
