@@ -14,7 +14,8 @@ const STATUS_REQUEST = '{"jsonrpc":"2.0","id":1,"method":"chauffeur.status"}\n'
  * The socket one named Chauffeur daemon listens on: <runtime>/<name>/daemon.sock.
  *
  * This mirrors @fdcn/chauffeur/client's socketPath rule -- the runtime folder is $XDG_RUNTIME_DIR,
- * falling back to the temporary folder -- and will import it once that package is a dependency.
+ * falling back to the temporary folder -- but discovery stays here: it tries both installations
+ * and honours CHAUFFEUR_SOCKET alone, where the client's socketPath resolves one path.
  */
 export function socketFor(name: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
   const runtime = env.XDG_RUNTIME_DIR || os.tmpdir()

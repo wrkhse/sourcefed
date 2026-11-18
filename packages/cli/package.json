@@ -22,5 +22,8 @@
       "default": "./dist/index.js"
     }
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@fdcn/chauffeur": "https://github.com/wrkhse/chauffeur/releases/download/v1.0.0-rc.5/fdcn-chauffeur-1.0.0-rc.5.tgz"
+  }
 }

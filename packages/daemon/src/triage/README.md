@@ -1,8 +1,8 @@
 # Chauffeur v2 triage
 
 **Status:** the production connection comes from `@fdcn/chauffeur/client`'s
-`connect({ socket })`, pinned to a Chauffeur prerelease tarball and bundled; until that
-lands the daemon runs without triage.
+`connect({ socket })`, pinned to a Chauffeur prerelease tarball and bundled, so the
+daemon triages every event before delivery.
 
 Chauffeur v2 triages every event at the daemon's sink,
 [`NotifyingEventSink.deliver`](../utils/sink.ts), before the event reaches the queue.
@@ -14,7 +14,7 @@ them and a passed event reaches them all.
 | `evidence.ts` | `triageEvidence`: the event, thread and monitor text blocks, each clamped to 16 KiB. |
 | `discover.ts` | `candidateSockets`, `probe`, `discover`: which sockets to ask, and whether one answers as Chauffeur v2. |
 | `triage.ts` | `ChauffeurTriage`: one kept connection, `decide()` that never rejects, a 3 s deadline over probe and call, one re-probe per 30 s, `close()` on stop. |
-| `navigator.ts` | `chauffeurNavigators`, `ChauffeurConnect`: the client's `connect({ socket })` turned into the `Navigator` triage asks, the one surface the wiring commit replaces. |
+| `navigator.ts` | `chauffeurNavigators`, `ChauffeurConnect`: the client's `connect({ socket })` turned into the `Navigator` triage asks, the surface `packages/cli/src/utils/daemon.ts` hands to `ChauffeurTriage`. |
 
 ## Discovery
 
@@ -25,7 +25,7 @@ tries `<runtime>/chauffeur/daemon.sock` and then
 because a v1 and a v2 daemon can be installed side by side.
 
 A candidate must answer `chauffeur.status` with protocol `1` and a `1.x` version;
-prereleases such as `1.0.0-rc.4` count. One reply is read up to 64 KiB and a probe
+prereleases such as `1.0.0-rc.5` count. One reply is read up to 64 KiB and a probe
 waits at most 500 ms.
 
 ## Rule
@@ -143,23 +143,27 @@ delivered untriaged at once. A connection that works logs its version and socket
 
 The daemon takes triage through `SourcefedDaemonOptions.triage`, and
 [packages/cli/src/utils/daemon.ts](../../../cli/src/utils/daemon.ts) is the one place the
-wiring lands. That commit waits on the client's release tarball: wrkhse/chauffeur#31
-attaches it to each prerelease, the package stays `private: true`, and nothing comes from
-the npm registry. It does three things:
+wiring lands: it imports `connect` from `@fdcn/chauffeur/client` and passes
+`triage: new ChauffeurTriage({ connect: chauffeurNavigators(connect) })`.
 
-1. Adds `@fdcn/chauffeur` to `packages/daemon/package.json` `devDependencies` as the
-   release-asset URL
-   `https://github.com/wrkhse/chauffeur/releases/download/v1.0.0-rc.5/fdcn-chauffeur-1.0.0-rc.5.tgz`,
-   and records the tarball's sha256 in the PR body.
-2. Imports `connect` from `@fdcn/chauffeur/client` in `packages/cli/src/utils/daemon.ts`
-   and passes `triage: new ChauffeurTriage({ connect: chauffeurNavigators(connect) })`.
-3. Adds the CI test that starts the real Chauffeur daemon, has it load
-   `<config>/chauffeur-next/rules/sourcefed/triage.json`, and proves the
-   `sourcefed/triage` verdict reaches the sink.
+The client is a release asset, not a registry package. wrkhse/chauffeur#31 attaches
+`fdcn-chauffeur-1.0.0-rc.5.tgz` to each prerelease, the package stays `private: true`, and
+`packages/cli/package.json` names that URL as a `devDependency`, so `npm ci` installs it from
+GitHub and the bundles carry it. Its sha256 is
+`8f24e8ed8f4a6c36ab2238722e90dddf026e8bbbc17f7522aab96798baa26d68`, pinned in the pull request
+that added it.
 
-`navigator.ts`'s `ChauffeurConnect` is the client surface this branch was written against,
-so if the client's `connect` does not fit it, the shape changed - report it, do not loosen
-a test to fit.
+`chauffeur.contract.test.ts` proves the wiring against a real daemon: it points
+`XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME` at a temporary folder, writes the rule
+`installTriageRule` writes to `<config>/chauffeur-next/rules/sourcefed/triage.json`, starts
+`$CHAUFFEUR_BIN` under the name `chauffeur-next` with placeholder models, and asserts that the
+sink withholds what the rule refuses and delivers marked what it allows. The check workflow
+fetches the pinned `chauffeur-1.0.0-rc.5-linux-x64.tar.gz`, verifies its sha256 and exports
+`CHAUFFEUR_BIN`, so the test never skips in the check job and never runs on a developer's machine.
+
+`navigator.ts`'s `ChauffeurConnect` is the client surface this branch was written against, so
+if the client's `connect` does not fit it, the shape changed - report it, do not loosen a test
+to fit.
 
 ## Testing
 
@@ -174,5 +178,7 @@ reporting and `close()`. `runtime-triage.test.ts` runs poll and webhook events t
 the sink: a withheld event is not asked again once the cursor advances, a failed enqueue
 retries the poll, and a withheld webhook answers success. `stream-triage.test.ts` checks
 that a subscriber and the queue record the same mark, over a real SSE round trip.
-`sink.test.ts` covers the sink and `daemon-triage.test.ts` the daemon option. Nothing
-starts a Chauffeur daemon locally.
+`sink.test.ts` covers the sink and `daemon-triage.test.ts` the daemon option.
+`chauffeur.contract.test.ts` runs the sink against a real daemon, which it starts and stops
+with signals, so it skips unless `CHAUFFEUR_BIN` names one; the check workflow sets that from the pinned
+platform tarball, and nothing starts a Chauffeur daemon on a developer's machine.

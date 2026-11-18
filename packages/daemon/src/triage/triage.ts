@@ -14,9 +14,10 @@ export type TriageRequest = { on: "sourcefed.event"; deadline_ms: number; eviden
 
 /**
  * The narrow part of @fdcn/chauffeur/client's connection the daemon relies on,
- * declared here until the package is a dependency. An unavailable Chauffeur
- * rejects with a reason of "unavailable"; other reasons ("busy", "limit_exceeded",
- * "deadline", "cancelled", ...) only mean this event went untriaged.
+ * declared here so the daemon package needs no client and its unit tests stay
+ * client-free. An unavailable Chauffeur rejects with a reason of "unavailable";
+ * other reasons ("busy", "limit_exceeded", "deadline", "cancelled", ...) only
+ * mean this event went untriaged.
  */
 export type Navigator = {
   navigate(request: TriageRequest, options: { signal: AbortSignal }): Promise<{ intents: readonly TriageIntent[] }>
