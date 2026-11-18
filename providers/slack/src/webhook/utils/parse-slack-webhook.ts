@@ -1,7 +1,7 @@
 import type { MonitorEvent } from "@sourcefed/core"
 import { messageAt } from "../../utils"
 
-export function parseSlackWebhook(payload: any, _eventName: string, deliveryId: string): MonitorEvent | undefined {
+export function parseSlackWebhook(payload: any, _eventName: string, deliveryId: string, now: () => Date): MonitorEvent | undefined {
   const event = payload.event
   const channelId = event?.channel
   const threadTs = event?.thread_ts
@@ -15,8 +15,8 @@ export function parseSlackWebhook(payload: any, _eventName: string, deliveryId: 
   if (!author) author = event.user
   if (!author) author = event.bot_id
   if (!author) author = "someone"
-  let at = messageAt(event.event_ts)
-  if (!event.event_ts) at = messageAt(event.ts)
+  let at = messageAt(event.event_ts, now)
+  if (!event.event_ts) at = messageAt(event.ts, now)
 
   const source = threadTs
     ? { type: "slack", channelId, threadTs }

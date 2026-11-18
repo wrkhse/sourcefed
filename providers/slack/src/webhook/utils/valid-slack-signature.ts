@@ -1,11 +1,12 @@
 import { timingSafeEqual } from "node:crypto"
 import { slackSignature } from "./slack-signature.ts"
 
-export function validSlackSignature(body: string, request: Request, secret = process.env.SOURCEFED_SLACK_SIGNING_SECRET): boolean {
+// A request's age is judged by the host's clock, so a recorded delivery verifies at its recorded instant.
+export function validSlackSignature(body: string, request: Request, now: () => Date, secret = process.env.SOURCEFED_SLACK_SIGNING_SECRET): boolean {
   const timestamp = request.headers.get("x-slack-request-timestamp")
   const signature = request.headers.get("x-slack-signature")
   const timestampValue = Number(timestamp)
-  if (!timestamp || !signature || !secret || !Number.isFinite(timestampValue) || Math.abs(Date.now() / 1000 - timestampValue) > 300) return false
+  if (!timestamp || !signature || !secret || !Number.isFinite(timestampValue) || Math.abs(now().getTime() / 1000 - timestampValue) > 300) return false
   const expected = slackSignature(body, timestamp, secret)
   const actual = Buffer.from(signature)
   const wanted = Buffer.from(expected)

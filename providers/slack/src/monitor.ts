@@ -1,23 +1,17 @@
-import { Monitor } from "@sourcefed/core"
-import type { MonitorCreateInput } from "@sourcefed/core"
+import { toMonitorEvent } from "@sourcefed/core"
+import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
+import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import type { SlackSourceRecord } from "./types"
-import type { SourceInput } from "@sourcefed/core"
 import { SlackSourceSchema } from "./schema.ts"
-import { slackPollMonitor } from "./poll"
-import { slackWebhookMonitor } from "./webhook"
+import { pollSlack } from "./poll"
+import { parseSlackWebhook, validSlackSignature } from "./webhook"
+import { updateSlackCursor } from "./webhook/utils/update-slack-cursor.ts"
 
-export class SlackMonitor extends Monitor<SlackSourceRecord> {
-  readonly poll = slackPollMonitor
-  readonly webhook = slackWebhookMonitor
-
-  constructor() {
-    super({ type: "slack", schema: SlackSourceSchema })
-  }
-
-  readonly key = (source: SlackSourceRecord): string => source.threadTs
-    ? `slack:${source.channelId}#${source.threadTs}`
-    : `slack:${source.channelId}`
-  readonly input = {
+/** A Slack thread or DM as data, plus the poll and webhook the host drives with its own http and clock. */
+export const slackSource: SourceDefinition<SlackSourceRecord> = {
+  type: "slack",
+  schema: SlackSourceSchema,
+  input: {
     description: "A Slack thread's new replies, or a whole DM's new messages; read-only, never replies. Give threadUrl, or channelId with threadTs, or a D… DM channelId alone",
     properties: {
       threadUrl: { type: "string", description: "Slack thread URL" },
@@ -25,15 +19,8 @@ export class SlackMonitor extends Monitor<SlackSourceRecord> {
       threadTs: { type: "string", description: "Slack parent message timestamp" },
     },
     required: [],
-  }
-  readonly icon = "󰒱"
-  readonly label = (source: SlackSourceRecord): string => source.threadTs ? "thread" : "DM"
-  readonly detail = (source: SlackSourceRecord): string => ` ${source.channelId}`
-  readonly describe = (source: SlackSourceRecord): string => source.threadTs
-    ? `Slack ${source.channelId} thread ${source.threadTs}`
-    : `Slack DM ${source.channelId}`
-
-  build(input: MonitorCreateInput): SourceInput {
+  },
+  build: (input: MonitorCreateInput): SourceInput => {
     if (input.channelId && input.threadTs) return { type: "slack", channelId: input.channelId, threadTs: input.threadTs }
     if (input.channelId?.startsWith("D")) return { type: "slack", channelId: input.channelId }
     if (input.channelId) return { error: "threadTs is required unless channelId is a Slack DM ID" }
@@ -51,5 +38,42 @@ export class SlackMonitor extends Monitor<SlackSourceRecord> {
     if (!threadTs && pathTimestamp) threadTs = `${pathTimestamp.slice(0, -6)}.${pathTimestamp.slice(-6)}`
     if (channelId && threadTs) return { type: "slack", channelId, threadTs }
     return { error: "threadUrl does not contain a Slack channel and thread timestamp" }
-  }
+  },
+  key: (source) => source.threadTs
+    ? `slack:${source.channelId}#${source.threadTs}`
+    : `slack:${source.channelId}`,
+  label: (source) => source.threadTs ? "thread" : "DM",
+  detail: (source) => ` ${source.channelId}`,
+  describe: (source) => source.threadTs
+    ? `Slack ${source.channelId} thread ${source.threadTs}`
+    : `Slack DM ${source.channelId}`,
+  icon: "󰒱",
+  poll: async ({ source, cursor, monitorId, http, now }) => {
+    const result = await pollSlack(http, now, source, cursor, monitorId)
+    if ("deferred" in result) return result
+
+    return {
+      cursor: result.cursor,
+      events: result.events.map((event) => toMonitorEvent(event, source)),
+      terminal: result.terminal,
+    }
+  },
+  webhook: {
+    path: "/webhooks/slack",
+    preferred: true,
+    configured: () => Boolean(process.env.SOURCEFED_SLACK_SIGNING_SECRET),
+    verify: (body, request, now) => validSlackSignature(body, request, now),
+    acknowledgeBeforeDelivery: true,
+    challenge: (payload: any) => {
+      if (payload.type === "url_verification" && payload.challenge) return { challenge: payload.challenge }
+      return undefined
+    },
+    deliveryId: (_request: Request, payload: any) => payload.event_id,
+    eventName: () => "slack",
+    parse: parseSlackWebhook,
+    updateCursor: updateSlackCursor,
+  },
 }
+
+/** The monitor the daemon registers. */
+export const SlackMonitor = defineSource(slackSource)

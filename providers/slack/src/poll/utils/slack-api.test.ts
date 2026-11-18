@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
 import { afterEach, beforeEach, test } from "node:test"
+import { fetchHttp } from "@sourcefed/sdk"
 import { fetchSlackThread, resetSlackApi } from "./slack-api.ts"
 import { SlackRateLimiter } from "./slack-limiter.ts"
 
 const realFetch = globalThis.fetch
 const realToken = process.env.SOURCEFED_SLACK_TOKEN
 let calls: string[] = []
+// Every read happens at one instant, so the cached user list is always fresh.
+const now = () => new Date("2026-11-18T12:00:00.000Z")
 
 function stubSlack(replies: Record<string, unknown>): void {
   globalThis.fetch = (async (url: string) => {
@@ -33,8 +36,8 @@ test("monitors share one user list instead of fetching it on every poll", async 
     "users.list": { ok: true, members: [{ id: "U1", name: "priya", real_name: "Priya Natarajan" }] },
   })
 
-  const first = await fetchSlackThread("C1", "1.0", { monitorId: "m1" })
-  const second = await fetchSlackThread("C2", "2.0", { monitorId: "m2" })
+  const first = await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" })
+  const second = await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" })
   assert.ok(!("deferred" in first) && !("deferred" in second))
 
   assert.deepEqual(second.users, [{ id: "U1", name: "priya", real_name: "Priya Natarajan" }])
@@ -48,12 +51,12 @@ test("a rate-limited user list still returns the messages and holds no thread ba
     "users.list": { ok: false, error: "ratelimited" },
   })
 
-  const result = await fetchSlackThread("C1", "1.0", { monitorId: "m1" })
+  const result = await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" })
   assert.ok(!("deferred" in result))
   assert.equal(result.messages.length, 1)
   assert.deepEqual(result.users, [])
 
-  const next = await fetchSlackThread("C2", "2.0", { monitorId: "m2" })
+  const next = await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" })
   assert.ok(!("deferred" in next))
   assert.deepEqual(calls, ["conversations.replies", "users.list", "conversations.replies"])
 })
@@ -61,5 +64,5 @@ test("a rate-limited user list still returns the messages and holds no thread ba
 test("a failed read names Slack's error", async () => {
   stubSlack({ "conversations.replies": { ok: false, error: "not_in_channel" } })
 
-  await assert.rejects(fetchSlackThread("C1", "1.0", { monitorId: "m1" }), /slack conversations\.replies failed: not_in_channel/)
+  await assert.rejects(fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), /slack conversations\.replies failed: not_in_channel/)
 })

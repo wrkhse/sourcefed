@@ -6,7 +6,8 @@ import { messageAt, messageTimestamp } from "../../utils"
 export function parseSlackReadResult(
   result: SlackReadResult,
   cursorRaw: unknown,
-  location: "thread" | "DM" = "thread",
+  location: "thread" | "DM",
+  now: () => Date,
 ): { events: SlackEvent[]; cursor: SlackCursor } {
   const parsedCursor = v.safeParse(SlackCursorSchema, cursorRaw)
   let previous: Partial<SlackCursor> = {}
@@ -34,7 +35,7 @@ export function parseSlackReadResult(
       return {
         kind: "message",
         id: `message:${message.ts}`,
-        at: messageAt(message.ts),
+        at: messageAt(message.ts, now),
         summary: `Slack ${location} message by ${author}`,
         body: text,
         actionable: true,

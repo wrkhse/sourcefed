@@ -10,7 +10,7 @@ export const SOURCE_MAP = {
   "jira-query": JiraQueryMonitor,
   github: GithubMonitor,
   "github-issues": GithubIssuesMonitor,
-  slack: new SlackMonitor(),
+  slack: SlackMonitor,
   yab: new YabMonitor(),
   schedule: new ScheduleMonitor(),
 }

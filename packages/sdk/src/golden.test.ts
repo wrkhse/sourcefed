@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
-import { assertGolden, withEnvironment, type GoldenFixture, type GoldenWebhookCase } from "@sourcefed/sdk"
+import { assertGolden, goldenRequest, withEnvironment, type GoldenFixture, type GoldenWebhookCase } from "@sourcefed/sdk"
 import type { SourceDefinition, SourceWebhook } from "@sourcefed/sdk"
 import * as v from "valibot"
 
@@ -275,6 +275,20 @@ describe("assertGolden", () => {
     const otherBody: GoldenFixture = { ...posted, cases: [{ ...kase, requests: [{ ...kase.requests[0], body: "{}" }] }] }
 
     await assert.rejects(assertGolden(otherBody, graphql), /fake graphql: requests/)
+  })
+
+  test("records a form body as the string fetch sends for it", () => {
+    const params = new URLSearchParams({ channel: "C123", ts: "1700000000.000100", text: "two words" })
+    const form = goldenRequest("https://fake.test/form", { method: "POST", body: params })
+
+    assert.deepEqual(form, {
+      method: "POST",
+      url: "https://fake.test/form",
+      headers: {},
+      body: "channel=C123&ts=1700000000.000100&text=two+words",
+    })
+    // A provider that encodes the params itself records the same request.
+    assert.deepEqual(goldenRequest("https://fake.test/form", { method: "POST", body: params.toString() }), form)
   })
 
   test("gives each case its own instant over the fixture's", async () => {

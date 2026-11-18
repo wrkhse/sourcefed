@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import type { MonitorCreateInput, MonitorSource, SourceInputSchema, WebhookMonitor } from "@sourcefed/core"
-import { httpOver, type Http, type HttpRequest } from "./http.ts"
+import { httpOver, type Http } from "./http.ts"
 import { defineSource, type SourceDefinition } from "./source.ts"
 
 /** One upstream answer the replay serves, in order. */
@@ -120,11 +120,19 @@ export function replyResponse(reply: GoldenReply): Response {
 /**
  * A request as the transcript records it. The body is kept only when it is a string, so a
  * GET's record has no `body` key and every fixture recorded before bodies keeps its bytes.
+ * A form body is kept as its string, the bytes fetch sends for it, so a provider that passed
+ * fetch `URLSearchParams` records the same request as one that sends the encoded string.
  */
-export function goldenRequest(url: string, init?: HttpRequest): GoldenRequest {
+export function goldenRequest(
+  url: string,
+  init?: { method?: string; headers?: Readonly<Record<string, string>>; body?: unknown },
+): GoldenRequest {
   const request = { method: init?.method ?? "GET", url, headers: redactHeaders(init?.headers) }
 
-  return typeof init?.body === "string" ? { ...request, body: init.body } : request
+  if (typeof init?.body === "string") return { ...request, body: init.body }
+  if (init?.body instanceof URLSearchParams) return { ...request, body: String(init.body) }
+
+  return request
 }
 
 export function scriptedHttp(replies: readonly GoldenReply[]): { http: Http; requests: GoldenRequest[] } {
