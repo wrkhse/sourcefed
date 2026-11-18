@@ -145,9 +145,73 @@ describe("assertGolden", () => {
     const [first] = fixture.cases
     const deferred: GoldenFixture = {
       ...fixture,
-      cases: [{ ...first, name: "deferred", cursor: "wait", replies: [], requests: [], events: undefined, cursorAfter: undefined }],
+      cases: [{ ...first, name: "deferred", cursor: "wait", replies: [], requests: [], events: undefined, cursorAfter: undefined, deferred: true }],
     }
 
     await assertGolden(deferred, definition)
+  })
+
+  test("serves a reply's status and headers through http.fetch", async () => {
+    const [first] = fixture.cases
+    const conditional: SourceDefinition<FakeSource> = {
+      ...definition,
+      poll: async ({ source, cursor, http }) => {
+        const response = await http.fetch(`https://fake.test/${source.channel}`, { headers: { "if-none-match": String(cursor ?? "") } })
+
+        return { events: [], cursor: { status: response.status, etag: response.headers.get("etag") }, terminal: false }
+      },
+    }
+    const notModified: GoldenFixture = {
+      ...fixture,
+      cases: [
+        {
+          ...first,
+          name: "not-modified",
+          cursor: null,
+          replies: [{ status: 304, headers: { etag: "W/\"a\"" }, body: null }],
+          requests: [{ method: "GET", url: "https://fake.test/general", headers: { "if-none-match": "" } }],
+          events: [],
+          cursorAfter: { status: 304, etag: "W/\"a\"" },
+        },
+      ],
+    }
+
+    await assertGolden(notModified, conditional)
+  })
+
+  test("gives the source the recorded clock", async () => {
+    const [first] = fixture.cases
+    const stamped: SourceDefinition<FakeSource> = {
+      ...definition,
+      poll: async ({ source, now }) => ({
+        events: [{ source, kind: "message", id: "1", at: now().toISOString(), summary: "hello", actionable: true }],
+        cursor: ["1"],
+        terminal: false,
+      }),
+    }
+    const clocked: GoldenFixture = {
+      ...fixture,
+      now: "2026-11-18T08:15:00.000Z",
+      cases: [
+        {
+          ...first,
+          name: "clocked",
+          replies: [],
+          requests: [],
+          events: [
+            {
+              source: { type: "fake", channel: "general" },
+              kind: "message",
+              id: "1",
+              at: "2026-11-18T08:15:00.000Z",
+              summary: "hello",
+              actionable: true,
+            },
+          ],
+        },
+      ],
+    }
+
+    await assertGolden(clocked, stamped)
   })
 })

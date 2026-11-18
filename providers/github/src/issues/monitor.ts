@@ -1,27 +1,24 @@
-import { Monitor, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { PollSourceError, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
+import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
 import { filterText } from "./events.ts"
-import { githubIssuesPollMonitor } from "./poll.ts"
+import { pollGithubIssues } from "./poll.ts"
 import { GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
 
 const REPO = /^[\w.-]+\/[\w.-]+$/
 
-export class GithubIssuesMonitor extends Monitor<GithubIssuesSource> {
-  readonly poll = githubIssuesPollMonitor
-  readonly wake = {
+/** A labelled issue collection as data, plus the poll the host drives with its own http and clock. */
+export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
+  type: "github-issues",
+  schema: GithubIssuesSourceSchema,
+  wake: {
     path: "/webhooks/github",
     matches: (source: GithubIssuesSource, payload: unknown, eventName: string): boolean => {
       const repo = (payload as { repository?: { full_name?: unknown } })?.repository?.full_name
       return eventName === "issues" && typeof repo === "string" && repo.toLowerCase() === source.repo.toLowerCase()
     },
-  }
-
-  constructor() {
-    super({ type: "github-issues", schema: GithubIssuesSourceSchema })
-  }
-
-  readonly key = (source: GithubIssuesSource): string =>
-    `github-issues:${source.repo}:${source.labels.join(",")}:${source.assignee ?? ""}:${source.author ?? ""}:${source.query ?? ""}`
-  readonly input = {
+  },
+  input: {
     description: "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
     properties: {
       repo: { type: "string", description: "GitHub owner/name, e.g. owner/repository" },
@@ -32,13 +29,8 @@ export class GithubIssuesMonitor extends Monitor<GithubIssuesSource> {
       includeExisting: { type: "boolean", description: "Send item.matched for every issue already matching on the first poll" },
     },
     required: ["repo", "labels"],
-  }
-  readonly icon = "󰊤"
-  readonly label = (source: GithubIssuesSource): string => source.labels.join(", ")
-  readonly detail = (source: GithubIssuesSource): string => ` ${source.repo} · ${filterText(source)}`
-  readonly describe = (source: GithubIssuesSource): string => `GitHub issues in ${source.repo} with ${filterText(source)}`
-
-  build(input: MonitorCreateInput): SourceInput {
+  },
+  build: (input: MonitorCreateInput): SourceInput => {
     if (!input.repo || !REPO.test(input.repo)) return { error: "repo must be owner/name for a github-issues monitor" }
 
     const labels = [...new Set((input.labels ?? []).map((label) => label.trim()).filter(Boolean))].sort()
@@ -50,5 +42,31 @@ export class GithubIssuesMonitor extends Monitor<GithubIssuesSource> {
     if (input.query) source.query = input.query
     if (input.includeExisting) source.includeExisting = true
     return source
-  }
+  },
+  key: (source) =>
+    `github-issues:${source.repo}:${source.labels.join(",")}:${source.assignee ?? ""}:${source.author ?? ""}:${source.query ?? ""}`,
+  label: (source) => source.labels.join(", "),
+  detail: (source) => ` ${source.repo} · ${filterText(source)}`,
+  describe: (source) => `GitHub issues in ${source.repo} with ${filterText(source)}`,
+  icon: "󰊤",
+  poll: async ({ source, cursor, monitorId, http, now }) => {
+    const token = githubToken()
+    if (!token) throw new PollSourceError("GH_TOKEN or GITHUB_TOKEN is required for github-issues monitors")
+
+    // An issues poll sends only REST requests, so a GraphQL wait does not hold it.
+    const github = GithubClient.open(token, monitorId, ["rest"], cursor === undefined, http)
+    if (!github) return DEFERRED
+
+    const result = await deferOnWait(() => pollGithubIssues(source, cursor, (url, headers) => github.request(url, headers), now))
+    if ("deferred" in result) return result
+
+    return {
+      cursor: result.cursor,
+      events: result.events.map((event) => toMonitorEvent(event, source)),
+      terminal: false,
+    }
+  },
 }
+
+/** The monitor the daemon registers. */
+export const GithubIssuesMonitor = defineSource(githubIssuesSource)

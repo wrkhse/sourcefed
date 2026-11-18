@@ -128,7 +128,7 @@ describe("jira-query", () => {
 })
 
 describe("JiraQueryMonitor", () => {
-  const monitor = new JiraQueryMonitor()
+  const monitor = JiraQueryMonitor
 
   test("builds a source from trimmed JQL", () => {
     assert.deepEqual(monitor.build({ jql: "  project = PROJ  ", includeExisting: true }), {

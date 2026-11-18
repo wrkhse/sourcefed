@@ -1,4 +1,5 @@
 import { COLLECTION_LIMIT, PollSourceError, type CollectionListing } from "@sourcefed/core"
+import type { Http } from "@sourcefed/sdk"
 import { jiraAuth } from "../poll/utils/jira-auth.ts"
 
 const PAGE_SIZE = 100
@@ -14,7 +15,7 @@ export type JiraFetch = (path: string) => Promise<Response>
  * unless the JQL orders itself. A failed reply throws, so a poll never compares
  * against a partial list.
  */
-export async function searchIssues(jql: string, request: JiraFetch = jiraFetch): Promise<CollectionListing<JiraIssue>> {
+export async function searchIssues(jql: string, request: JiraFetch): Promise<CollectionListing<JiraIssue>> {
   const issues: JiraIssue[] = []
   let token: string | undefined
   for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -65,13 +66,17 @@ function jiraBase(): string {
   return base.replace(/\/+$/, "")
 }
 
-async function jiraFetch(path: string): Promise<Response> {
-  const base = jiraBase()
-  const headers = { Authorization: jiraAuth(), Accept: "application/json" }
-  try {
-    return await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new PollSourceError(`Jira search request failed: ${message}`, { cause: error })
+/** Jira search requests through the host's http, so a replay or a test answers them. */
+export function jiraSearchFetch(http: Http): JiraFetch {
+  return async (path) => {
+    try {
+      return await http.fetch(`${jiraBase()}${path}`, {
+        headers: { Authorization: jiraAuth(), Accept: "application/json" },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new PollSourceError(`Jira search request failed: ${message}`, { cause: error })
+    }
   }
 }

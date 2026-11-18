@@ -1,8 +1,9 @@
 export { defineSource, type SourceContext, type SourceDefinition, type SourceHost } from "./source.ts"
-export { fetchHttp, HttpError, type Http, type HttpFailure } from "./http.ts"
+export { fetchHttp, httpOver, HttpError, type Http, type HttpFailure, type HttpRequest } from "./http.ts"
 export {
   assertGolden,
   redactHeaders,
+  replyResponse,
   scriptedHttp,
   type GoldenCase,
   type GoldenCreateInput,
