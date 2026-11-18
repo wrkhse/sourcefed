@@ -1,25 +1,34 @@
 name: Release
 
-# Stages @fdcn/sourcefed when a release tag such as v0.4.2 is pushed; a
-# maintainer approves it with 2FA on npmjs.com (Staged Packages) or with
-# `npm stage approve`, which publishes it. npm trusted publishing
+# A tag such as v0.4.2 names a final release: `publish` stages @fdcn/sourcefed
+# on npm, and a maintainer approves it with 2FA on npmjs.com (Staged Packages)
+# or with `npm stage approve`, which publishes it. npm trusted publishing
 # authenticates this workflow (release.yml) with OIDC and adds provenance;
 # NPM_TOKEN, a granular publish token, is the fallback.
+#
+# A tag with a `-`, such as v0.6.0-rc.1, names a release candidate:
+# `candidate` packs @fdcn/sourcefed and attaches the tarball and its SHA256SUMS
+# to a GitHub prerelease. A candidate never reaches npm, so people who install
+# from npm only ever get a final release.
 
 on:
   push:
     tags: ['v*']
 
+# Each job asks for what it needs, so neither holds the other's rights.
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
 
 jobs:
   publish:
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,10 +40,47 @@ jobs:
       - name: The tag names the package's version
         run: test "v$(node -p "require('./packages/sourcefed/package.json').version")" = "$GITHUB_REF_NAME"
       - run: npm ci
-      # One retry: a timing-sensitive subscription test fails now and then on shared runners.
-      - run: npm run check || npm run check
+      - run: npm run check
       - name: Stage for approval
         working-directory: packages/sourcefed
         run: npm stage publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  candidate:
+    if: ${{ contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # npm ci runs install scripts, and this job's token can write releases, so
+      # the token must not sit in .git/config where those scripts could read it.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: The tag names the package's version
+        run: test "v$(node -p "require('./packages/sourcefed/package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      # Builds packages/sourcefed/dist and its declarations, so the tarball
+      # packed below holds exactly what was checked.
+      - run: npm run check
+      # npm pack does not create its destination folder.
+      - name: Pack the candidate and its checksums
+        run: |
+          mkdir -p "$RUNNER_TEMP/candidate"
+          npm pack ./packages/sourcefed --pack-destination "$RUNNER_TEMP/candidate"
+          cd "$RUNNER_TEMP/candidate"
+          sha256sum *.tgz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish the GitHub prerelease
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease \
+            --title "$GITHUB_REF_NAME" \
+            --notes "A release candidate of @fdcn/sourcefed. It is not on npm. Install it from the attached tarball after checking the tarball against SHA256SUMS." \
+            "$RUNNER_TEMP"/candidate/*.tgz "$RUNNER_TEMP/candidate/SHA256SUMS"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
