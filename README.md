@@ -316,6 +316,19 @@ npm run check
 `npm run check` builds the workspace bundles and the public package, builds the test
 bundles, runs the suite under `node --test`, and typechecks.
 
+### Sources
+
+Every source is a definition on `@sourcefed/sdk`, proven against a transcript
+recorded from the code before the SDK. To re-record one, run the recorder at the
+commit the fixture records, then check that the fixture's bytes are unchanged:
+
+```sh
+node scripts/record-golden.mjs providers/jira/src/fixtures/golden.cases.json 0a1a5e7
+git diff --exit-code -- providers/jira/src/fixtures/golden.ts
+```
+
+See [source plugins](docs/source-plugins/).
+
 ### Integration Tests
 
 `npm run integration` packs every workspace package, installs the tarballs into an isolated
