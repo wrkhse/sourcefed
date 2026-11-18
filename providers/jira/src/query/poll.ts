@@ -1,4 +1,4 @@
-import { COLLECTION_LIMIT, PollMonitor, compareCollection, toMonitorEvent, type SourceEvent } from "@sourcefed/core"
+import { COLLECTION_LIMIT, compareCollection, type SourceEvent } from "@sourcefed/core"
 import { searchIssues, type JiraFetch, type JiraIssue } from "./api.ts"
 import { limitEvent, matchedEvent, unmatchedEvent } from "./events.ts"
 import type { JiraQuerySource } from "./schema.ts"
@@ -7,8 +7,8 @@ import type { JiraQuerySource } from "./schema.ts"
 export async function pollJiraQuery(
   source: JiraQuerySource,
   cursorRaw: unknown,
-  request?: JiraFetch,
-  now: () => Date = () => new Date(),
+  request: JiraFetch,
+  now: () => Date,
 ): Promise<{ cursor: unknown; events: SourceEvent[] }> {
   const listing = await searchIssues(source.jql, request)
   const changes = compareCollection(cursorRaw, listing, (issue: JiraIssue) => issue.key, source.includeExisting ?? false)
@@ -21,14 +21,3 @@ export async function pollJiraQuery(
   if (changes.reachedLimit) events.push(limitEvent(source.jql, COLLECTION_LIMIT, at))
   return { cursor: changes.cursor, events }
 }
-
-export const jiraQueryPollMonitor = new PollMonitor<JiraQuerySource>({
-  run: async (source, cursor) => {
-    const result = await pollJiraQuery(source, cursor)
-    return {
-      cursor: result.cursor,
-      events: result.events.map((event) => toMonitorEvent(event, source)),
-      terminal: false,
-    }
-  },
-})

@@ -1,4 +1,5 @@
 import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core"
+import { fetchHttp, type Http } from "@sourcefed/sdk"
 import { GithubRateLimiter, githubRequestsPerMinute, type GithubApi } from "./github-limiter.ts"
 
 const API = "https://api.github.com"
@@ -49,14 +50,17 @@ export class GithubClient {
     private readonly token: string,
     private readonly monitorId: string,
     apis: readonly GithubApi[],
+    private readonly http: Http,
   ) {
     this.prepaid = new Set(apis)
   }
 
   /** A client for one poll of `monitorId`, or undefined while the poll must wait its turn. */
-  static open(token: string, monitorId: string, apis: readonly GithubApi[], first = false): GithubClient | undefined {
+  // The default http exists because the pull request source still opens a client with
+  // no http until its own port.
+  static open(token: string, monitorId: string, apis: readonly GithubApi[], first = false, http: Http = fetchHttp()): GithubClient | undefined {
     if (!limiter.acquire(token, monitorId, apis, first)) return undefined
-    return new GithubClient(token, monitorId, apis)
+    return new GithubClient(token, monitorId, apis, http)
   }
 
   /** A REST resource's JSON; any answer but a success or a rate limit throws with its status. */
@@ -93,18 +97,18 @@ export class GithubClient {
     return body?.data
   }
 
-  private async send(api: GithubApi, url: string, init: RequestInit): Promise<Response> {
+  private async send(api: GithubApi, url: string, init: { method?: string; headers: Record<string, string>; body?: string }): Promise<Response> {
     if (!limiter.charge(this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
 
     let response: Response
     try {
-      response = await fetch(url, {
+      response = await this.http.fetch(url, {
         ...init,
         headers: {
           authorization: `Bearer ${this.token}`,
           "user-agent": "sourcefed",
           "x-github-api-version": "2022-11-28",
-          ...(init.headers as Record<string, string>),
+          ...init.headers,
         },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })

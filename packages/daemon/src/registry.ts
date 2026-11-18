@@ -7,9 +7,9 @@ import { YabMonitor } from "@sourcefed/provider-yab"
 
 export const SOURCE_MAP = {
   jira: JiraMonitor,
-  "jira-query": new JiraQueryMonitor(),
+  "jira-query": JiraQueryMonitor,
   github: new GithubMonitor(),
-  "github-issues": new GithubIssuesMonitor(),
+  "github-issues": GithubIssuesMonitor,
   slack: new SlackMonitor(),
   yab: new YabMonitor(),
   schedule: new ScheduleMonitor(),

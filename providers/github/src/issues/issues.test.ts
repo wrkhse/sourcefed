@@ -151,7 +151,7 @@ describe("github-issues", () => {
 })
 
 describe("GithubIssuesMonitor", () => {
-  const monitor = new GithubIssuesMonitor()
+  const monitor = GithubIssuesMonitor
 
   test("builds a source with sorted, distinct labels", () => {
     const built = monitor.build({ repo: REPO, labels: ["b", "a", "b", " "], includeExisting: true })
@@ -166,9 +166,11 @@ describe("GithubIssuesMonitor", () => {
 
   test("wakes on the repository's issues webhooks only", () => {
     const payload = { action: "labeled", repository: { full_name: "Example-Org/Example-Repo" } }
+    const wake = monitor.wake
+    assert.ok(wake, "github-issues wakes on the issues webhook")
 
-    assert.equal(monitor.wake.matches(source, payload, "issues"), true)
-    assert.equal(monitor.wake.matches(source, payload, "pull_request"), false)
-    assert.equal(monitor.wake.matches(source, { repository: { full_name: "other/repo" } }, "issues"), false)
+    assert.equal(wake.matches(source, payload, "issues"), true)
+    assert.equal(wake.matches(source, payload, "pull_request"), false)
+    assert.equal(wake.matches(source, { repository: { full_name: "other/repo" } }, "issues"), false)
   })
 })

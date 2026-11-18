@@ -22,7 +22,7 @@ flowchart LR
 
 | Module | Responsibility |
 | --- | --- |
-| `monitor.ts` | `GithubIssuesMonitor`: builds and checks the source, its input schema, and the webhook wake. |
+| `monitor.ts` | `githubIssuesSource`, and `GithubIssuesMonitor` defined from it: builds and checks the source, its input schema, and the webhook wake. |
 | `poll.ts` | `pollGithubIssues`: one poll, from the listing to the events and the next cursor. |
 | `api.ts` | `listIssues`: every matching issue, through the issues list or the search API. |
 | `events.ts` | The events and their `github-issue` subject. |

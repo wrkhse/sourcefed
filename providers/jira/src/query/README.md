@@ -20,7 +20,7 @@ flowchart LR
 
 | Module | Responsibility |
 | --- | --- |
-| `monitor.ts` | `JiraQueryMonitor`: builds and checks the source, and its input schema. |
+| `monitor.ts` | `jiraQuerySource`, and `JiraQueryMonitor` defined from it: builds and checks the source, and its input schema. |
 | `poll.ts` | `pollJiraQuery`: one poll, from the search to the events and the next cursor. |
 | `api.ts` | `searchIssues`: every matching issue through Jira's enhanced search. |
 | `events.ts` | The events and their `jira-issue` subject. |

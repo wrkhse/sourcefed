@@ -1,0 +1,194 @@
+{
+  "provider": "github-issues",
+  "entry": "providers/github/src/index.ts",
+  "export": "GithubIssuesMonitor",
+  "fixture": "providers/github/src/issues/fixtures/golden.ts",
+  "base": "https://api.github.com",
+  "now": "2026-11-18T12:00:00.000Z",
+  "env": {
+    "GH_TOKEN": "test-token",
+    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE": "75"
+  },
+  "unset": [
+    "GITHUB_TOKEN"
+  ],
+  "cases": [
+    {
+      "name": "priming",
+      "build": {
+        "name": "agent issues",
+        "sourceType": "github-issues",
+        "repo": "example-org/example-repo",
+        "labels": [
+          "agent"
+        ]
+      },
+      "replies": [
+        {
+          "status": 200,
+          "headers": {
+            "etag": "W/\"a\""
+          },
+          "body": [
+            {
+              "number": 48,
+              "title": "Issue 48",
+              "html_url": "https://github.com/example-org/example-repo/issues/48",
+              "state": "open",
+              "labels": [
+                {
+                  "name": "agent"
+                }
+              ]
+            },
+            {
+              "number": 49,
+              "title": "Issue 49",
+              "html_url": "https://github.com/example-org/example-repo/issues/49",
+              "state": "open",
+              "labels": [
+                {
+                  "name": "agent"
+                }
+              ]
+            },
+            {
+              "number": 50,
+              "title": "Issue 50",
+              "html_url": "https://github.com/example-org/example-repo/pull/50",
+              "state": "open",
+              "labels": [
+                {
+                  "name": "agent"
+                }
+              ],
+              "pull_request": {
+                "html_url": "https://github.com/example-org/example-repo/pull/50"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "not-modified",
+      "continues": true,
+      "build": {
+        "name": "agent issues",
+        "sourceType": "github-issues",
+        "repo": "example-org/example-repo",
+        "labels": [
+          "agent"
+        ]
+      },
+      "replies": [
+        {
+          "status": 304,
+          "headers": {
+            "etag": "W/\"a\""
+          }
+        }
+      ]
+    },
+    {
+      "name": "change",
+      "continues": true,
+      "build": {
+        "name": "agent issues",
+        "sourceType": "github-issues",
+        "repo": "example-org/example-repo",
+        "labels": [
+          "agent"
+        ]
+      },
+      "replies": [
+        {
+          "status": 200,
+          "headers": {
+            "etag": "W/\"b\""
+          },
+          "body": [
+            {
+              "number": 49,
+              "title": "Issue 49",
+              "html_url": "https://github.com/example-org/example-repo/issues/49",
+              "state": "open",
+              "labels": [
+                {
+                  "name": "agent"
+                }
+              ]
+            },
+            {
+              "number": 51,
+              "title": "Issue 51",
+              "html_url": "https://github.com/example-org/example-repo/issues/51",
+              "state": "open",
+              "labels": [
+                {
+                  "name": "agent"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "build": {
+        "name": "agent issues",
+        "sourceType": "github-issues",
+        "repo": "example-org/example-repo",
+        "labels": [
+          "agent"
+        ],
+        "query": "milestone:v2",
+        "includeExisting": true
+      },
+      "replies": [
+        {
+          "body": {
+            "total_count": 1,
+            "incomplete_results": false,
+            "items": [
+              {
+                "number": 52,
+                "title": "Issue 52",
+                "html_url": "https://github.com/example-org/example-repo/issues/52",
+                "state": "open",
+                "labels": [
+                  {
+                    "name": "agent"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limited",
+      "build": {
+        "name": "agent issues",
+        "sourceType": "github-issues",
+        "repo": "example-org/example-repo",
+        "labels": [
+          "agent"
+        ]
+      },
+      "replies": [
+        {
+          "status": 429,
+          "headers": {
+            "retry-after": "60"
+          },
+          "body": {
+            "message": "API rate limit exceeded"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,132 @@
+{
+  "provider": "jira-query",
+  "entry": "providers/jira/src/index.ts",
+  "export": "JiraQueryMonitor",
+  "fixture": "providers/jira/src/query/fixtures/golden.ts",
+  "base": "https://jira.example",
+  "now": "2026-11-18T12:00:00.000Z",
+  "env": {
+    "SOURCEFED_JIRA_BASE_URL": "https://jira.example",
+    "ATLASSIAN_EMAIL": "test@example.com",
+    "ATLASSIAN_API_KEY": "test-key"
+  },
+  "unset": [],
+  "cases": [
+    {
+      "name": "priming",
+      "build": {
+        "name": "agent work",
+        "sourceType": "jira-query",
+        "jql": "project = PROJ AND labels = agent"
+      },
+      "replies": [
+        {
+          "body": {
+            "issues": [
+              {
+                "key": "PROJ-1",
+                "fields": {
+                  "summary": "Issue 1"
+                }
+              },
+              {
+                "key": "PROJ-2",
+                "fields": {
+                  "summary": "Issue 2"
+                }
+              }
+            ],
+            "isLast": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "change",
+      "continues": true,
+      "build": {
+        "name": "agent work",
+        "sourceType": "jira-query",
+        "jql": "project = PROJ AND labels = agent"
+      },
+      "replies": [
+        {
+          "body": {
+            "issues": [
+              {
+                "key": "PROJ-2",
+                "fields": {
+                  "summary": "Issue 2"
+                }
+              },
+              {
+                "key": "PROJ-3",
+                "fields": {
+                  "summary": "Issue 3"
+                }
+              }
+            ],
+            "isLast": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "paged-existing",
+      "build": {
+        "name": "agent work",
+        "sourceType": "jira-query",
+        "jql": "project = PROJ AND labels = agent",
+        "includeExisting": true
+      },
+      "replies": [
+        {
+          "body": {
+            "issues": [
+              {
+                "key": "PROJ-4",
+                "fields": {
+                  "summary": "Issue 4"
+                }
+              }
+            ],
+            "nextPageToken": "t2",
+            "isLast": false
+          }
+        },
+        {
+          "body": {
+            "issues": [
+              {
+                "key": "PROJ-5",
+                "fields": {
+                  "summary": "Issue 5"
+                }
+              }
+            ],
+            "isLast": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "unbounded",
+      "build": {
+        "name": "agent work",
+        "sourceType": "jira-query",
+        "jql": "labels = agent"
+      },
+      "replies": [
+        {
+          "status": 400,
+          "body": {
+            "errorMessages": [
+              "Unbounded JQL queries are not allowed here. Please add a search restriction to your query."
+            ],
+            "errors": {}
+          }
+        }
+      ]
+    }
+  ]
+}
