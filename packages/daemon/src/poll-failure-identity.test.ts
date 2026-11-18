@@ -10,10 +10,10 @@ test("a provider's built bundle throws a poll failure the daemon recognises", as
   delete process.env.SOURCEFED_JIRA_BASE_URL
   const built = (await import(new URL("../../core/dist/index.js", import.meta.url).href)) as { isPollSourceError: typeof isPollSourceError }
   const jira = (await import(new URL("../../../providers/jira/dist/index.js", import.meta.url).href)) as {
-    JiraMonitor: new () => { poll?: { run: (context: MonitorContext, source: unknown, record: unknown) => Promise<number> } }
+    JiraMonitor: { poll?: { run: (context: MonitorContext, source: unknown, record: unknown) => Promise<number> } }
   }
 
-  const monitor = new jira.JiraMonitor()
+  const monitor = jira.JiraMonitor
   const record = {
     id: "m-bundle-test",
     name: "test",

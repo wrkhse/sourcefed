@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { afterEach, describe, test } from "node:test"
 import { toMonitorEvent } from "@sourcefed/core"
+import { fetchHttp } from "@sourcefed/sdk"
 
 const BASE = "https://example.atlassian.net"
 process.env.SOURCEFED_JIRA_BASE_URL = BASE
@@ -8,7 +9,7 @@ process.env.ATLASSIAN_EMAIL = "test@example.com"
 process.env.ATLASSIAN_API_KEY = "test-key"
 delete process.env.SOURCEFED_JIRA_TERMINAL_STATUS
 
-// jira-fetch reads the base URL once, at import, so the test sets it before loading the poll.
+// The base URL is read per request, so the test sets it before the first poll.
 const { pollJira } = await import("./poll-jira.ts")
 
 // No test calls Jira: fetch is replaced by a fake Jira.
@@ -33,10 +34,11 @@ function installJira(summary: string | undefined): FakeJira {
 
 // Two polls: the first primes the description, and the second reports its change.
 async function eventsAfterDescriptionChange(fake: FakeJira): ReturnType<typeof pollJira> {
-  const first = await pollJira("PROJ-9", undefined)
+  const http = fetchHttp()
+  const first = await pollJira(http, "PROJ-9", undefined)
   assert.deepEqual(first.events, [])
   fake.description = { content: [{ text: "second" }] }
-  return pollJira("PROJ-9", first.cursor)
+  return pollJira(http, "PROJ-9", first.cursor)
 }
 
 describe("Jira issue poll subjects", () => {
@@ -46,8 +48,9 @@ describe("Jira issue poll subjects", () => {
 
   test("asks for the status, description and summary it reads", async () => {
     const fake = installJira("Add schedules")
+    const http = fetchHttp()
 
-    await pollJira("PROJ-9", undefined)
+    await pollJira(http, "PROJ-9", undefined)
 
     const issueRequest = fake.requests.find((path) => path.startsWith("/rest/api/3/issue/PROJ-9?"))
     assert.ok(issueRequest, "the issue request was sent")
@@ -56,8 +59,9 @@ describe("Jira issue poll subjects", () => {
 
   test("one poll reads the comments and the issue in two requests", async () => {
     const fake = installJira("Add schedules")
+    const http = fetchHttp()
 
-    await pollJira("PROJ-9", undefined)
+    await pollJira(http, "PROJ-9", undefined)
 
     assert.equal(fake.requests.length, 2)
     assert.equal(fake.requests[0]?.startsWith("/rest/api/3/issue/PROJ-9/comment?"), true)

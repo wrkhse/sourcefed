@@ -1,0 +1,428 @@
+{
+  "provider": "jira",
+  "entry": "providers/jira/src/index.ts",
+  "export": "JiraMonitor",
+  "fixture": "providers/jira/src/fixtures/golden.ts",
+  "base": "https://jira.example",
+  "env": {
+    "SOURCEFED_JIRA_BASE_URL": "https://jira.example",
+    "ATLASSIAN_EMAIL": "test@example.com",
+    "ATLASSIAN_API_KEY": "test-key"
+  },
+  "unset": [
+    "SOURCEFED_JIRA_TERMINAL_STATUS"
+  ],
+  "cases": [
+    {
+      "name": "priming",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "body": {
+            "comments": []
+          }
+        },
+        {
+          "body": {
+            "fields": {
+              "status": {
+                "name": "In Progress"
+              },
+              "description": {
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "summary": "Add schedules"
+            },
+            "changelog": {
+              "histories": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "comment-prime",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "body": {
+            "comments": [
+              {
+                "id": "100",
+                "author": {
+                  "displayName": "Alice"
+                },
+                "created": "2026-11-18T10:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "first comment"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "body": {
+            "fields": {
+              "status": {
+                "name": "In Progress"
+              },
+              "description": {
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "summary": "Add schedules"
+            },
+            "changelog": {
+              "histories": []
+            }
+          }
+        }
+      ],
+      "continues": true
+    },
+    {
+      "name": "comment",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "body": {
+            "comments": [
+              {
+                "id": "101",
+                "author": {
+                  "displayName": "Bob"
+                },
+                "created": "2026-11-18T12:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "new comment after priming"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "100",
+                "author": {
+                  "displayName": "Alice"
+                },
+                "created": "2026-11-18T10:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "first comment"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "body": {
+            "fields": {
+              "status": {
+                "name": "In Progress"
+              },
+              "description": {
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "summary": "Add schedules"
+            },
+            "changelog": {
+              "histories": []
+            }
+          }
+        }
+      ],
+      "continues": true
+    },
+    {
+      "name": "changelog-prime",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "body": {
+            "comments": [
+              {
+                "id": "101",
+                "author": {
+                  "displayName": "Bob"
+                },
+                "created": "2026-11-18T12:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "new comment after priming"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "100",
+                "author": {
+                  "displayName": "Alice"
+                },
+                "created": "2026-11-18T10:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "first comment"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "body": {
+            "fields": {
+              "status": {
+                "name": "In Progress"
+              },
+              "description": {
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "summary": "Add schedules"
+            },
+            "changelog": {
+              "histories": [
+                {
+                  "id": "h0",
+                  "created": "2026-11-18T09:00:00.000Z",
+                  "author": {
+                    "displayName": "Alice"
+                  },
+                  "items": [
+                    {
+                      "field": "status",
+                      "fromString": "To Do",
+                      "toString": "In Progress"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "continues": true
+    },
+    {
+      "name": "status-change",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "body": {
+            "comments": [
+              {
+                "id": "101",
+                "author": {
+                  "displayName": "Bob"
+                },
+                "created": "2026-11-18T12:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "new comment after priming"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "100",
+                "author": {
+                  "displayName": "Alice"
+                },
+                "created": "2026-11-18T10:00:00.000Z",
+                "body": {
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "first comment"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "body": {
+            "fields": {
+              "status": {
+                "name": "In Progress"
+              },
+              "description": {
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "first"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "summary": "Add schedules"
+            },
+            "changelog": {
+              "histories": [
+                {
+                  "id": "h1",
+                  "created": "2026-11-18T11:00:00.000Z",
+                  "author": {
+                    "displayName": "Bob"
+                  },
+                  "items": [
+                    {
+                      "field": "status",
+                      "fromString": "In Progress",
+                      "toString": "Done"
+                    }
+                  ]
+                },
+                {
+                  "id": "h0",
+                  "created": "2026-11-18T09:00:00.000Z",
+                  "author": {
+                    "displayName": "Alice"
+                  },
+                  "items": [
+                    {
+                      "field": "status",
+                      "fromString": "To Do",
+                      "toString": "In Progress"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "continues": true
+    },
+    {
+      "name": "rate-limited",
+      "build": {
+        "name": "PROJ-9",
+        "sourceType": "jira",
+        "issueKey": "PROJ-9"
+      },
+      "replies": [
+        {
+          "status": 429,
+          "body": {}
+        }
+      ]
+    }
+  ]
+}
