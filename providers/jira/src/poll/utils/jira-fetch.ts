@@ -15,7 +15,7 @@ export async function jiraFetch(http: Http, path: string): Promise<any> {
     return await http.json(`${base}/rest/api/3${path}`, { headers: { Authorization: jiraAuth(), Accept: "application/json" } })
   } catch (error) {
     if (error instanceof HttpError && error.failure === "status") {
-      throw new PollSourceError(`Jira ${error.status} for ${path}`, { cause: error })
+      throw new PollSourceError(`Jira ${error.status} for ${path}`)
     }
     if (error instanceof HttpError && error.failure === "body") {
       throw new PollSourceError(`Jira ${path} gave a body that is not JSON`, { cause: error })

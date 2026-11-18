@@ -59,6 +59,14 @@ only implementation in production. A poll gets no timer, no store and no
 secret, so `SourceHost` is the seam the broker replaces once barn owns the
 network.
 
+## What crosses the boundary
+
+The poll's `source`, `cursor` and `monitorId`, and its result
+(`{ events, cursor, terminal }` or `{ deferred: true }`), are plain JSON.
+That lets the same poll run behind a worker or engine boundary later without
+changing a source. `http` is a seam the host supplies, not data, so a source
+never holds a network handle of its own.
+
 ## Not in this slice
 
 - **No grants, budgets or secret-by-name resolution.** The barn B2 broker adds
@@ -82,9 +90,29 @@ difference.
 await assertGolden(jiraFixture, jiraDefinition)
 ```
 
-A provider's fixture is a committed `.ts` transcript recorded from the pre-SDK
-tree at `0a1a5e7`, like the other recorded fixtures in the repo: run the old
-monitor against the live API, write down each reply in order and each request
-it made with `redactHeaders`, and commit the result beside the provider. The
-replay serves those replies through `scriptedHttp` and never touches the
-network.
+## Recording a fixture
+
+```sh
+node scripts/record-golden.mjs providers/jira/src/fixtures/golden.cases.json 0a1a5e7
+```
+
+The recorder creates a temporary detached worktree at the ref and bundles
+the old provider from it on its own core. It stubs `fetch` with the cases
+file's replies and redacts requests with the same `redactHeaders` the replay
+uses. It calls the old poll runner directly to record its returned events,
+cursor and terminal flag, or its error. It writes the fixture and its sha256,
+then removes the worktree; no live API is contacted.
+
+The cases file names `provider`, the old provider's `entry` and `export`,
+the output `fixture` path and API `base`. Its `env` values and `unset`
+names configure the provider before import. Each entry in `cases` supplies
+`name`, `build` and ordered `replies` (`body` and an optional `status`).
+A case with `continues: true` starts at the preceding case's returned
+cursor; otherwise it starts at `null`.
+
+To check a committed fixture, re-run the recorder at its `recordedFrom`,
+then check that its bytes are unchanged:
+
+```sh
+git diff --exit-code -- providers/jira/src/fixtures/golden.ts
+```
