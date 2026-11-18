@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import { InMemoryMonitorStore, MonitorService } from "@sourcefed/core"
-import type { MonitorContext } from "@sourcefed/core"
-import { defineSource, type Http, type SourceContext, type SourceDefinition } from "@sourcefed/sdk"
+import type { Monitor, MonitorContext, MonitorRecord } from "@sourcefed/core"
+import { defineSource, type Http, type SourceContext, type SourceDefinition, type SourceWebhook } from "@sourcefed/sdk"
 import * as v from "valibot"
 
 const FakeSourceSchema = v.object({
@@ -29,6 +29,30 @@ const testHttp: Http = {
 
 const testNow = () => new Date("2026-11-18T09:30:00.000Z")
 const testHost = { http: testHttp, now: testNow }
+
+function fakeRecord(cursor: unknown): MonitorRecord {
+  return {
+    id: "m-sdk",
+    name: "sdk",
+    source: { type: "fake", channel: "general" },
+    delivery: "poll",
+    target: { kind: "test-session", id: "session-1" },
+    pollIntervalSec: 60,
+    enabled: true,
+    createdAt: "2026-11-18T00:00:00.000Z",
+    updatedAt: "2026-11-18T00:00:00.000Z",
+    cursors: { "fake:general": cursor },
+  }
+}
+
+function fakeContext(service: MonitorService, monitor: Monitor<FakeSource>): MonitorContext {
+  return {
+    service,
+    sink: { deliver: async () => ({ ok: true }) },
+    sources: { fake: monitor },
+    sourceForWebhookPath: () => undefined,
+  }
+}
 
 function fakeDefinition(calls: SourceContext<FakeSource>[] = []): SourceDefinition<FakeSource> {
   return {
@@ -85,36 +109,13 @@ describe("defineSource", () => {
   test("polls with the source, cursor, monitor id and host http and clock", async () => {
     const calls: SourceContext<FakeSource>[] = []
     const monitor = defineSource(fakeDefinition(calls), testHost)
-    const store = new InMemoryMonitorStore({
-      monitors: [
-        {
-          id: "m-sdk",
-          name: "sdk",
-          source: { type: "fake", channel: "general" },
-          delivery: "poll",
-          target: { kind: "test-session", id: "session-1" },
-          pollIntervalSec: 60,
-          enabled: true,
-          createdAt: "2026-11-18T00:00:00.000Z",
-          updatedAt: "2026-11-18T00:00:00.000Z",
-          cursors: { "fake:general": "cursor-1" },
-        },
-      ],
-    })
-    const service = new MonitorService(store)
+    const service = new MonitorService(new InMemoryMonitorStore({ monitors: [fakeRecord("cursor-1")] }))
     const record = await service.get("m-sdk")
     assert.ok(record)
 
-    const context: MonitorContext = {
-      service,
-      sink: { deliver: async () => ({ ok: true }) },
-      sources: { fake: monitor },
-      sourceForWebhookPath: () => undefined,
-    }
-
     const poll = monitor.poll
     assert.ok(poll)
-    assert.equal(await poll.run(context, monitor, record), 0)
+    assert.equal(await poll.run(fakeContext(service, monitor), monitor, record), 0)
 
     assert.equal(calls.length, 1)
     assert.equal(calls[0].source.channel, "general")
@@ -125,5 +126,73 @@ describe("defineSource", () => {
 
     const after = await service.get("m-sdk")
     assert.equal(after?.cursors["fake:general"], "next")
+  })
+
+  test("a definition's mergeCursor merges the poll's cursor into the stored one", async () => {
+    const merged: Array<{ current: unknown; result: unknown }> = []
+    const definition: SourceDefinition<FakeSource> = {
+      ...fakeDefinition(),
+      mergeCursor: (current, result) => {
+        merged.push({ current, result })
+        return [current, result]
+      },
+    }
+    const monitor = defineSource(definition, testHost)
+    const service = new MonitorService(new InMemoryMonitorStore({ monitors: [fakeRecord("cursor-1")] }))
+    const record = await service.get("m-sdk")
+    assert.ok(record)
+
+    const poll = monitor.poll
+    assert.ok(poll)
+    await poll.run(fakeContext(service, monitor), monitor, record)
+
+    assert.deepEqual(merged, [{ current: "cursor-1", result: "next" }])
+    const after = await service.get("m-sdk")
+    assert.deepEqual(after?.cursors["fake:general"], ["cursor-1", "next"])
+  })
+
+  test("a definition's webhook becomes a WebhookMonitor whose verify and parse see the host's clock", () => {
+    const seen: Date[] = []
+    const webhook: SourceWebhook = {
+      path: "/webhooks/fake",
+      preferred: false,
+      configured: () => true,
+      acknowledgeBeforeDelivery: true,
+      deliveryId: (request) => request.headers.get("x-fake-delivery") ?? undefined,
+      eventName: () => "fake",
+      verify: (_body, _request, now) => {
+        seen.push(now())
+        return true
+      },
+      parse: (_payload, eventName, deliveryId, now) => {
+        seen.push(now())
+        return {
+          source: { type: "fake", channel: "general" },
+          kind: eventName,
+          id: deliveryId,
+          at: now().toISOString(),
+          summary: "hello",
+          actionable: true,
+        }
+      },
+    }
+    const monitor = defineSource({ ...fakeDefinition(), webhook }, testHost)
+    const request = new Request("http://localhost/webhooks/fake", { method: "POST", body: "{}" })
+
+    // The test bundle gives this file and the SDK separate copies of core, so `instanceof` cannot tell; core's method shows it.
+    assert.ok(monitor.webhook)
+    assert.equal(typeof monitor.webhook.retryPending, "function")
+    assert.equal(monitor.webhook.path, "/webhooks/fake")
+    assert.equal(monitor.webhook.preferred, false)
+    assert.equal(monitor.webhook.acknowledgeBeforeDelivery, true)
+    assert.equal(monitor.webhook.verify("{}", request), true)
+    assert.equal(monitor.webhook.parse({}, "fake", "d-1")?.at, "2026-11-18T09:30:00.000Z")
+    assert.deepEqual(seen, [testNow(), testNow()])
+  })
+
+  test("a definition without a webhook leaves the monitor's webhook undefined", () => {
+    const monitor = defineSource(fakeDefinition(), testHost)
+
+    assert.equal(monitor.webhook, undefined)
   })
 })

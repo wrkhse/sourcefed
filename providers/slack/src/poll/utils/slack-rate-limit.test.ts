@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { afterEach, beforeEach, describe, mock, test } from "node:test"
 import { InMemoryMonitorStore, MonitorRuntime } from "@sourcefed/core"
+import { fetchHttp } from "@sourcefed/sdk"
 import type { MonitorEvent, MonitorRecord } from "@sourcefed/core"
 import type { SlackMessage } from "../../types/message.ts"
 import { SlackMonitor } from "../../monitor.ts"
@@ -12,6 +13,8 @@ const realFetch = globalThis.fetch
 const ENV_KEYS = ["SOURCEFED_SLACK_TOKEN", "SOURCEFED_SLACK_SIGNING_SECRET"] as const
 const realEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]))
 const START = Date.parse("2026-11-14T06:00:00.000Z")
+// The host's clock as the daemon gives it: the wall clock, which these tests fake.
+const now = () => new Date()
 
 type Call = { method: string; token: string; channel: string; page: number; at: number; status: number }
 type Limit = { retryAfter?: number; fromPage?: number; channel?: string; status?: number }
@@ -71,7 +74,7 @@ let logs: string[]
 let failures: string[]
 
 function limiter(requestsPerMinute = 20): SlackRateLimiter {
-  return new SlackRateLimiter({ requestsPerMinute, now: () => Date.now(), log: (line) => logs.push(line) })
+  return new SlackRateLimiter({ requestsPerMinute, log: (line) => logs.push(line) })
 }
 
 function advance(ms: number): void {
@@ -116,7 +119,7 @@ async function runtimeWith(threads: number): Promise<{ runtime: MonitorRuntime; 
   const runtime = new MonitorRuntime({
     store: new InMemoryMonitorStore(),
     sink: { deliver: async ({ event }) => { delivered.push(event); return { ok: true } } },
-    sources: { slack: new SlackMonitor() },
+    sources: { slack: SlackMonitor },
     sourceForWebhookPath: () => undefined,
   })
   const records: MonitorRecord[] = []
@@ -142,26 +145,26 @@ async function runFor(runtime: MonitorRuntime, ms: number, everyMs = 5_000): Pro
 
 describe("Slack rate limits", () => {
   test("Retry-After holds every monitor on the token, and another token is unaffected", async () => {
-    assert.ok(!("deferred" in await fetchSlackThread("C2", "2.0", { monitorId: "m2" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" })))
     slack.limit = { retryAfter: 30 }
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     slack.limit = undefined
 
-    assert.deepEqual(await fetchSlackThread("C2", "2.0", { monitorId: "m2" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" }), { deferred: true })
     advance(29_000)
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     assert.equal(slack.reads().length, 2, "no monitor on the token polls during the wait")
 
     process.env.SOURCEFED_SLACK_TOKEN = "xoxb-b"
-    assert.ok(!("deferred" in await fetchSlackThread("C3", "3.0", { monitorId: "m3" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C3", "3.0", { monitorId: "m3" })))
     assert.deepEqual(slack.reads().map((call) => call.token), ["xoxb-a", "xoxb-a", "xoxb-b"])
 
     process.env.SOURCEFED_SLACK_TOKEN = "xoxb-a"
     advance(4_000)
-    assert.ok(!("deferred" in await fetchSlackThread("C2", "2.0", { monitorId: "m2" })), "the first monitor held back goes first")
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" })), "the first monitor held back goes first")
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     advance(3_000)
-    assert.ok(!("deferred" in await fetchSlackThread("C1", "1.0", { monitorId: "m1" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" })))
 
     assert.deepEqual(logs, [
       "[sourcefed] Slack rate-limited conversations.replies: waiting 30s before polling 2 Slack monitors on this token again",
@@ -170,78 +173,78 @@ describe("Slack rate limits", () => {
 
   test("a rate limit without Retry-After waits a minute", async () => {
     slack.limit = {}
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     slack.limit = undefined
     advance(59_000)
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     advance(4_000)
-    assert.ok(!("deferred" in await fetchSlackThread("C1", "1.0", { monitorId: "m1" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" })))
     assert.match(logs[0]!, /waiting 60s/)
   })
 
   test("a monitor that stops asking does not hold the queue", () => {
     const shared = limiter()
     assert.equal(shared.burst, 3)
-    assert.equal(shared.acquire("xoxb-a", "m0"), true)
-    assert.equal(shared.acquire("xoxb-a", "m1"), true)
-    assert.equal(shared.acquire("xoxb-a", "m2"), true)
-    assert.equal(shared.acquire("xoxb-a", "m3"), false)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m0"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m3"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
 
     // m3 is removed and never asks again; m4 keeps asking every tick.
     advance(5_000)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false, "m3 keeps its turn through overlapping ticks")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false, "m3 keeps its turn through overlapping ticks")
     advance(15_000)
-    assert.equal(shared.acquire("xoxb-a", "m4"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), true)
   })
 
   test("logs one line per wait, once every monitor held back has asked", () => {
     const shared = limiter()
-    assert.equal(shared.acquire("xoxb-a", "m1"), true)
-    shared.pause("xoxb-a", 30, "conversations.replies", "m1")
-    assert.equal(shared.acquire("xoxb-a", "m2"), false)
-    assert.equal(shared.acquire("xoxb-a", "m3"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), true)
+    shared.pause(Date.now(), "xoxb-a", 30, "conversations.replies", "m1")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m3"), false)
     advance(10_000)
-    shared.pause("xoxb-a", 30, "conversations.replies", "m2")
+    shared.pause(Date.now(), "xoxb-a", 30, "conversations.replies", "m2")
     assert.deepEqual(logs, [], "nothing is logged before a whole tick of the wait")
 
-    assert.equal(shared.acquire("xoxb-a", "m1"), false)
-    assert.equal(shared.acquire("xoxb-a", "m2"), false)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m2"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
     assert.deepEqual(logs, [
       "[sourcefed] Slack rate-limited conversations.replies: waiting 40s before polling 3 Slack monitors on this token again",
     ])
 
     advance(31_000)
-    assert.equal(shared.acquire("xoxb-a", "m1"), false, "the budget refills after the wait")
-    shared.pause("xoxb-a", 5, "conversations.history", "m1")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m1"), false, "the budget refills after the wait")
+    shared.pause(Date.now(), "xoxb-a", 5, "conversations.history", "m1")
     advance(6_000)
-    shared.acquire("xoxb-a", "m2")
+    shared.acquire(Date.now(), "xoxb-a", "m2")
     assert.equal(logs.length, 2, "a wait that ends before the monitor asks again is logged when it ends")
     assert.match(logs[1]!, /conversations\.history: waiting 5s before polling 4 Slack monitors on/)
   })
 
   test("a Retry-After longer than an hour is capped, and the log says so", async () => {
     slack.limit = { retryAfter: 86_400 }
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     slack.limit = undefined
     advance(MAX_RETRY_AFTER_SEC * 1000 - 1_000)
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     assert.deepEqual(logs, [
       "[sourcefed] Slack rate-limited conversations.replies: waiting 3600s (Slack asked for 86400s; waits are capped at 3600s) before polling 1 Slack monitor on this token again",
     ])
     advance(4_000)
-    assert.ok(!("deferred" in await fetchSlackThread("C1", "1.0", { monitorId: "m1" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" })))
   })
 
   test("ratelimited in an HTTP 200 answer waits like a 429", async () => {
     slack.limit = { status: 200, retryAfter: 10 }
-    assert.deepEqual(await fetchSlackThread("C1", "1.0", { monitorId: "m1" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C1", "1.0", { monitorId: "m1" }), { deferred: true })
     slack.limit = undefined
-    assert.deepEqual(await fetchSlackThread("C2", "2.0", { monitorId: "m2" }), { deferred: true })
+    assert.deepEqual(await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" }), { deferred: true })
     assert.equal(slack.reads().length, 1)
     advance(14_000)
-    assert.ok(!("deferred" in await fetchSlackThread("C2", "2.0", { monitorId: "m2" })))
+    assert.ok(!("deferred" in await fetchSlackThread(fetchHttp(), now, "C2", "2.0", { monitorId: "m2" })))
   })
 
   test("Retry-After values", () => {
@@ -292,15 +295,15 @@ describe("Slack rate limits", () => {
 
   test("a first read jumps the queue only until it is granted", () => {
     const shared = limiter()
-    for (const key of ["m1", "m2", "m3"]) assert.equal(shared.acquire("xoxb-a", key), true)
-    assert.equal(shared.acquire("xoxb-a", "m4"), false)
-    assert.equal(shared.acquire("xoxb-a", "m5"), false)
+    for (const key of ["m1", "m2", "m3"]) assert.equal(shared.acquire(Date.now(), "xoxb-a", key), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), false)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m5"), false)
 
     advance(3_000)
-    assert.equal(shared.acquire("xoxb-a", "new", true), true, "a new monitor goes ahead of m4 and m5")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "new", true), true, "a new monitor goes ahead of m4 and m5")
     advance(3_000)
-    assert.equal(shared.acquire("xoxb-a", "new", true), false, "its next read, still unprimed, waits its turn")
-    assert.equal(shared.acquire("xoxb-a", "m4"), true)
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "new", true), false, "its next read, still unprimed, waits its turn")
+    assert.equal(shared.acquire(Date.now(), "xoxb-a", "m4"), true)
   })
 })
 
@@ -351,7 +354,7 @@ describe("Slack monitors under a rate limit", () => {
     const runtime = new MonitorRuntime({
       store: new InMemoryMonitorStore(),
       sink: { deliver: async ({ event }) => { delivered.push(event); return { ok: true } } },
-      sources: { slack: new SlackMonitor() },
+      sources: { slack: SlackMonitor },
       sourceForWebhookPath: () => undefined,
     })
     await runtime.service.create({ name: "dm", source: { type: "slack", channelId: "D1" }, delivery: "poll", target: { kind: "test", id: "s" }, pollIntervalSec: 60 })
@@ -387,7 +390,7 @@ describe("Slack monitors under a rate limit", () => {
     const runtime = new MonitorRuntime({
       store: new InMemoryMonitorStore(),
       sink: { deliver: async () => ({ ok: true }) },
-      sources: { slack: new SlackMonitor() },
+      sources: { slack: SlackMonitor },
       sourceForWebhookPath: () => undefined,
     })
     for (let index = 1; index <= 12; index++) {
@@ -441,7 +444,7 @@ describe("Slack monitors under a rate limit", () => {
     const runtime = new MonitorRuntime({
       store: new InMemoryMonitorStore(),
       sink: { deliver: async ({ event }) => { delivered.push(event); return { ok: true } } },
-      sources: { slack: new SlackMonitor() },
+      sources: { slack: SlackMonitor },
       sourceForWebhookPath: () => undefined,
     })
     const create = (name: string, source: { type: "slack"; channelId: string; threadTs?: string }) =>
@@ -507,7 +510,7 @@ describe("Slack monitors under a rate limit", () => {
     await runtime.tick()
     slack.limit = undefined
 
-    const monitor = new SlackMonitor()
+    const monitor = SlackMonitor
     await runFor(runtime, 20 * 60_000, 30_000)
     assert.equal(monitor.unresponsive((await runtime.service.get(records[0]!.id))!, Date.now()), false, "waiting 20 minutes")
     await runFor(runtime, 20 * 60_000, 30_000)
@@ -520,7 +523,7 @@ describe("Slack monitors under a rate limit", () => {
     await runtime.tick()
     await runFor(runtime, 6 * 60_000)
 
-    const monitor = new SlackMonitor()
+    const monitor = SlackMonitor
     for (const record of records) {
       const current = (await runtime.service.get(record.id))!
       assert.equal(monitor.unresponsive(current, Date.now()), false, `${current.name} is waiting, not failing`)

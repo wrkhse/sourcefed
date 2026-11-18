@@ -43,7 +43,6 @@ const API_NAMES: Record<GithubApi, string> = { rest: "REST", graphql: "GraphQL" 
 
 export type GithubLimiterOptions = {
   requestsPerMinute: number
-  now: () => number
   log: (line: string) => void
 }
 
@@ -73,6 +72,9 @@ type TokenBudget = {
  * every API it uses has a request's credit, which it takes for its first request on each.
  * Each further request is charged as it is sent, so a poll of several requests leaves the
  * budget short and later polls wait until it is paid back.
+ *
+ * The caller supplies the time of each call, in milliseconds, so a host's clock, real or
+ * recorded, drives the budget.
  */
 export class GithubRateLimiter {
   private readonly budgets = new Map<string, TokenBudget>()
@@ -88,8 +90,7 @@ export class GithubRateLimiter {
    * poll primes a new monitor, and everything before it counts as seen, so it goes to the
    * head of the queue until the monitor's first grant.
    */
-  acquire(token: string, key: string, apis: readonly GithubApi[], first = false): boolean {
-    const now = this.options.now()
+  acquire(now: number, token: string, key: string, apis: readonly GithubApi[], first = false): boolean {
     const budget = this.budget(token, now)
     this.ask(budget, key, now, apis, first)
 
@@ -113,8 +114,7 @@ export class GithubRateLimiter {
    * Charges one request on `api`, which may leave its credit below zero; a `prepaid` request
    * was paid for by `acquire`. False while the API waits.
    */
-  charge(token: string, api: GithubApi, prepaid = false): boolean {
-    const now = this.options.now()
+  charge(now: number, token: string, api: GithubApi, prepaid = false): boolean {
     const state = this.budget(token, now).apis[api]
     if (now < state.pausedUntil) return false
     if (prepaid) return true
@@ -128,8 +128,7 @@ export class GithubRateLimiter {
    * Seconds to wait for a limit that names no time: a minute, doubled for each one that
    * comes soon after the last such wait ended, at most an hour.
    */
-  backoff(token: string, api: GithubApi): number {
-    const now = this.options.now()
+  backoff(now: number, token: string, api: GithubApi): number {
     const state = this.budget(token, now).apis[api]
     const repeated = state.backoffSec > 0 && now - state.pausedUntil < BACKOFF_RESET_MS
     state.backoffSec = repeated ? Math.min(state.backoffSec * 2, MAX_WAIT_SEC) : BACKOFF_START_SEC
@@ -137,8 +136,7 @@ export class GithubRateLimiter {
   }
 
   /** Holds every monitor using `api` on `token` for `waitSec`, at most an hour. */
-  pause(token: string, api: GithubApi, waitSec: number, key: string): void {
-    const now = this.options.now()
+  pause(now: number, token: string, api: GithubApi, waitSec: number, key: string): void {
     const budget = this.budget(token, now)
     const state = budget.apis[api]
     const until = now + Math.min(waitSec, MAX_WAIT_SEC) * 1000
@@ -157,8 +155,7 @@ export class GithubRateLimiter {
   }
 
   /** When `api` on `token` may send again; 0 when it is not waiting. */
-  waitsUntil(token: string, api: GithubApi): number {
-    const now = this.options.now()
+  waitsUntil(now: number, token: string, api: GithubApi): number {
     const state = this.budget(token, now).apis[api]
     if (now >= state.pausedUntil) return 0
     return state.pausedUntil

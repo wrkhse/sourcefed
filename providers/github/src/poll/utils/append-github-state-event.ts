@@ -1,6 +1,6 @@
 import type { GithubCursor, GithubEvent } from "../../types"
 
-export function appendGithubStateEvent(repo: string, prNumber: number, cursor: GithubCursor, events: GithubEvent[], prState: string): boolean {
+export function appendGithubStateEvent(repo: string, prNumber: number, cursor: GithubCursor, events: GithubEvent[], prState: string, at: string): boolean {
   const isTerminal = prState === "MERGED" || prState === "CLOSED"
   if (prState === cursor.prState) return isTerminal
   const previousPrState = cursor.prState
@@ -13,7 +13,7 @@ export function appendGithubStateEvent(repo: string, prNumber: number, cursor: G
       id: `state:${prState}`,
       repo,
       prNumber,
-      at: new Date().toISOString(),
+      at,
       summary,
       actionable: prState === "MERGED",
       terminal: isTerminal,

@@ -1,4 +1,5 @@
 import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core"
+import type { Http } from "@sourcefed/sdk"
 import { MAX_RETRY_AFTER_SEC, SlackRateLimiter, slackRequestsPerMinute } from "./slack-limiter.ts"
 
 const SLACK_API = "https://slack.com/api"
@@ -43,14 +44,20 @@ const refreshing = new Map<string, Promise<SlackUser[]>>()
 const usersPausedUntil = new Map<string, number>()
 let limiter = defaultLimiter()
 
-export async function fetchSlackThread(channelId: string, threadTs: string, request: SlackReadRequest): Promise<SlackRead | SourcePollDeferred> {
+export async function fetchSlackThread(
+  http: Http,
+  now: () => Date,
+  channelId: string,
+  threadTs: string,
+  request: SlackReadRequest,
+): Promise<SlackRead | SourcePollDeferred> {
   const params = { channel: channelId, ts: threadTs, inclusive: "false", ...(request.after ? { oldest: request.after } : {}) }
-  return readSlack({ method: "conversations.replies", params, request, oldestFirst: true })
+  return readSlack(http, now, { method: "conversations.replies", params, request, oldestFirst: true })
 }
 
-export async function fetchSlackDm(channelId: string, request: SlackReadRequest): Promise<SlackRead | SourcePollDeferred> {
+export async function fetchSlackDm(http: Http, now: () => Date, channelId: string, request: SlackReadRequest): Promise<SlackRead | SourcePollDeferred> {
   const params = { channel: channelId, inclusive: "false", ...(request.after ? { oldest: request.after } : {}) }
-  return readSlack({ method: "conversations.history", params, request, oldestFirst: false })
+  return readSlack(http, now, { method: "conversations.history", params, request, oldestFirst: false })
 }
 
 /** Forget the cached user lists and the request budgets, so a test starts from scratch. */
@@ -64,7 +71,6 @@ export function resetSlackApi(next: SlackRateLimiter = defaultLimiter()): void {
 function defaultLimiter(): SlackRateLimiter {
   return new SlackRateLimiter({
     requestsPerMinute: slackRequestsPerMinute(),
-    now: () => Date.now(),
     log: (line) => console.warn(line),
   })
 }
@@ -74,21 +80,21 @@ function defaultLimiter(): SlackRateLimiter {
 // wait for budget, and a rate limit part-way through keeps the pages read so far. Any other
 // read must finish to be safe: its pages go at once (later polls on the token pay them
 // back), and a rate limit or a wait started by another poll defers the whole read.
-async function readSlack(plan: ReadPlan): Promise<SlackRead | SourcePollDeferred> {
+async function readSlack(http: Http, now: () => Date, plan: ReadPlan): Promise<SlackRead | SourcePollDeferred> {
   const token = process.env.SOURCEFED_SLACK_TOKEN
   if (!token) throw new PollSourceError(`slack ${plan.method} failed: SOURCEFED_SLACK_TOKEN is not set`)
   const priming = plan.request.after === undefined
-  if (!limiter.acquire(token, plan.request.monitorId, plan.request.first === true)) return DEFERRED
+  if (!limiter.acquire(now().getTime(), token, plan.request.monitorId, plan.request.first === true)) return DEFERRED
 
   const keepsPartial = plan.oldestFirst && !priming
   const messages: any[] = []
   let cursor = ""
   do {
-    if (cursor && keepsPartial && !limiter.spend(token)) break
-    if (cursor && !keepsPartial && !limiter.charge(token)) return DEFERRED
-    const page = await slackApi(token, plan.method, { ...plan.params, limit: "1000", ...(cursor ? { cursor } : {}) })
+    if (cursor && keepsPartial && !limiter.spend(now().getTime(), token)) break
+    if (cursor && !keepsPartial && !limiter.charge(now().getTime(), token)) return DEFERRED
+    const page = await slackApi(http, token, plan.method, { ...plan.params, limit: "1000", ...(cursor ? { cursor } : {}) })
     if (!page.ok) {
-      if (page.retryAfterSec !== undefined) limiter.pause(token, page.retryAfterSec, plan.method, plan.request.monitorId)
+      if (page.retryAfterSec !== undefined) limiter.pause(now().getTime(), token, page.retryAfterSec, plan.method, plan.request.monitorId)
       if (messages.length > 0 && keepsPartial) break
       if (page.retryAfterSec !== undefined) return DEFERRED
       throw new PollSourceError(`slack ${plan.method} failed: ${page.error}`)
@@ -99,29 +105,29 @@ async function readSlack(plan: ReadPlan): Promise<SlackRead | SourcePollDeferred
     if (!plan.oldestFirst && priming) break
     if (messages.length >= 10_000) break
   } while (cursor)
-  return { messages, users: await slackUsers(token) }
+  return { messages, users: await slackUsers(http, now, token) }
 }
 
-async function slackUsers(token: string): Promise<SlackUser[]> {
+async function slackUsers(http: Http, now: () => Date, token: string): Promise<SlackUser[]> {
   const cached = users.get(token)
-  if (cached && Date.now() - cached.fetchedAt < USERS_TTL_MS) return cached.list
-  if (Date.now() < (usersPausedUntil.get(token) ?? 0)) return cached?.list ?? []
+  if (cached && now().getTime() - cached.fetchedAt < USERS_TTL_MS) return cached.list
+  if (now().getTime() < (usersPausedUntil.get(token) ?? 0)) return cached?.list ?? []
   let pending = refreshing.get(token)
   if (!pending) {
-    pending = refreshUsers(token).finally(() => refreshing.delete(token))
+    pending = refreshUsers(http, now, token).finally(() => refreshing.delete(token))
     refreshing.set(token, pending)
   }
   return pending
 }
 
 // A failed or partial refresh keeps the last full list and retries next poll.
-async function refreshUsers(token: string): Promise<SlackUser[]> {
+async function refreshUsers(http: Http, now: () => Date, token: string): Promise<SlackUser[]> {
   const list: SlackUser[] = []
   let cursor = ""
   do {
-    const page = await slackApi(token, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) })
+    const page = await slackApi(http, token, "users.list", { limit: "200", ...(cursor ? { cursor } : {}) })
     if (!page.ok) {
-      if (page.retryAfterSec !== undefined) usersPausedUntil.set(token, Date.now() + Math.min(page.retryAfterSec, MAX_RETRY_AFTER_SEC) * 1000)
+      if (page.retryAfterSec !== undefined) usersPausedUntil.set(token, now().getTime() + Math.min(page.retryAfterSec, MAX_RETRY_AFTER_SEC) * 1000)
       return users.get(token)?.list ?? list
     }
     if (Array.isArray(page.result.members)) {
@@ -129,17 +135,18 @@ async function refreshUsers(token: string): Promise<SlackUser[]> {
     }
     cursor = page.result.response_metadata?.next_cursor ?? ""
   } while (cursor)
-  users.set(token, { list, fetchedAt: Date.now() })
+  users.set(token, { list, fetchedAt: now().getTime() })
   return list
 }
 
-async function slackApi(token: string, method: string, params: Record<string, string>): Promise<SlackReply> {
+async function slackApi(http: Http, token: string, method: string, params: Record<string, string>): Promise<SlackReply> {
   let response: Response
   try {
-    response = await fetch(`${SLACK_API}/${method}`, {
+    // The encoded string is the bytes fetch sent for URLSearchParams, and Http takes a string body.
+    response = await http.fetch(`${SLACK_API}/${method}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(params),
+      body: new URLSearchParams(params).toString(),
     })
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }

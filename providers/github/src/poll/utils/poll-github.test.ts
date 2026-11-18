@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { afterEach, beforeEach, describe, test } from "node:test"
 import { toMonitorEvent } from "@sourcefed/core"
+import { fetchHttp } from "@sourcefed/sdk"
 import { resetGithubApi } from "../../api"
 import { pollGithub } from "./poll-github.ts"
 
@@ -9,6 +10,8 @@ const realFetch = globalThis.fetch
 const realToken = process.env.GITHUB_TOKEN
 const realGhToken = process.env.GH_TOKEN
 const SOURCE = { type: "github", repo: "org/repo", prNumber: 12 }
+const NOW = "2026-11-18T12:00:00.000Z"
+const now = () => new Date(NOW)
 
 type FakeGithub = { title?: string; mergeable: string }
 
@@ -37,10 +40,10 @@ function installGithub(title: string | undefined): FakeGithub {
 
 // Two polls: the first primes the history, and the second reports one merge conflict.
 async function eventsAfterConflict(fake: FakeGithub): ReturnType<typeof pollGithub> {
-  const first = await pollGithub(SOURCE.repo, SOURCE.prNumber, undefined, "m1")
+  const first = await pollGithub(fetchHttp(), now, SOURCE.repo, SOURCE.prNumber, undefined, "m1")
   if ("deferred" in first) assert.fail("the first poll is deferred")
   fake.mergeable = "CONFLICTING"
-  return pollGithub(SOURCE.repo, SOURCE.prNumber, first.cursor, "m1")
+  return pollGithub(fetchHttp(), now, SOURCE.repo, SOURCE.prNumber, first.cursor, "m1")
 }
 
 describe("GitHub pull request poll subjects", () => {
@@ -63,6 +66,7 @@ describe("GitHub pull request poll subjects", () => {
     if ("deferred" in result) assert.fail("the second poll is deferred")
 
     assert.equal(result.events.length, 1)
+    assert.equal(result.events[0]!.at, NOW)
     const subject = {
       type: "github-pull-request",
       key: "org/repo#12",

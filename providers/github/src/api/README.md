@@ -64,7 +64,7 @@ flowchart LR
 
 ### Known limits
 
-- Waits use the wall clock and live in memory, and a daemon restart forgets them. A
+- Waits use the host's clock, which is the wall clock in the daemon, and live in memory, and a daemon restart forgets them. A
   step back is clamped: no wait or refill lies more than an hour ahead.
 - A quota reset is read against this machine's clock, so a skewed clock waits too short
   (GitHub answers again, and the wait starts over) or too long (at most an hour). A reset
@@ -84,7 +84,7 @@ flowchart LR
   as already seen.
 
 ```ts
-const github = GithubClient.open(token, monitorId, ["graphql", "rest"], first)
+const github = GithubClient.open(token, monitorId, ["graphql", "rest"], first, http, now)
 if (!github) return DEFERRED
 
 return deferOnWait(() => readPullRequest(github, repo, prNumber, cursor, primed))

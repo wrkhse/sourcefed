@@ -4,17 +4,17 @@
   "export": "GithubIssuesMonitor",
   "fixture": "providers/github/src/issues/fixtures/golden.ts",
   "base": "https://api.github.com",
-  "now": "2026-11-18T12:00:00.000Z",
   "env": {
-    "GH_TOKEN": "test-token",
-    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE": "75"
+    "GH_TOKEN": "test-token"
   },
   "unset": [
-    "GITHUB_TOKEN"
+    "GITHUB_TOKEN",
+    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"
   ],
   "cases": [
     {
       "name": "priming",
+      "now": "2026-11-18T12:00:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -72,6 +72,7 @@
     },
     {
       "name": "not-modified",
+      "now": "2026-11-18T12:01:00.000Z",
       "continues": true,
       "build": {
         "name": "agent issues",
@@ -92,6 +93,7 @@
     },
     {
       "name": "change",
+      "now": "2026-11-18T12:02:00.000Z",
       "continues": true,
       "build": {
         "name": "agent issues",
@@ -136,6 +138,7 @@
     },
     {
       "name": "search",
+      "now": "2026-11-18T12:03:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",
@@ -170,6 +173,7 @@
     },
     {
       "name": "rate-limited",
+      "now": "2026-11-18T12:04:00.000Z",
       "build": {
         "name": "agent issues",
         "sourceType": "github-issues",

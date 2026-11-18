@@ -1,5 +1,14 @@
-import { Monitor, PollMonitor } from "@sourcefed/core"
-import type { MonitorCreateInput, MonitorSource, MonitorWake, SourceInput, SourceInputSchema, SourcePollResult } from "@sourcefed/core"
+import { Monitor, PollMonitor, WebhookMonitor } from "@sourcefed/core"
+import type {
+  MonitorCreateInput,
+  MonitorEvent,
+  MonitorSource,
+  MonitorWake,
+  SourceInput,
+  SourceInputSchema,
+  SourcePollResult,
+  WebhookMonitorOptions,
+} from "@sourcefed/core"
 import type { GenericSchema } from "valibot"
 import { fetchHttp, type Http } from "./http.ts"
 
@@ -11,6 +20,16 @@ export type SourceContext<T extends MonitorSource> = {
   readonly http: Http
   /** The clock a source stamps events with, supplied by the host so a recorded poll replays at its recorded instant. */
   readonly now: () => Date
+}
+
+/**
+ * A source's webhook, as core's WebhookMonitor takes it, except that `verify` and `parse`
+ * receive the host's clock: a signature's age and an event's fallback time are judged by the
+ * host, so a recorded delivery replays at its recorded instant.
+ */
+export type SourceWebhook = Omit<WebhookMonitorOptions, "verify" | "parse"> & {
+  readonly verify: (body: string, request: Request, now: () => Date) => boolean
+  readonly parse: (payload: unknown, eventName: string, deliveryId: string, now: () => Date) => MonitorEvent | undefined
 }
 
 /** Everything a source is: its type and schema, its create input, its display, and its poll. */
@@ -26,7 +45,14 @@ export type SourceDefinition<T extends MonitorSource> = {
   readonly icon?: string
   /** A webhook that only wakes the monitor for an early poll; the poll stays the source of truth. */
   readonly wake?: MonitorWake<T>
+  /** A webhook that delivers events itself, beside the poll; the daemon routes and retries them as core's do. */
+  readonly webhook?: SourceWebhook
   readonly poll: (context: SourceContext<T>) => Promise<SourcePollResult>
+  /**
+   * How a poll's cursor is merged into the stored one, for a source whose webhook also writes
+   * the cursor: without it a poll replaces whatever a delivery wrote since the poll began.
+   */
+  readonly mergeCursor?: (current: unknown, result: unknown) => unknown
 }
 
 /** What the host gives a source. A test or the golden harness supplies its own http and clock. */
@@ -49,8 +75,9 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
   readonly icon: string
   readonly input: SourceInputSchema
   readonly poll: PollMonitor<T>
-  // `declare` emits no field of its own, so the subclass adds no `wake` beyond what core's Monitor has.
+  // `declare` emits no field of its own, so the subclass adds no `wake` or `webhook` beyond what core's Monitor has.
   declare readonly wake?: MonitorWake<T>
+  declare readonly webhook?: WebhookMonitor<T>
 
   constructor(private readonly definition: SourceDefinition<T>, host: SourceHost) {
     super({ type: definition.type, schema: definition.schema })
@@ -63,9 +90,20 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
     this.input = definition.input
     // Assigned only when defined, so a source without a webhook leaves `wake` as core's old subclasses did.
     if (definition.wake) this.wake = definition.wake
-    this.poll = new PollMonitor<T>({
-      run: (source, cursor, monitorId) => definition.poll({ source, cursor, monitorId, http: host.http, now: host.now }),
-    })
+
+    // The host's clock is closed over `verify` and `parse`, so core's WebhookMonitor calls them as it always has.
+    const webhook = definition.webhook
+    if (webhook) {
+      this.webhook = new WebhookMonitor<T>({
+        ...webhook,
+        verify: (body, request) => webhook.verify(body, request, host.now),
+        parse: (payload, eventName, deliveryId) => webhook.parse(payload, eventName, deliveryId, host.now),
+      })
+    }
+
+    const run = (source: T, cursor: unknown, monitorId: string) => definition.poll({ source, cursor, monitorId, http: host.http, now: host.now })
+    // Passed only when defined, so a source without one keeps core's replace-the-cursor rule.
+    this.poll = new PollMonitor<T>(definition.mergeCursor ? { run, mergeCursor: definition.mergeCursor } : { run })
   }
 
   build(input: MonitorCreateInput): SourceInput {

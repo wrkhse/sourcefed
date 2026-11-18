@@ -1,0 +1,218 @@
+{
+  "provider": "slack",
+  "entry": "providers/slack/src/index.ts",
+  "export": "SlackMonitor",
+  "fixture": "providers/slack/src/fixtures/golden.ts",
+  "base": "https://slack.com/api",
+  "env": {
+    "SOURCEFED_SLACK_TOKEN": "xoxb-test",
+    "SOURCEFED_SLACK_SIGNING_SECRET": "test-signing-secret"
+  },
+  "unset": [
+    "SOURCEFED_SLACK_REQUESTS_PER_MINUTE"
+  ],
+  "cases": [
+    {
+      "name": "thread-priming",
+      "now": "2026-11-18T12:00:00.000Z",
+      "build": {
+        "name": "thread",
+        "sourceType": "slack",
+        "channelId": "C123",
+        "threadTs": "1700000000.000100"
+      },
+      "replies": [
+        {
+          "body": {
+            "ok": true,
+            "messages": [
+              {
+                "ts": "1700000000.000100",
+                "user": "U1",
+                "text": "Parent"
+              },
+              {
+                "ts": "1700000100.000200",
+                "user": "U2",
+                "text": "first reply"
+              }
+            ],
+            "response_metadata": {
+              "next_cursor": ""
+            }
+          }
+        },
+        {
+          "body": {
+            "ok": true,
+            "members": [
+              {
+                "id": "U1",
+                "name": "alice",
+                "real_name": "Alice"
+              },
+              {
+                "id": "U2",
+                "name": "bob",
+                "real_name": "Bob"
+              }
+            ],
+            "response_metadata": {
+              "next_cursor": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "thread-reply",
+      "now": "2026-11-18T12:01:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "thread",
+        "sourceType": "slack",
+        "channelId": "C123",
+        "threadTs": "1700000000.000100"
+      },
+      "replies": [
+        {
+          "body": {
+            "ok": true,
+            "messages": [
+              {
+                "ts": "1700000200.000300",
+                "user": "U1",
+                "text": "new reply"
+              }
+            ],
+            "response_metadata": {
+              "next_cursor": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "dm-priming",
+      "now": "2026-11-18T12:02:00.000Z",
+      "build": {
+        "name": "dm",
+        "sourceType": "slack",
+        "channelId": "D999"
+      },
+      "replies": [
+        {
+          "body": {
+            "ok": true,
+            "messages": [
+              {
+                "ts": "1700000400.000500",
+                "user": "U2",
+                "text": "older"
+              }
+            ],
+            "response_metadata": {
+              "next_cursor": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "dm-message",
+      "now": "2026-11-18T12:03:00.000Z",
+      "continues": true,
+      "build": {
+        "name": "dm",
+        "sourceType": "slack",
+        "channelId": "D999"
+      },
+      "replies": [
+        {
+          "body": {
+            "ok": true,
+            "messages": [
+              {
+                "ts": "1700000500.000600",
+                "user": "U2",
+                "text": "a DM"
+              }
+            ],
+            "response_metadata": {
+              "next_cursor": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limited",
+      "now": "2026-11-18T12:04:00.000Z",
+      "build": {
+        "name": "thread",
+        "sourceType": "slack",
+        "channelId": "C123",
+        "threadTs": "1700000900.000900"
+      },
+      "replies": [
+        {
+          "status": 429,
+          "headers": {
+            "retry-after": "30"
+          },
+          "body": {
+            "ok": false,
+            "error": "ratelimited"
+          }
+        }
+      ]
+    }
+  ],
+  "webhooks": [
+    {
+      "name": "url-verification",
+      "now": "2026-11-18T12:05:00.000Z",
+      "headers": {
+        "x-slack-request-timestamp": "1795003500",
+        "x-slack-signature": "v0=e4ca3ad6a11a2f7238e2e3107aeede4184fa52214b8c2990eaab745c7eabc751"
+      },
+      "body": "{\"type\":\"url_verification\",\"challenge\":\"abc123\",\"token\":\"x\"}"
+    },
+    {
+      "name": "thread-message",
+      "now": "2026-11-18T12:06:00.000Z",
+      "headers": {
+        "x-slack-request-timestamp": "1795003560",
+        "x-slack-signature": "v0=f0fbf5fb78ec000c4b547818c69f73a943f2f6b713a71d90f433a7f0c1fc31fb"
+      },
+      "body": "{\"type\":\"event_callback\",\"event_id\":\"Ev01\",\"event\":{\"type\":\"message\",\"channel\":\"C123\",\"thread_ts\":\"1700000000.000100\",\"ts\":\"1700000300.000400\",\"event_ts\":\"1700000300.000400\",\"user\":\"U2\",\"text\":\"from webhook\"}}",
+      "cursor": {
+        "primed": true,
+        "messageIds": [
+          "1700000000.000100",
+          "1700000100.000200",
+          "1700000200.000300"
+        ],
+        "latestTs": "1700000200.000300"
+      }
+    },
+    {
+      "name": "stale",
+      "now": "2026-11-18T12:07:00.000Z",
+      "headers": {
+        "x-slack-request-timestamp": "1795003020",
+        "x-slack-signature": "v0=deefee63775c4487643293afcccab5942fcf0bd35cc73059f6cc7b62e6234cb1"
+      },
+      "body": "{\"type\":\"event_callback\",\"event_id\":\"Ev03\",\"event\":{\"type\":\"message\",\"channel\":\"C123\",\"thread_ts\":\"1700000000.000100\",\"ts\":\"1700000350.000450\",\"event_ts\":\"1700000350.000450\",\"user\":\"U1\",\"text\":\"too late\"}}"
+    },
+    {
+      "name": "dm-without-time",
+      "now": "2026-11-18T12:08:00.000Z",
+      "headers": {
+        "x-slack-request-timestamp": "1795003680",
+        "x-slack-signature": "v0=5488d3b61bf7693395bf77d9286f0941fb2d004ee0f4c0f2d17661c7e8da0727"
+      },
+      "body": "{\"type\":\"event_callback\",\"event_id\":\"Ev02\",\"event\":{\"type\":\"message\",\"channel\":\"D999\",\"user\":\"U2\",\"text\":\"no timestamps\"}}"
+    }
+  ]
+}

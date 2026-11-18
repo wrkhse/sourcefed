@@ -6,7 +6,7 @@ monitor is primed, each poll asks only for messages after the newest it has seen
 
 | Module | Does |
 | --- | --- |
-| `monitor.ts` | `slackPollMonitor`: the `PollMonitor` that runs one poll and maps events |
+| `../monitor.ts` | `slackSource.poll`: runs one poll with the host's http and clock, and maps events |
 | `utils/poll-slack.ts` | `pollSlack`: reads the source after the cursor, then parses it |
 | `utils/slack-api.ts` | Calls Slack, keeps one hourly `users.list` per token, and takes requests from the token's budget |
 | `utils/slack-limiter.ts` | `SlackRateLimiter`: one request budget per token, served in turn, paused by `Retry-After` |
@@ -75,15 +75,15 @@ flowchart LR
   come round, so monitors show as unresponsive while they wait.
 - A wait extended after its line is written is not logged again, and a wait shorter than a
   tick is logged after it ended.
-- Waits use the wall clock and live in memory: a clock step changes them, and a daemon
-  restart forgets them.
+- Waits use the host's clock, which is the wall clock in the daemon, and live in memory: a
+  clock step changes them, and a daemon restart forgets them.
 - A monitor that is granted and polls again later joins the back of the queue.
 
 ```ts
-const limiter = new SlackRateLimiter({ requestsPerMinute: 20, now: () => Date.now(), log: console.warn })
+const limiter = new SlackRateLimiter({ requestsPerMinute: 20, log: console.warn })
 
-if (limiter.acquire(token, monitorId, first)) {
+if (limiter.acquire(now().getTime(), token, monitorId, first)) {
   // call Slack; on a 429:
-  limiter.pause(token, retryAfterSec, "conversations.replies", monitorId)
+  limiter.pause(now().getTime(), token, retryAfterSec, "conversations.replies", monitorId)
 }
 ```

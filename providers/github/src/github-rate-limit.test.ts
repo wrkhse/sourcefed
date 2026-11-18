@@ -105,7 +105,7 @@ let logs: string[]
 let failures: string[]
 
 function limiter(requestsPerMinute = 30): GithubRateLimiter {
-  return new GithubRateLimiter({ requestsPerMinute, now: () => Date.now(), log: (line) => logs.push(line) })
+  return new GithubRateLimiter({ requestsPerMinute, log: (line) => logs.push(line) })
 }
 
 beforeEach(() => {
@@ -143,7 +143,7 @@ function newRuntime(delivered: MonitorEvent[]): MonitorRuntime {
   return new MonitorRuntime({
     store: new InMemoryMonitorStore(),
     sink: { deliver: async ({ event }) => { delivered.push(event); return { ok: true } } },
-    sources: { github: new GithubMonitor(), "github-issues": GithubIssuesMonitor },
+    sources: { github: GithubMonitor, "github-issues": GithubIssuesMonitor },
     sourceForWebhookPath: () => undefined,
   })
 }
@@ -208,8 +208,8 @@ describe("GitHub rate limits", () => {
     github.limit = { api: "rest", answer: "403-quota", resetInSec: 120 }
     const limitedAt = await runUntilLimited(runtime, 403)
     github.limit = undefined
-    assert.ok(shared.waitsUntil(TOKEN, "rest") > Date.now(), "REST waits")
-    assert.equal(shared.waitsUntil(TOKEN, "graphql"), 0, "GraphQL has no wait of its own")
+    assert.ok(shared.waitsUntil(Date.now(), TOKEN, "rest") > Date.now(), "REST waits")
+    assert.equal(shared.waitsUntil(Date.now(), TOKEN, "graphql"), 0, "GraphQL has no wait of its own")
 
     await runFor(runtime, 4 * 60_000)
     const early = github.calls.filter((call) => call.at > limitedAt && call.at < limitedAt + 120_000)
@@ -232,7 +232,7 @@ describe("GitHub rate limits", () => {
     while (github.graphql().length === limitedAt) await runFor(runtime, 5_000)
     const hit = github.graphql().at(-1)!.at
     github.limit = undefined
-    assert.equal(shared.waitsUntil(TOKEN, "rest"), 0, "REST has no wait of its own")
+    assert.equal(shared.waitsUntil(Date.now(), TOKEN, "rest"), 0, "REST has no wait of its own")
 
     await runFor(runtime, 6 * 60_000)
     const during = github.calls.filter((call) => call.at > hit && call.at < hit + 300_000)
@@ -412,75 +412,75 @@ describe("GitHub rate-limit answers and budget", () => {
   test("repeated limits that name no time back off", () => {
     const waits: number[] = []
     for (let index = 0; index < 4; index++) {
-      const seconds = shared.backoff(TOKEN, "rest")
+      const seconds = shared.backoff(Date.now(), TOKEN, "rest")
       waits.push(seconds)
-      shared.pause(TOKEN, "rest", seconds, "m1")
+      shared.pause(Date.now(), TOKEN, "rest", seconds, "m1")
       mock.timers.tick(seconds * 1000 + 5_000)
     }
     assert.deepEqual(waits, [60, 120, 240, 480])
 
     mock.timers.tick(11 * 60_000)
-    assert.equal(shared.backoff(TOKEN, "rest"), 60, "a quiet spell starts again at a minute")
-    assert.equal(shared.backoff(TOKEN, "graphql"), 60, "each API backs off on its own")
+    assert.equal(shared.backoff(Date.now(), TOKEN, "rest"), 60, "a quiet spell starts again at a minute")
+    assert.equal(shared.backoff(Date.now(), TOKEN, "graphql"), 60, "each API backs off on its own")
   })
 
   test("polls admitted at the same moment each take their own credit", () => {
-    const granted = ["m1", "m2", "m3", "m4", "m5"].map((key) => shared.acquire(TOKEN, key, ["graphql", "rest"]))
+    const granted = ["m1", "m2", "m3", "m4", "m5"].map((key) => shared.acquire(Date.now(), TOKEN, key, ["graphql", "rest"]))
     assert.deepEqual(granted, [true, true, true, true, false], "the burst of 4 admits four polls before any sends")
   })
 
   test("a pull request monitor short of GraphQL credit does not hold back a REST-only monitor", () => {
-    for (const key of ["p1", "p2", "p3", "p4"]) assert.equal(shared.acquire(TOKEN, key, ["graphql", "rest"]), true)
-    for (let page = 0; page < 4; page++) shared.charge(TOKEN, "graphql")
+    for (const key of ["p1", "p2", "p3", "p4"]) assert.equal(shared.acquire(Date.now(), TOKEN, key, ["graphql", "rest"]), true)
+    for (let page = 0; page < 4; page++) shared.charge(Date.now(), TOKEN, "graphql")
 
     mock.timers.tick(4_000)
-    assert.equal(shared.acquire(TOKEN, "p5", ["graphql", "rest"]), false, "GraphQL is still paying back")
-    assert.equal(shared.acquire(TOKEN, "issues", ["rest"]), true, "REST has credit for the issues monitor")
+    assert.equal(shared.acquire(Date.now(), TOKEN, "p5", ["graphql", "rest"]), false, "GraphQL is still paying back")
+    assert.equal(shared.acquire(Date.now(), TOKEN, "issues", ["rest"]), true, "REST has credit for the issues monitor")
     mock.timers.tick(12_000)
-    assert.equal(shared.acquire(TOKEN, "p5", ["graphql", "rest"]), true)
+    assert.equal(shared.acquire(Date.now(), TOKEN, "p5", ["graphql", "rest"]), true)
   })
 
   test("a first poll jumps the queue only until it is granted", () => {
     const apis = ["rest"] as const
-    for (const key of ["m1", "m2", "m3", "m4"]) assert.equal(shared.acquire(TOKEN, key, apis), true)
-    assert.equal(shared.acquire(TOKEN, "m5", apis), false)
-    assert.equal(shared.acquire(TOKEN, "m6", apis), false)
+    for (const key of ["m1", "m2", "m3", "m4"]) assert.equal(shared.acquire(Date.now(), TOKEN, key, apis), true)
+    assert.equal(shared.acquire(Date.now(), TOKEN, "m5", apis), false)
+    assert.equal(shared.acquire(Date.now(), TOKEN, "m6", apis), false)
 
     mock.timers.tick(2_000)
-    assert.equal(shared.acquire(TOKEN, "new", apis, true), true, "a new monitor goes ahead of m5 and m6")
+    assert.equal(shared.acquire(Date.now(), TOKEN, "new", apis, true), true, "a new monitor goes ahead of m5 and m6")
     mock.timers.tick(2_000)
-    assert.equal(shared.acquire(TOKEN, "new", apis, true), false, "its next poll, still unprimed, waits its turn")
-    assert.equal(shared.acquire(TOKEN, "m5", apis), true)
+    assert.equal(shared.acquire(Date.now(), TOKEN, "new", apis, true), false, "its next poll, still unprimed, waits its turn")
+    assert.equal(shared.acquire(Date.now(), TOKEN, "m5", apis), true)
   })
 
   test("a clock stepping back neither stretches a wait past an hour nor keeps a stopped monitor first", () => {
     let now = START
-    const stepped = new GithubRateLimiter({ requestsPerMinute: 30, now: () => now, log: (line) => logs.push(line) })
-    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), true)
-    stepped.pause(TOKEN, "rest", 120, "m1")
+    const stepped = new GithubRateLimiter({ requestsPerMinute: 30, log: (line) => logs.push(line) })
+    assert.equal(stepped.acquire(now, TOKEN, "m1", ["rest"]), true)
+    stepped.pause(now, TOKEN, "rest", 120, "m1")
 
     now = START - 2 * 24 * 60 * 60_000
-    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), false, "still waiting just after the step")
+    assert.equal(stepped.acquire(now, TOKEN, "m1", ["rest"]), false, "still waiting just after the step")
     now += MAX_WAIT_SEC * 1000 + 5_000
-    assert.equal(stepped.acquire(TOKEN, "m1", ["rest"]), true, "the wait ends within an hour of the step")
+    assert.equal(stepped.acquire(now, TOKEN, "m1", ["rest"]), true, "the wait ends within an hour of the step")
 
     // m2 asked before the step and then stopped; m3 is not held behind it for two days.
     now = START
-    for (let polls = 0; polls < 10 && stepped.acquire(TOKEN, "m1", ["rest"]); polls++) continue
-    assert.equal(stepped.acquire(TOKEN, "m2", ["rest"]), false, "m2 is queued with no credit")
+    for (let polls = 0; polls < 10 && stepped.acquire(now, TOKEN, "m1", ["rest"]); polls++) continue
+    assert.equal(stepped.acquire(now, TOKEN, "m2", ["rest"]), false, "m2 is queued with no credit")
     now = START - 24 * 60 * 60_000
-    stepped.acquire(TOKEN, "m3", ["rest"])
+    stepped.acquire(now, TOKEN, "m3", ["rest"])
     now += 20_000
-    stepped.acquire(TOKEN, "m3", ["rest"])
+    stepped.acquire(now, TOKEN, "m3", ["rest"])
     now += 20_000
-    assert.equal(stepped.acquire(TOKEN, "m3", ["rest"]), true, "credit is earned again from the step, and m2 no longer leads")
+    assert.equal(stepped.acquire(now, TOKEN, "m3", ["rest"]), true, "credit is earned again from the step, and m2 no longer leads")
   })
 
   test("a wait longer than an hour is capped and says so", () => {
-    shared.acquire(TOKEN, "m1", ["rest"])
-    shared.pause(TOKEN, "rest", 7200, "m1")
+    shared.acquire(Date.now(), TOKEN, "m1", ["rest"])
+    shared.pause(Date.now(), TOKEN, "rest", 7200, "m1")
     mock.timers.tick(5_000)
-    assert.equal(shared.acquire(TOKEN, "m1", ["rest"]), false)
+    assert.equal(shared.acquire(Date.now(), TOKEN, "m1", ["rest"]), false)
     assert.deepEqual(logs, [
       `[sourcefed] GitHub REST rate-limited: waiting 3600s (GitHub asked for 7200s; waits are capped at ${MAX_WAIT_SEC}s) before polling 1 GitHub monitor on this token again`,
     ])

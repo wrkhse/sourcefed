@@ -25,7 +25,6 @@ export const MAX_RETRY_AFTER_SEC = 60 * 60
 
 export type SlackLimiterOptions = {
   requestsPerMinute: number
-  now: () => number
   log: (line: string) => void
 }
 
@@ -61,6 +60,9 @@ type TokenBudget = {
  * Monitors refused a request wait in arrival order and are served in turn; a monitor's
  * first read goes to the head of the queue. A rate-limited answer pauses the whole token
  * until Slack's Retry-After has passed.
+ *
+ * The caller supplies the time of each call, in milliseconds, so a host's clock, real or
+ * recorded, drives the budget.
  */
 export class SlackRateLimiter {
   private readonly budgets = new Map<string, TokenBudget>()
@@ -76,8 +78,7 @@ export class SlackRateLimiter {
    * a new monitor, and everything posted before it counts as already seen, so it goes first,
    * until the monitor's first request is granted.
    */
-  acquire(token: string, key: string, first = false): boolean {
-    const now = this.options.now()
+  acquire(now: number, token: string, key: string, first = false): boolean {
     const budget = this.budget(token, now)
     this.ask(budget, key, now, first)
     if (this.waiting(budget, key, now)) return false
@@ -91,8 +92,7 @@ export class SlackRateLimiter {
   }
 
   /** Charges a follow-up page that a read cannot stop before; false while the token waits. */
-  charge(token: string): boolean {
-    const now = this.options.now()
+  charge(now: number, token: string): boolean {
     const budget = this.budget(token, now)
     if (now < budget.pausedUntil) return false
     this.refill(budget, now)
@@ -101,8 +101,7 @@ export class SlackRateLimiter {
   }
 
   /** Takes a follow-up page that a read could stop before, if the budget has one. */
-  spend(token: string): boolean {
-    const now = this.options.now()
+  spend(now: number, token: string): boolean {
     const budget = this.budget(token, now)
     if (now < budget.pausedUntil) return false
     this.refill(budget, now)
@@ -112,8 +111,7 @@ export class SlackRateLimiter {
   }
 
   /** Holds every monitor on `token` until Slack's Retry-After has passed, at most an hour. */
-  pause(token: string, retryAfterSec: number, method: string, key: string): void {
-    const now = this.options.now()
+  pause(now: number, token: string, retryAfterSec: number, method: string, key: string): void {
     const budget = this.budget(token, now)
     const until = now + Math.min(retryAfterSec, MAX_RETRY_AFTER_SEC) * 1000
     if (until <= budget.pausedUntil) return
