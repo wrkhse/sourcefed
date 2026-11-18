@@ -19,10 +19,16 @@ const input = {
 }
 
 const testHttp: Http = {
+  fetch: async () => {
+    throw new Error("the fake source makes no requests")
+  },
   json: async () => {
     throw new Error("the fake source makes no requests")
   },
 }
+
+const testNow = () => new Date("2026-11-18T09:30:00.000Z")
+const testHost = { http: testHttp, now: testNow }
 
 function fakeDefinition(calls: SourceContext<FakeSource>[] = []): SourceDefinition<FakeSource> {
   return {
@@ -44,7 +50,7 @@ function fakeDefinition(calls: SourceContext<FakeSource>[] = []): SourceDefiniti
 
 describe("defineSource", () => {
   test("returns a Monitor that reads the definition", () => {
-    const monitor = defineSource(fakeDefinition(), { http: testHttp })
+    const monitor = defineSource(fakeDefinition(), testHost)
     const source = monitor.validateSource({ type: "fake", channel: "general" })
 
     assert.equal(monitor.type, "fake")
@@ -58,14 +64,27 @@ describe("defineSource", () => {
   })
 
   test("refuses a source the schema rejects", () => {
-    const monitor = defineSource(fakeDefinition(), { http: testHttp })
+    const monitor = defineSource(fakeDefinition(), testHost)
 
     assert.throws(() => monitor.validateSource({ type: "fake", channel: 7 }), { message: "invalid fake monitor source" })
   })
 
-  test("polls with the source, cursor, monitor id and host http", async () => {
+  test("a definition's wake is the monitor's wake", () => {
+    const wake = { path: "/webhooks/fake", matches: () => true }
+    const monitor = defineSource({ ...fakeDefinition(), wake }, testHost)
+
+    assert.equal(monitor.wake, wake)
+  })
+
+  test("a definition without a wake leaves the monitor's wake undefined", () => {
+    const monitor = defineSource(fakeDefinition(), testHost)
+
+    assert.equal(monitor.wake, undefined)
+  })
+
+  test("polls with the source, cursor, monitor id and host http and clock", async () => {
     const calls: SourceContext<FakeSource>[] = []
-    const monitor = defineSource(fakeDefinition(calls), { http: testHttp })
+    const monitor = defineSource(fakeDefinition(calls), testHost)
     const store = new InMemoryMonitorStore({
       monitors: [
         {
@@ -102,6 +121,7 @@ describe("defineSource", () => {
     assert.equal(calls[0].cursor, "cursor-1")
     assert.equal(calls[0].monitorId, "m-sdk")
     assert.equal(calls[0].http, testHttp)
+    assert.equal(calls[0].now, testNow)
 
     const after = await service.get("m-sdk")
     assert.equal(after?.cursors["fake:general"], "next")

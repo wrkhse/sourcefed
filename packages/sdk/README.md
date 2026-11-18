@@ -48,16 +48,18 @@ export const feed = defineSource({
 | Module | Responsibility |
 | --- | --- |
 | `source.ts` | `defineSource` and the `SourceDefinition` / `SourceContext` a provider writes. |
-| `http.ts` | `Http`, `fetchHttp` and the three failures a plugin tells apart. |
-| `golden.ts` | `assertGolden`, `scriptedHttp`, `redactHeaders` and the transcript types. |
+| `http.ts` | `Http`, `httpOver`, `fetchHttp` and the three failures a plugin tells apart. |
+| `golden.ts` | `assertGolden`, `scriptedHttp`, `replyResponse`, `redactHeaders` and the transcript types. |
 
 ## What the host owns
 
-Today: the `http` transport, and nothing else. Every poll receives the host's
-`Http`; a test or the golden harness supplies its own, and `fetchHttp` is the
-only implementation in production. A poll gets no timer, no store and no
-secret, so `SourceHost` is the seam the broker replaces once barn owns the
-network.
+Today: the `http` transport and the `now` clock, and nothing else. Every poll
+receives the host's `Http` and clock; a test or the golden harness supplies its
+own, and `fetchHttp` with `new Date()` is the only pair in production.
+`http.fetch` answers as the upstream answered (status, headers, body), and
+`http.json` reduces a request to its JSON or an `HttpError`. A poll gets no
+timer, no store and no secret, so `SourceHost` is the seam the broker replaces
+once barn owns the network.
 
 ## What crosses the boundary
 
@@ -73,8 +75,9 @@ never holds a network handle of its own.
   them behind `Http`, so a plugin keeps calling `http.json`.
 - **No worker, loader, manifest or cancellation signal.** The worker boundary
   brings them, and `SourceContext` grows with it.
-- **No webhook, `mergeCursor` or timer owned by the source.** Those are later
-  slices; a source that waits returns `{ deferred: true }` and core polls it
+- **No webhook delivery, `mergeCursor` or timer owned by the source.** Those
+  are later slices. A definition's `wake` only wakes the monitor for an early
+  poll, and a source that waits returns `{ deferred: true }` and core polls it
   again.
 
 ## Golden transcripts
@@ -105,10 +108,18 @@ then removes the worktree; no live API is contacted.
 
 The cases file names `provider`, the old provider's `entry` and `export`,
 the output `fixture` path and API `base`. Its `env` values and `unset`
-names configure the provider before import. Each entry in `cases` supplies
-`name`, `build` and ordered `replies` (`body` and an optional `status`).
-A case with `continues: true` starts at the preceding case's returned
-cursor; otherwise it starts at `null`.
+names configure the provider before import. An optional `now` (an ISO
+instant) fixes `new Date()` and `Date.now()` while the old provider runs; the
+fixture records it, and the replay gives the source the same clock.
+
+Each entry in `cases` supplies `name`, `build` and ordered `replies`. A
+reply has a `body` and an optional `status` (200 when absent) and
+`headers`; `replyResponse` turns it into the `Response` both the recorder and
+the replay answer with, and a 204 or 304 carries no body. A case without
+`continues` is a first poll: it runs with an absent cursor and records
+`cursor: null`. A case with `continues: true` starts at the preceding case's
+returned cursor, so it cannot follow an error or a deferred case. A poll that
+defers records `deferred: true` and no events, cursor or terminal flag.
 
 To check a committed fixture, re-run the recorder at its `recordedFrom`,
 then check that its bytes are unchanged:

@@ -1,5 +1,5 @@
 import { build } from "esbuild"
-import { redactHeaders } from "@sourcefed/sdk"
+import { redactHeaders, replyResponse } from "@sourcefed/sdk"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -17,6 +17,7 @@ if (!casesPath || !ref) {
 const input = JSON.parse(readFileSync(path.resolve(root, casesPath), "utf8"))
 const recordedFrom = git(["rev-parse", "--short=7", ref]).trim()
 const temporary = mkdtempSync(path.join(os.tmpdir(), "sourcefed-golden-"))
+const RealDate = Date
 
 try {
   git(["worktree", "add", "--detach", temporary, ref])
@@ -30,6 +31,22 @@ try {
     delete process.env[name]
   }
 
+  if (input.now) {
+    // The pre-SDK providers stamp events with `new Date()` by default, so a reproducible
+    // recording runs them at one fixed instant.
+    const fixed = RealDate.parse(input.now)
+    globalThis.Date = class extends RealDate {
+      constructor(...args) {
+        if (args.length === 0) super(fixed)
+        else super(...args)
+      }
+
+      static now() {
+        return fixed
+      }
+    }
+  }
+
   const exported = (await import(pathToFileURL(bundle).href))[input.export]
   const monitor = typeof exported === "function" ? new exported() : exported
   const cases = []
@@ -37,21 +54,26 @@ try {
   for (const kase of input.cases) {
     const previous = cases.at(-1)
 
-    if (kase.continues && (!previous || "error" in previous)) {
+    if (kase.continues && (!previous || "error" in previous || "deferred" in previous)) {
       throw new Error(`invalid continuation for ${kase.name}`)
     }
 
-    const cursor = kase.continues ? previous.cursorAfter : null
+    // A first poll runs with an absent cursor, as the runtime gives it, and records `null`.
+    // A continuing case whose previous cursor was `null` also runs with an absent cursor:
+    // the store gives a poll an absent cursor, never `null`, and the replay applies the same rule.
+    const cursor = kase.continues ? previous.cursorAfter ?? undefined : undefined
     cases.push(await recordCase(monitor, kase, cursor))
   }
 
-  const fixture = { provider: input.provider, recordedFrom, base: input.base, cases }
+  const fixture = { provider: input.provider, recordedFrom, base: input.base, ...(input.now ? { now: input.now } : {}), cases }
   const constant = input.provider.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_GOLDEN"
   const header = `/** What the pre-SDK ${input.provider} provider did at ${recordedFrom}, recorded so the SDK port must reproduce it exactly. */`
   const text = `import type { GoldenFixture } from "@sourcefed/sdk"\n\n${header}\nexport const ${constant}: GoldenFixture = ${JSON.stringify(fixture, null, 2)}\n`
   writeFileSync(path.resolve(root, input.fixture), text)
   console.log(`${createHash("sha256").update(text).digest("hex")}  ${input.fixture}`)
 } finally {
+  globalThis.Date = RealDate
+
   try {
     git(["worktree", "remove", "--force", temporary])
   } finally {
@@ -145,9 +167,7 @@ async function recordCase(monitor, kase, cursor) {
 
     if (!reply) throw new Error(`no golden reply for ${String(input)}`)
 
-    return reply.status >= 400
-      ? new Response("{}", { status: reply.status })
-      : Response.json(reply.body)
+    return replyResponse(reply)
   }
 
   try {
@@ -155,7 +175,7 @@ async function recordCase(monitor, kase, cursor) {
     const recorded = {
       name: kase.name,
       build: kase.build,
-      cursor,
+      cursor: cursor ?? null,
       replies: kase.replies,
       requests,
       source,
@@ -171,6 +191,8 @@ async function recordCase(monitor, kase, cursor) {
       // TypeScript privacy does not exist at runtime. Calling the private runner
       // records the old provider's return value without reimplementing its poll monitor.
       const result = await monitor.poll.options.run(source, cursor, "golden")
+
+      if ("deferred" in result) return { ...recorded, deferred: true }
 
       return {
         ...recorded,
