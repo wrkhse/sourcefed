@@ -75,10 +75,13 @@ prerelease such as `0.6.0-rc.3`, and the `latest` dist-tag is never changed.
 
 One-time prerequisites, owned by the release maintainer:
 
-- The protected `release` GitHub environment, with the owner as its required
-  reviewer, exists before the dispatch. The job waits for that approval.
+- The protected `release-rc` GitHub environment, with the owner as its required
+  reviewer, exists before the dispatch. The job waits for that approval. The
+  `release` environment stays tag-only for final publishes.
 - npm trusted publishing is configured for `wrkhse/sourcefed`, workflow
-  file `release.yml`, environment `release`, with direct `npm publish` allowed.
+  file `release.yml`, environment `release-rc`, with direct `npm publish` allowed.
+  If the trusted publisher is already bound to `release`, delete and recreate it
+  with `release-rc`: npm cannot edit an existing connection.
   No npm token is passed; OIDC authenticates the job and npm adds provenance.
 
 Steps:
@@ -88,7 +91,7 @@ Steps:
 2. In the repository's Actions tab, select **Release** → **Run workflow**, then
    enter `version` as `0.6.0-rc.3` and `tag` as `v0.6.0-rc.3` (the tag must be
    exactly `v` plus the version) and run it.
-3. Approve the `release` deployment under **Review deployments**. The job does
+3. Approve the `release-rc` deployment under **Review deployments**. The job does
    not publish without that approval.
 4. The `publish-rc` job checks out the tag, downloads both assets from the
    prerelease, verifies the tarball with `shasum -a 256 -c SHA256SUMS`, refuses
