@@ -184,15 +184,17 @@ is, because later firings follow it.
 An interval computes the firings in (`checkedAt`, `now`] from the anchor and the
 period, so a long gap needs no cap. One firing on time is `timer.fired`. More
 than one, or a late one, is a single `timer.missed` that names the count and the
-latest time. The first poll does not prime: its window starts at the anchor.
+latest time. The first poll does not prime: its window starts at the anchor. An
+interval whose cursor is missing or corrupt counts its window from the anchor,
+so it gives at most one event, never a flood.
 
 After a sleep, the first poll on wake sees the whole gap: a one-shot due during it
 fires once, late, and ends; an interval gives one `timer.missed` for the firings it
 slept through.
 
-An event's id is fixed by its firing, `timer.fired:<key>:<at>`, so a repeat of the
-same firing is deduplicated while it waits in the queue. `defaultPollIntervalSec`
-is 15.
+An event's id is fixed by its firing, `timer:<key>:<at>`, whatever its kind, so
+a repeat of the same firing — on time once, late after a restart — is
+deduplicated while it waits in the queue. `defaultPollIntervalSec` is 15.
 
 Files: `providers/timer/src/` (`schema`, `durations`, `zoned`, `firings`, `poll`,
 `events`, `monitor` and `index`, each `.ts`), `providers/timer/package.json`,
