@@ -256,6 +256,18 @@ names configure the provider before import. An optional `now` (an ISO
 instant) fixes `new Date()` and `Date.now()` while the old provider runs; the
 fixture records it, and the replay gives the source the same clock.
 
+One case, from the schedule source's cases file:
+
+```json
+{
+  "name": "on-time",
+  "now": "2026-11-18T13:00:45.000Z",
+  "continues": true,
+  "build": { "name": "backup", "sourceType": "schedule", … },
+  "replies": []
+}
+```
+
 A poll case or a webhook delivery may carry its own `now`, which overrides the
 file's for that case alone; one with neither runs on the real clock. Give
 cases their own instants when the provider reads the clock between them: a
@@ -284,9 +296,11 @@ absent). `body` is the exact string sent, so a signature in `headers`
 computed over it stays valid. A cases file without `webhooks` records no
 `webhook`, so its fixture keeps its bytes.
 
-To check a committed fixture, re-run the recorder at its `recordedFrom`,
-then check that its bytes are unchanged:
+To check a committed fixture, re-run the recorder at its `recordedFrom` and
+confirm its bytes are unchanged:
 
 ```sh
+node scripts/record-golden.mjs \
+  providers/jira/src/fixtures/golden.cases.json 0a1a5e7
 git diff --exit-code -- providers/jira/src/fixtures/golden.ts
 ```

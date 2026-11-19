@@ -4,14 +4,14 @@ Built-in sources use the
 [source plugin SDK](../../packages/sdk/README.md): the daemon polls them or
 receives their webhooks, then deduplicates, triages and delivers their events.
 
-| Slice | Status | You can |
-| --- | --- | --- |
-| [P0 SDK and golden tests][p0] | Implemented (0.6.0-rc.1) | Run the seven providers on the SDK |
-| [P1b timer][p1b] | Implemented (0.6.0-rc.2) | Set one-shot and interval timers as monitors |
+- [P0: the SDK and golden tests][p0], in 0.6.0-rc.1: the seven built-in
+  sources run on the SDK, verified by recorded transcripts.
+- [P1b: timers][p1b], in 0.6.0-rc.2: one-shot and interval timers as
+  monitors; the [timer package](../../providers/timer/README.md) has its
+  inputs and behavior.
 
-See the [timer package](../../providers/timer/README.md) for its inputs
-and behavior. The [source and plugin API RFC][rfc] describes the proposed
-design; the closed [#31][archive] records the migration scope.
+Planned source and plugin work is in the [source and plugin API RFC][rfc]; the
+closed [#31][archive] records the migration scope.
 
 [p0]: p0-sdk.md
 [p1b]: p1b-timer.md

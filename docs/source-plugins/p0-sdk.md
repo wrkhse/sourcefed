@@ -124,6 +124,13 @@ Files: `packages/daemon/src/monitors-audit.test.ts`.
 
 **Verified by** the audit in `npm run check`.
 
+One live install was checked once, by hand. A read-only copy of one owner's
+`monitors.json`, 81 records (github 28, jira 24, slack 26, yab 3), was checked
+against the SDK definitions with the same rules: 73 passed, 8 had never been
+polled and had no cursor yet (github 1, slack 7), and none failed. The registry
+schema passed. The file had no jira-query, github-issues or schedule monitors.
+No value was recorded, and the copy was deleted.
+
 ## End to end
 
 The checks in the real environment:
