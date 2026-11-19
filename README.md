@@ -6,13 +6,136 @@
 
 <sub>OpenCode with the sourcefed plugin, on a free model, in a throwaway private repository. The failing commit and the review comment are staged; GitHub's CI, the comment and sourcefed's delivery are real. Waiting time is sped up.</sub>
 
-SourceFed is a tool that solves one problem: how does your agent get notified of changes from different sources like Slack, Jira, or GitHub? This solves it. 
-Your agent can independently create monitors that keep up with updates from these sources.
+SourceFed delivers new Jira, GitHub, Slack, Yab and timer events into the session.
 
-For example, after the agent creates a PR, it can create a monitor that will be notified of CI, reviews, comments, 
-merge conflicts, and more. No more copy pasting or reminding the agent to check the PR status.
+## Define a source
 
-It's also named after the [SourceFed](https://www.youtube.com/sourcefed) YouTube channel (I used watch them all the time as a kid [RIP])
+A source is a definition on `@sourcefed/sdk`; `defineSource` turns it into the
+core `Monitor` the daemon already runs.
+
+This is the shape the built-in timer uses:
+
+```ts
+import { toMonitorEvent, type MonitorCreateInput } from "@sourcefed/core"
+import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
+import { buildTimer } from "./build.ts"
+import { timerKey } from "./events.ts"
+import { pollTimer } from "./poll.ts"
+import { TimerCursorSchema, TimerSourceSchema, type TimerSource } from "./schema.ts"
+
+export const timerSource: SourceDefinition<TimerSource> = {
+  type: "timer",
+  schema: TimerSourceSchema,
+  cursor: TimerCursorSchema,
+  input: {
+    description: "A timer: fire once at in or at, or each period with every",
+    properties: {
+      job: { type: "string", minLength: 1, description: "What it is for" },
+      in: { type: "string", description: "Fire once after 45m" },
+      at: { type: "string", description: "Fire once at a time" },
+      every: { type: "string", description: "Fire each 45m" },
+      timezone: {
+        type: "string",
+        description: "IANA timezone; the system's when left out",
+      },
+    },
+    required: ["job"],
+  },
+  build: (input: MonitorCreateInput, now) => buildTimer(input, now()),
+  key: timerKey,
+  label: (source) => source.job,
+  detail: (source) =>
+    ("due" in source ? ` at ${source.due}` : ` every ${source.every}`) +
+    ` ${source.timezone}`,
+  describe: (source) =>
+    "due" in source
+      ? `Timer ${source.job} (at ${source.due})`
+      : `Timer ${source.job} (every ${source.every})`,
+  icon: "󰔛",
+  defaultPollIntervalSec: 15,
+  poll: async ({ source, cursor, now }) => {
+    const result = pollTimer(source, cursor, now())
+
+    return {
+      cursor: result.cursor,
+      events: result.events.map((e) => toMonitorEvent(e, source)),
+      terminal: result.terminal,
+    }
+  },
+}
+
+export const TimerMonitor = defineSource(timerSource)
+```
+
+Register it in `SOURCE_MAP` in `packages/daemon/src/registry.ts`.
+
+Jira shows the HTTP seam, with its issue key as input:
+
+```ts
+import { toMonitorEvent } from "@sourcefed/core"
+import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
+import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
+import { JiraCursorSchema, JiraSourceSchema } from "./schema.ts"
+import { pollJira } from "./poll/utils"
+import type { JiraSourceRecord } from "./types"
+
+export const jiraSource: SourceDefinition<JiraSourceRecord> = {
+  type: "jira",
+  schema: JiraSourceSchema,
+  cursor: JiraCursorSchema,
+  input: {
+    description: "A Jira issue: comments, edits and status changes",
+    properties: {
+      issueKey: { type: "string", description: "Jira issue key, e.g. PROJ-12345" },
+    },
+    required: ["issueKey"],
+  },
+  build: (input: MonitorCreateInput): SourceInput => {
+    if (input.issueKey) return { type: "jira", issueKey: input.issueKey }
+    return { error: "issueKey is required for a jira monitor" }
+  },
+  key: (source) => `jira:${source.issueKey}`,
+  label: (source) => source.issueKey,
+  detail: (source) => ` ${source.issueKey}`,
+  describe: (source) => `Jira ${source.issueKey}`,
+  icon: "󰌃",
+  poll: async ({ source, cursor, http }) => {
+    const result = await pollJira(http, source.issueKey, cursor)
+
+    return {
+      cursor: result.cursor,
+      events: result.events.map((e) => toMonitorEvent(e, source)),
+      terminal: result.terminal,
+    }
+  },
+}
+
+export const JiraMonitor = defineSource(jiraSource)
+```
+
+A source never handles tokens itself; it names the header through the host's `http`:
+
+```ts
+const issue = await http.json(url, {
+  headers: { Authorization: jiraAuth(), Accept: "application/json" },
+})
+```
+
+```sh
+sourcefed monitor create --name deploy --source-type timer \
+  --job "check the deploy" --in 20m
+sourcefed monitor create --source-type jira --issueKey PROJ-123 --name PROJ-123
+```
+
+## Source plugins
+
+`defineSource`, a source's schemas and its input are set out in the
+[P0 SDK page][p0-sdk] and the [SDK README][sdk-readme]. `build(input, now)`
+gets the host's clock, shown in the [P1b timer page][p1b-timer].
+`poll({ source, cursor, http, mcp, now, monitorId })` returns
+`{ events, cursor, terminal }` or `{ deferred: true }`, and the host owns the
+clock, HTTP and MCP ([P0 SDK page][p0-sdk]). A terminal event is delivered
+before its record goes ([P1b timer page][p1b-timer]).
 
 ## Install
 
@@ -385,3 +508,7 @@ Slack URLs, session IDs, webhook payloads, or credentials in tests and examples.
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+[p0-sdk]: docs/source-plugins/p0-sdk.md
+[sdk-readme]: packages/sdk/README.md
+[p1b-timer]: docs/source-plugins/p1b-timer.md
