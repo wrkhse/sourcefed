@@ -115,6 +115,7 @@ display, and its poll. `cursor` is the shape of the cursor the source stores
 under its key; a stored cursor is checked against it, and a later change of
 shape is a migration the source declares. `build` receives the host's clock, so
 a source that resolves relative input, such as a timer's `in`, reads it there.
+The host binds the clock, so core's `Monitor.build` keeps one argument.
 
 ```ts
 export type SourceDefinition<T extends MonitorSource> = {

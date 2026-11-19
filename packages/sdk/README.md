@@ -75,7 +75,8 @@ migration the source declares.
 A definition's `build` is `(input: MonitorCreateInput, now: () => Date) =>
 SourceInput`: the clock is the host's, the same one `poll` and a webhook's
 `verify` and `parse` receive, so a source that resolves relative input, such as
-a timer's `in`, reads it there.
+a timer's `in`, reads it there. The host binds the clock, so core's
+`Monitor.build` keeps one argument.
 
 A definition's optional `defaultPollIntervalSec` is how often a new monitor
 of the source polls when the caller names no interval, such as `900` for a
