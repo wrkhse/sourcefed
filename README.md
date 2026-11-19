@@ -126,13 +126,16 @@ every event from any source.
 brew install stevenjpx2/taps/sourcefed
 ```
 
-The tap's formula pins 0.5.2. With npm instead, on Node 22.19 or later:
+The tap's formula pins 0.5.2 from the old `@fdcn` scope;
+the npm candidate below uses the new `@wrkhse` scope.
+With npm instead, on Node 22.19 or later:
 
 ```sh
-npm install --global @fdcn/sourcefed@0.5.2
+npm install --global @wrkhse/sourcefed@0.6.0-rc.3
 ```
 
-> Note: Sourcefed is moving to the `@wrkhse/sourcefed` npm scope; the stable pin above stays on `@fdcn/sourcefed` until the new scope is published.
+> This is a release candidate. The stable pin moves to
+> `@wrkhse/sourcefed` when 0.6.0 ships.
 
 Add it to OpenCode, Pi or both:
 
@@ -147,13 +150,13 @@ instead. For OpenCode, one entry loads the server and TUI plugins:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
-{ "plugins": ["@fdcn/sourcefed@0.5.2"] }
+{ "plugins": ["@wrkhse/sourcefed@0.6.0-rc.3"] }
 ```
 
 For Pi:
 
 ```sh
-pi install npm:@fdcn/sourcefed@0.5.2
+pi install npm:@wrkhse/sourcefed@0.6.0-rc.3
 ```
 
 ## Watch a pull request
