@@ -45,7 +45,8 @@ export type SourceDefinition<T extends MonitorSource> = {
    */
   readonly cursor: GenericSchema<unknown>
   readonly input: SourceInputSchema
-  readonly build: (input: MonitorCreateInput) => SourceInput
+  /** Resolves create input into a source; one with relative input, such as a timer's `in`, reads the host's clock here. */
+  readonly build: (input: MonitorCreateInput, now: () => Date) => SourceInput
   readonly key: (source: T) => string
   readonly label: (source: T) => string
   readonly detail: (source: T) => string
@@ -90,7 +91,7 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
   declare readonly webhook?: WebhookMonitor<T>
   declare readonly defaultPollIntervalSec?: number
 
-  constructor(private readonly definition: SourceDefinition<T>, host: SourceHost) {
+  constructor(private readonly definition: SourceDefinition<T>, private readonly host: SourceHost) {
     super({ type: definition.type, schema: definition.schema })
 
     this.key = definition.key
@@ -119,6 +120,6 @@ class PluginMonitor<T extends MonitorSource> extends Monitor<T> {
   }
 
   build(input: MonitorCreateInput): SourceInput {
-    return this.definition.build(input)
+    return this.definition.build(input, this.host.now)
   }
 }

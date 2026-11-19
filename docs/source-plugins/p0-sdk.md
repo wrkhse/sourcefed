@@ -113,7 +113,8 @@ defineSource(jiraSource, { http, mcp, now })
 **Structure.** A definition is its type and schemas, its create input, its
 display, and its poll. `cursor` is the shape of the cursor the source stores
 under its key; a stored cursor is checked against it, and a later change of
-shape is a migration the source declares.
+shape is a migration the source declares. `build` receives the host's clock, so
+a source that resolves relative input, such as a timer's `in`, reads it there.
 
 ```ts
 export type SourceDefinition<T extends MonitorSource> = {
@@ -121,7 +122,7 @@ export type SourceDefinition<T extends MonitorSource> = {
   readonly schema: GenericSchema<T>
   readonly cursor: GenericSchema<unknown>
   readonly input: SourceInputSchema
-  readonly build: (input: MonitorCreateInput) => SourceInput
+  readonly build: (input: MonitorCreateInput, now: () => Date) => SourceInput
   readonly key: (source: T) => string
   readonly label: (source: T) => string
   readonly detail: (source: T) => string

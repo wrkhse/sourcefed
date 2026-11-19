@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import { InMemoryMonitorStore, MonitorService } from "@sourcefed/core"
 import type { Monitor, MonitorContext, MonitorRecord } from "@sourcefed/core"
-import { defineSource, type Http, type Mcp, type SourceContext, type SourceDefinition, type SourceWebhook } from "@sourcefed/sdk"
+import { defineSource, type Http, type GoldenCreateInput, type Mcp, type SourceContext, type SourceDefinition, type SourceWebhook } from "@sourcefed/sdk"
 import * as v from "valibot"
 
 const FakeSourceSchema = v.object({
@@ -92,6 +92,18 @@ describe("defineSource", () => {
     assert.equal(monitor.icon, "󰍡")
     assert.deepEqual(monitor.input, input)
     assert.deepEqual(monitor.build({ channelId: "general" }), { type: "fake", channel: "general" })
+  })
+
+  test("builds with the host's clock", () => {
+    const definition: SourceDefinition<FakeSource> = {
+      ...fakeDefinition(),
+      build: (_create, now) => ({ type: "x", due: now().toISOString() }),
+    }
+    const create: GoldenCreateInput = { name: "t", sourceType: "x" }
+    const host = { http: testHttp, mcp: testMcp, now: () => new Date("2026-11-19T09:30:00.000Z") }
+    const monitor = defineSource(definition, host)
+
+    assert.deepEqual(monitor.build(create), { type: "x", due: "2026-11-19T09:30:00.000Z" })
   })
 
   test("refuses a source the schema rejects", () => {
