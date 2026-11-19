@@ -2,9 +2,11 @@
 
 The `timer` package reads a timer's create input and resolves it against the
 host's clock into the source a monitor stores: a one-shot with its `due`
-instant, or an interval with its period and `anchor`. Its modules are pure and
-take `now` as an argument. The daemon's registry does not list the timer, and
-the package has no poll.
+instant, or an interval with its period and `anchor`. Each poll compares the
+stored source with the host's clock and returns `timer.fired` or
+`timer.missed`; a one-shot's firing ends its monitor. Its modules are pure and
+take `now` as an argument. `TimerMonitor` is the source as a core monitor; the
+daemon's registry does not list it.
 
 ```mermaid
 flowchart LR
@@ -16,15 +18,77 @@ flowchart LR
     Zoned --> Stored["stored source<br/>due, or every + anchor"]
     Resolve --> Stored
     Build -->|"refused"| Error["{ error }"]
+    Stored --> Poll["pollTimer<br/>source, cursor, now"]
+    Poll --> Firings["firingsBetween<br/>(checkedAt, now]"]
+    Poll -->|"timer.fired, timer.missed"| Events[events]
+    Poll -->|"one-shot fired"| Terminal["terminal"]
 ```
 
 | Module | Responsibility |
 | --- | --- |
+| `monitor.ts` | `timerSource`, the source definition, and `TimerMonitor`, the monitor made from it. |
+| `poll.ts` | `pollTimer`: one poll at `now`, its events, cursor and whether the monitor ends. |
+| `firings.ts` | `firingsBetween`: how many firings of an interval fall in a window, and the latest. |
+| `events.ts` | `timerKey`, `firedEvent` and `missedEvent`. |
 | `build.ts` | `buildTimer`: checks the input, picks one of `in`, `at` or `every`, and writes the stored source. |
 | `durations.ts` | `parseDuration`: `45m`, `1h30m`, `2w`, between 1 minute and 366 days. |
 | `at.ts` | `parseAt`: a local time in the zone, or an instant with `Z` or an offset. |
 | `zoned.ts` | Time zones through `Intl`: the system zone, checking a name, ISO times with the zone's offset, wall-clock resolution, and adding a duration. |
 | `schema.ts` | The source records, the cursor, and the create input. |
+
+## monitor.ts
+
+`timerSource` builds with the host's clock and polls with it. Its key holds the
+due time or the anchor, so two timers made at different times are two monitors.
+It polls every 15 seconds by default.
+
+```ts
+const monitor = defineSource(timerSource, { http, mcp, now: () => clock })
+// clock is 2026-11-19T15:00:00+05:30
+
+const source = monitor.build({ job: "check the deploy", in: "20m", timezone: "Asia/Kolkata" })
+
+monitor.key(source)
+// "timer:check the deploy:2026-11-19T15:20:00+05:30"
+
+monitor.describe(source)
+// "Timer check the deploy (at 2026-11-19T15:20:00+05:30)"
+```
+
+## poll.ts
+
+A one-shot fires once `now` reaches `due` and the poll is terminal; found more
+than two minutes after `due` it carries `late`, `lateSec` and the delay in its
+summary, in its two largest units, such as `45m`, `3h 20m` or `2d 4h`. An interval reads the firings in (`checkedAt`, `now`], or from the
+anchor when there is no cursor: one found on time is `timer.fired`, more than
+one or a late one is a single `timer.missed` naming the count and the latest.
+An event's id is fixed by its firing, so a repeated poll repeats it and the
+queue keeps one.
+
+```ts
+const oneShot = { type: "timer", job: "check the deploy", due: "2026-11-19T15:20:00+05:30", timezone: "Asia/Kolkata" }
+
+pollTimer(oneShot, null, new Date("2026-11-19T18:20:00+05:30"))
+// { events: [timer.fired, "… fired at 2026-11-19T15:20:00+05:30, 3h late"], terminal: true }
+
+const stretch = { type: "timer", job: "stretch", every: "45m", anchor: "2026-11-19T09:00:00+05:30", timezone: "Asia/Kolkata" }
+
+pollTimer(stretch, { checkedAt: "2026-11-19T09:10:00+05:30" }, new Date("2026-11-19T12:50:00+05:30"))
+// { events: [timer.missed, count 5, latest 2026-11-19T12:45:00+05:30], terminal: false }
+```
+
+## firings.ts
+
+The k-th firing is k periods from the anchor, so calendar steps never drift.
+The count is estimated from the nominal period and corrected a step at a time,
+so a year's gap costs the same as a minute's. A stored `every` that does not
+parse is a broken record: it throws core's `PollSourceError`, which the tick
+logs as one line.
+
+```ts
+firingsBetween(stretch, new Date("2026-11-19T09:10:00+05:30"), new Date("2026-11-19T12:50:00+05:30"))
+// { latest: 2026-11-19T07:15:00.000Z, count: 5 }
+```
 
 ## build.ts
 
