@@ -4,6 +4,31 @@ import { MonitorService } from "./service.ts"
 import { InMemoryMonitorStore } from "../storage/in-memory-monitor-store.ts"
 
 describe("MonitorService", () => {
+  test("tells end listeners about an ending after it is stored, and a failing one does not fail it", async () => {
+    const service = new MonitorService(new InMemoryMonitorStore())
+    const { monitor } = await service.create({
+      name: "test issue",
+      source: { type: "test", key: "issue-1" },
+      delivery: "poll",
+      target: { kind: "test", id: "session-1" },
+      pollIntervalSec: 60,
+    })
+    const heard: Array<string | undefined> = []
+    service.onEnd(async () => { throw new Error("listener failed") })
+    const unsubscribe = service.onEnd(async (ended) => { heard.push((await service.get(ended.id))?.endedAt) })
+
+    await service.end(monitor.id)
+    const stored = await service.get(monitor.id)
+    assert.equal(stored?.enabled, false)
+    assert.equal(typeof stored?.endedAt, "string")
+    // The listener read the ending back from the store, so it ran after the write.
+    assert.deepEqual(heard, [stored?.endedAt])
+
+    unsubscribe()
+    await service.end(monitor.id)
+    assert.equal(heard.length, 1)
+  })
+
   test("creates, reuses, stops, and removes monitors per target", async () => {
     const service = new MonitorService(new InMemoryMonitorStore())
     const input = {

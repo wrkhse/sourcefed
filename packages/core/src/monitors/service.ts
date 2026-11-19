@@ -16,8 +16,11 @@ export type CreateMonitorResult = {
   created: boolean
 }
 
+export type MonitorEndListener = (monitor: MonitorRecord) => void | Promise<void>
+
 export class MonitorService {
   private registryQueue = Promise.resolve()
+  private readonly endListeners = new Set<MonitorEndListener>()
 
   constructor(readonly store: MonitorStore) {}
 
@@ -70,6 +73,7 @@ export class MonitorService {
     return this.transact((registry) => {
       const monitor = registry.monitors.find((entry) => entry.id === id)
       if (!monitor) return { error: `monitor ${id} was not found` }
+      if (monitor.endedAt) return { error: `monitor ${id} has ended` }
       const identity = monitorIdentity(monitor.target, monitor.source)
       const duplicate = registry.monitors.find(
         (entry) => entry.id !== id && entry.enabled && monitorIdentity(entry.target, entry.source) === identity,
@@ -79,6 +83,42 @@ export class MonitorService {
       monitor.updatedAt = new Date().toISOString()
       return monitor
     })
+  }
+
+  /**
+   * Marks a monitor finished by its source. It is no longer polled and takes no webhook
+   * deliveries; its record stays until the events it queued last are delivered, and the host
+   * removes it then. Its last events may be taken before the ending is stored, so the host
+   * hears of each ending through `onEnd` and removes the record then if nothing waits.
+   */
+  async end(id: string): Promise<void> {
+    const ended = await this.transact((registry) => {
+      const monitor = registry.monitors.find((entry) => entry.id === id)
+      if (!monitor) return undefined
+      const now = new Date().toISOString()
+      monitor.enabled = false
+      monitor.endedAt = now
+      monitor.updatedAt = now
+      return structuredClone(monitor)
+    })
+    if (!ended) return
+
+    for (const listener of [...this.endListeners]) {
+      // The ending is stored whatever a listener does, and the poll or webhook that ended it
+      // must not fail over the host's cleanup.
+      try {
+        await listener(ended)
+      } catch (error) {
+        console.error(`[sourcefed] monitor ${id} end listener failed:`, error)
+      }
+    }
+  }
+
+  onEnd(listener: MonitorEndListener): () => void {
+    this.endListeners.add(listener)
+    return () => {
+      this.endListeners.delete(listener)
+    }
   }
 
   async remove(id: string): Promise<void> {

@@ -16,6 +16,7 @@ export class SourcefedDaemon {
   private readonly emitChains = new Map<string, Promise<void>>()
   private readonly deliveryLog = new Map<string, QueuedMonitorEvent[]>()
   private releaseExclusive?: () => Promise<void>
+  private stopHearingEndings?: () => void
   private started = false
 
   constructor(options: SourcefedDaemonOptions = {}) {
@@ -46,9 +47,14 @@ export class SourcefedDaemon {
       this.releaseExclusive = await this.store.acquireExclusive()
     }
     try {
+      await this.removeAllDrainedEnded()
+      // A session may take a monitor's last event before the monitor's ending is stored.
+      this.stopHearingEndings = this.service.onEnd((monitor) => this.removeDrainedEnded(monitor.target))
       await this.runtime.start()
       this.started = true
     } catch (error) {
+      this.stopHearingEndings?.()
+      this.stopHearingEndings = undefined
       await this.releaseExclusive?.()
       this.releaseExclusive = undefined
       throw error
@@ -63,6 +69,9 @@ export class SourcefedDaemon {
         console.warn("[sourcefed] monitor ticks still in flight; keeping exclusive ownership of the state directory")
         return
       }
+      // The ticks have settled, so no poll ends a monitor after this.
+      this.stopHearingEndings?.()
+      this.stopHearingEndings = undefined
       await this.releaseExclusive?.()
       this.releaseExclusive = undefined
       this.started = false
@@ -94,18 +103,20 @@ export class SourcefedDaemon {
   }
 
   async listMonitors(target: MonitorTarget): Promise<DaemonResult> {
-    const monitors = (await this.service.list()).filter((monitor) => sameTarget(monitor.target, target))
+    // An ended monitor is finished; its record only waits for its last events to be taken.
+    const monitors = (await this.service.list()).filter((monitor) => !monitor.endedAt && sameTarget(monitor.target, target))
     return { ok: true, monitors: monitors.map(monitorView) }
   }
 
   /**
-   * Every target of `kind` with an enabled monitor, so a host that restarts can
-   * resubscribe the sessions whose monitors outlived it.
+   * Every target of `kind` with an enabled monitor, or an ended one whose last events
+   * still wait, so a host that restarts can resubscribe the sessions whose monitors
+   * outlived it.
    */
   async listTargets(kind: string): Promise<MonitorTarget[]> {
     const targets = new Map<string, MonitorTarget>()
     for (const monitor of await this.service.list()) {
-      if (!monitor.enabled || monitor.target.kind !== kind) continue
+      if (!isLive(monitor) || monitor.target.kind !== kind) continue
       targets.set(targetKey(monitor.target), { kind: monitor.target.kind, id: monitor.target.id })
     }
     return [...targets.values()]
@@ -123,6 +134,8 @@ export class SourcefedDaemon {
     const stopped = await this.service.stop(id)
     if ("error" in stopped) return { ok: false, error: stopped.error }
     await this.purgeMonitorEvents(monitor.target, id)
+    // With nothing queued the purge drops nothing, so an ended record would outlive its stop.
+    await this.removeDrainedEnded(monitor.target)
     return { ok: true, monitor: monitorView(stopped) }
   }
 
@@ -165,6 +178,7 @@ export class SourcefedDaemon {
         if (received.size === 0) receivedByListener.delete(listener)
       }
     }
+    await this.removeDrainedEnded(target)
     return { ok: true, acknowledged: eventIDs }
   }
 
@@ -222,9 +236,9 @@ export class SourcefedDaemon {
     if (queued.length === 0) return
 
     // A stopped or removed monitor must go silent: drop its still-queued events
-    // instead of replaying them to subscribers.
-    const enabled = new Set((await this.service.list()).filter((monitor) => monitor.enabled).map((monitor) => monitor.id))
-    await this.dropQueued(target, queued.filter((event) => !enabled.has(event.monitorID)).map((event) => event.id))
+    // instead of replaying them to subscribers. An ended one still owes its last events.
+    const live = new Set((await this.service.list()).filter(isLive).map((monitor) => monitor.id))
+    await this.dropQueued(target, queued.filter((event) => !live.has(event.monitorID)).map((event) => event.id))
 
     let receivedByListener = this.received.get(key)
     if (!receivedByListener) {
@@ -235,7 +249,7 @@ export class SourcefedDaemon {
     for (const received of receivedByListener.values()) {
       for (const id of received) claimed.add(id)
     }
-    const fresh = queued.filter((event) => enabled.has(event.monitorID) && !claimed.has(event.id))
+    const fresh = queued.filter((event) => live.has(event.monitorID) && !claimed.has(event.id))
     if (fresh.length === 0) return
 
     for (const listener of [...listeners]) {
@@ -260,11 +274,36 @@ export class SourcefedDaemon {
     if (eventIDs.length === 0) return
     await this.queue.acknowledge(target, eventIDs)
     const receivedByListener = this.received.get(targetKey(target))
-    if (!receivedByListener) return
-    const ids = new Set(eventIDs)
-    for (const received of receivedByListener.values()) {
-      for (const id of ids) received.delete(id)
+    if (receivedByListener) {
+      const ids = new Set(eventIDs)
+      for (const received of receivedByListener.values()) {
+        for (const id of ids) received.delete(id)
+      }
     }
+    await this.removeDrainedEnded(target)
+  }
+
+  /**
+   * An ended monitor's record is kept only until the events it queued last are gone,
+   * taken or dropped; then nothing is left for it to deliver.
+   */
+  private async removeDrainedEnded(target: MonitorTarget): Promise<void> {
+    const ended = (await this.service.list()).filter((monitor) => monitor.endedAt && sameTarget(monitor.target, target))
+    if (ended.length === 0) return
+    // Not atomic with the list on purpose: a record missed here goes at the next acknowledgement or start.
+    const queued = new Set((await this.queue.read(target)).map((event) => event.monitorID))
+    for (const monitor of ended) {
+      if (!queued.has(monitor.id)) await this.service.remove(monitor.id)
+    }
+  }
+
+  // A daemon that stopped between the last acknowledgement and the removal leaves the record.
+  private async removeAllDrainedEnded(): Promise<void> {
+    const targets = new Map<string, MonitorTarget>()
+    for (const monitor of await this.service.list()) {
+      if (monitor.endedAt) targets.set(targetKey(monitor.target), monitor.target)
+    }
+    for (const target of targets.values()) await this.removeDrainedEnded(target)
   }
 
   private async purgeMonitorEvents(target: MonitorTarget, monitorID: string): Promise<void> {
@@ -323,6 +362,11 @@ async function ownedMonitor(service: SourcefedDaemon["service"], id: string, tar
 
 function sameTarget(left: MonitorTarget, right: MonitorTarget): boolean {
   return left.kind === right.kind && left.id === right.id
+}
+
+/** A monitor whose queued events are delivered: enabled, or ended, whose record lasts only while its last events wait. */
+function isLive(monitor: MonitorRecord): boolean {
+  return monitor.enabled || Boolean(monitor.endedAt)
 }
 
 function defaultStateDir(): string {

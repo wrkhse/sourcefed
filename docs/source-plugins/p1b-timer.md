@@ -86,9 +86,9 @@ source.
 
 `terminal` marks the record ended. The tick skips an ended record. Delivery
 treats an ended monitor's queued events as live, and a user's stop still drops
-them. The record is removed once its queue is empty: after each acknowledgement
-and when the daemon starts. An ended record never counts as active when a
-monitor is created.
+them. The record is removed once its queue is empty: after an acknowledgement,
+a drop or a user's stop, when the daemon hears the ending, and when the daemon
+starts. An ended record never counts as active when a monitor is created.
 
 Files: `packages/core/src/monitors/poll/monitor.ts`,
 `packages/core/src/monitors/webhook/monitor.ts`,
@@ -269,6 +269,12 @@ Never twice holds across restarts and sleep. A crash in the instant between the
 queue write and the store write, after the session already acknowledged the
 event, can repeat it once: closing that needs one transaction across two files,
 which this slice does not build.
+
+An ended monitor whose session never subscribes again keeps its record and its
+queued events: nothing delivers them, and the daemon removes them only when they
+are taken, dropped, or the monitor is stopped or removed by hand. This growth is
+accepted. The queue keeps any silent session's events the same way, ended or
+not, and both are bounded by the monitors a person created.
 
 ## PR cut
 

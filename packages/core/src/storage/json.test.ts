@@ -35,6 +35,49 @@ describe("JSON store", () => {
     assert.deepEqual(reloaded.monitors, [monitor])
   })
 
+  test("keeps an ended monitor's ending across store instances", async () => {
+    const directory = await temporaryDirectory()
+    const monitor = {
+      id: "m-1",
+      name: "pr",
+      source: { type: "github" as const, repo: "example-org/example-repo", prNumber: 7 },
+      delivery: "webhook" as const,
+      target: { kind: "test", id: "session-1" },
+      pollIntervalSec: 60,
+      enabled: false,
+      createdAt: "2026-11-18T12:00:00.000Z",
+      updatedAt: "2026-11-18T12:09:00.000Z",
+      cursors: {},
+      endedAt: "2026-11-18T12:09:00.000Z",
+    } satisfies MonitorRecord
+
+    await new JsonMonitorStore({ stateDir: directory }).save({ monitors: [monitor] })
+
+    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load()
+    assert.deepEqual(reloaded.monitors, [monitor])
+  })
+
+  test("loads a monitor stored before monitors could end", async () => {
+    const directory = await temporaryDirectory()
+    const monitor = {
+      id: "m-1",
+      name: "ADEPT-43742",
+      source: { type: "jira" as const, issueKey: "ADEPT-43742" },
+      delivery: "poll" as const,
+      target: { kind: "test", id: "session-1" },
+      pollIntervalSec: 60,
+      enabled: true,
+      createdAt: "2026-08-04T12:00:00.000Z",
+      updatedAt: "2026-08-04T12:00:00.000Z",
+      cursors: {},
+    }
+    await writeFile(path.join(directory, "monitors.json"), JSON.stringify({ monitors: [monitor] }))
+
+    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load()
+    assert.equal(reloaded.monitors[0]?.endedAt, undefined)
+    assert.deepEqual(reloaded.monitors, [monitor])
+  })
+
   test("refuses to overwrite malformed monitor state", async () => {
     const directory = await temporaryDirectory()
     await writeFile(path.join(directory, "monitors.json"), "{ not json")
