@@ -127,7 +127,8 @@ brew install stevenjpx2/taps/sourcefed
 ```
 
 The tap's formula pins 0.5.2 from the old `@fdcn` scope;
-the npm candidate below uses the new `@wrkhse` scope. With npm instead, on Node 22.19 or later:
+the npm candidate below uses the new `@wrkhse` scope.
+With npm instead, on Node 22.19 or later:
 
 ```sh
 npm install --global @wrkhse/sourcefed@0.6.0-rc.3
