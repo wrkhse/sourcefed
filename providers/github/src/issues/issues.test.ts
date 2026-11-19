@@ -263,6 +263,36 @@ describe("github-issues", () => {
     await assert.rejects(pollGithubIssues({ ...numbered, issueNumbers: [56] }, undefined, request, now), /example-org\/example-repo#56 redirected without a location/)
   })
 
+  test("a numbered source refuses a redirect off the GitHub API origin", async () => {
+    const location = "https://evil.example/repos/example-org/example-repo/issues/56"
+    const { request, calls } = github(redirected(location, 302))
+
+    await assert.rejects(pollGithubIssues({ ...numbered, issueNumbers: [56] }, undefined, request, now), /example-org\/example-repo#56 redirected off-origin to https:\/\/evil\.example/)
+
+    assert.equal(calls.length, 1)
+  })
+
+  test("a numbered source follows an absolute redirect on the GitHub API origin", async () => {
+    const location = `https://api.github.com/repos/${REPO}/issues/56?moved=1`
+    const { request, calls } = github(redirected(location, 302), direct(issue(56)))
+
+    const result = await pollGithubIssues({ ...numbered, issueNumbers: [56], includeExisting: true }, undefined, request, now)
+
+    assert.deepEqual(calls.map((call) => call.url), [
+      `https://api.github.com/repos/${REPO}/issues/56`,
+      location,
+    ])
+    assert.deepEqual(result.cursor, { primed: true, keys: [`${REPO}#56`], overLimit: false })
+  })
+
+  test("a numbered source refuses a malformed redirect location", async () => {
+    const { request, calls } = github(redirected("not a url", 302))
+
+    await assert.rejects(pollGithubIssues({ ...numbered, issueNumbers: [56] }, undefined, request, now), /example-org\/example-repo#56 redirected to a malformed location/)
+
+    assert.equal(calls.length, 1)
+  })
+
   test("a numbered source skips a pull request", async () => {
     const { request } = github(direct(pullRequest(56)))
 

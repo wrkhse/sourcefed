@@ -62,6 +62,15 @@ export async function listNumberedIssues(source: GithubIssuesSource, request: Gi
     if (response.status === 301 || response.status === 302) {
       const location = response.headers.get("location")
       if (!location) throw new PollSourceError(`GitHub issue ${source.repo}#${number} redirected without a location`)
+
+      let redirect: URL
+      try {
+        redirect = new URL(location)
+      } catch {
+        throw new PollSourceError(`GitHub issue ${source.repo}#${number} redirected to a malformed location`)
+      }
+
+      if (redirect.origin !== API) throw new PollSourceError(`GitHub issue ${source.repo}#${number} redirected off-origin to ${redirect.origin}`)
       response = await request(location, {})
     }
 
