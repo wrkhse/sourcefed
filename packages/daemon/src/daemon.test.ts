@@ -61,7 +61,7 @@ describe("SourcefedDaemon", () => {
   test("rejects unknown source types", async () => {
     const daemon = createDaemon()
     const result = await daemon.createMonitor(target, { name: "nope", sourceType: "telepathy" })
-    assert.deepEqual(result, { ok: false, error: "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule" })
+    assert.deepEqual(result, { ok: false, error: "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule|timer" })
     await daemon.stop()
   })
 

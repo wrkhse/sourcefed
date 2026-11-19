@@ -35,7 +35,7 @@ describe("daemon clients", () => {
 
       const target = { kind: "test", id: "session-1" }
       const sourceTypes = await client.request("daemon.sourceTypes")
-      assert.deepEqual(sourceTypes, { sourceTypes: ["jira", "jira-query", "github", "github-issues", "slack", "yab", "schedule"] })
+      assert.deepEqual(sourceTypes, { sourceTypes: ["jira", "jira-query", "github", "github-issues", "slack", "yab", "schedule", "timer"] })
 
       const { version } = JSON.parse(await readFile(ROOT_MANIFEST, "utf8")) as { version: string }
       assert.deepEqual(await client.request("daemon.health"), { ok: true, version, protocol: 1 })
@@ -392,7 +392,7 @@ describe("daemon clients", () => {
         token: "secret",
       })
       const sourceTypes = await authenticated.request("daemon.sourceTypes")
-      assert.deepEqual(sourceTypes, { sourceTypes: ["jira", "jira-query", "github", "github-issues", "slack", "yab", "schedule"] })
+      assert.deepEqual(sourceTypes, { sourceTypes: ["jira", "jira-query", "github", "github-issues", "slack", "yab", "schedule", "timer"] })
       const listener = await authenticated.subscribe({ kind: "test", id: "authenticated" }, async () => {})
       await listener.close()
       await authenticated.close()

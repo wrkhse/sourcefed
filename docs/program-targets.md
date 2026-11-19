@@ -131,6 +131,8 @@ sourcefed monitor ack --target-kind program --target-id atelier --event-id "m-â€
 | `item.matched`, `item.unmatched` | `jira-query` | `{ type: "jira-issue", key: "PROJ-7", url, title? }` |
 | `schedule.fired` | `schedule` | `{ type: "schedule", key: job, job, at, cron, timezone }` |
 | `schedule.missed` | `schedule` | the same, with `missed`, the count of times it stands for |
+| `timer.fired` | `timer` | `{ type: "timer", key: job, job, at, timezone, every? }`, with `late` and `lateSec` for a late one-shot |
+| `timer.missed` | `timer` | the same, with `missed`, the count of periods it stands for |
 | `overflow` | any monitor | `{ type: "monitor", key: monitorID, dropped }` |
 | `error` | `github-issues`, `jira-query` | none; more than 1,000 items match, and matching pauses |
 

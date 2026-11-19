@@ -188,6 +188,7 @@ sourcefed monitor create --source-type github-issues --repo owner/name --labels 
 sourcefed monitor create --source-type slack --thread-url https://myteam.slack.com/archives/C0123/p1700000000000000
 sourcefed monitor create --source-type slack --channel-id D0123456789 --name "DM with Alex"
 sourcefed monitor create --source-type schedule --cron "0 2 * * *" --timezone Asia/Kolkata --job nightly-audit --name nightly-audit
+sourcefed monitor create --name deploy --source-type timer --job "check the deploy" --in 20m
 sourcefed monitor create --source-type yab --url https://mail.google.com/mail/u/0/feed/atom --space Personal --match "interview|offer" --name inbox
 sourcefed monitor list
 sourcefed monitor status --id MONITOR_ID
@@ -213,7 +214,12 @@ matching. `jira-query` does the same for the issues matching `--jql`, a bounded 
 (Jira refuses one with no restriction). `schedule` takes `--cron`, a `--job` name and an
 optional IANA `--timezone` (the Mac's own when left out). It sends `schedule.fired` at each
 time, checking every 15 seconds by default, and one `schedule.missed` with the latest time and
-a `missed` count for the times that came while the daemon was stopped or the Mac slept. Yab takes `--url` (an Atom, RSS or
+a `missed` count for the times that came while the daemon was stopped or the Mac slept. `timer` takes a `--job` and one of `--in` (a duration such as
+`20m`), `--at` (a time such as `2026-11-19T15:00`, in `--timezone` or with an offset) or
+`--every` (a period such as `45m`). A one-shot sends one `timer.fired`, marked late when
+found more than two minutes after it was due, and then removes itself; an interval sends
+`timer.fired` each period and one `timer.missed` for periods that came while the daemon was
+stopped. Yab takes `--url` (an Atom, RSS or
 JSON feed), an optional `--space`, and `--match`/`--exclude` case-insensitive regexes over
 each entry's title, summary and author. Set `SOURCEFED_DAEMON_URL`
 when the daemon is not at the default URL.

@@ -1,12 +1,12 @@
 ---
 name: core
-description: Core sourcefed usage guide. Read this before creating monitors. Covers monitor creation per source (Jira issue, GitHub PR, Slack thread, Yab feed), event delivery and acknowledgement semantics, daemon modes, CLI usage, and troubleshooting. Use when the user asks to watch or monitor a Jira ticket, GitHub PR, Slack thread, a feed or inbox they are signed in to in Yab, or when sourcefed monitor events arrive in the session.
+description: Core sourcefed usage guide. Read this before creating monitors. Covers monitor creation per source (Jira issue, GitHub PR, Slack thread, Yab feed, schedule, timer), event delivery and acknowledgement semantics, daemon modes, CLI usage, and troubleshooting. Use when the user asks to watch or monitor a Jira ticket, GitHub PR, Slack thread, a feed or inbox they are signed in to in Yab, to be reminded once or at intervals, or when sourcefed monitor events arrive in the session.
 ---
 
 # Sourcefed core
 
 Sourcefed lets you create **monitors** that watch a Jira issue, GitHub PR,
-Slack thread or direct-message conversation, or a feed read through Yab, and route NEW events into the session you're currently working in,
+Slack thread or direct-message conversation, a cron schedule, a timer, or a feed read through Yab, and route NEW events into the session you're currently working in,
 so you can react to them as they happen.
 
 Every monitor is detect-only: it routes events into the session and never
@@ -23,6 +23,7 @@ only that source's fields.
 - **Jira issues matching JQL**: `monitor_create({ name: "agent", source: { type: "jira-query", jql: "project = PROJ AND labels = agent" } })`
 - **GitHub issues with labels**: `monitor_create({ name: "build", source: { type: "github-issues", repo: "owner/repo", labels: ["agent:build"] } })`
 - **Schedule**: `monitor_create({ name: "nightly", source: { type: "schedule", cron: "0 2 * * *", job: "nightly-audit", timezone: "Asia/Kolkata" } })`
+- **Timer**: `monitor_create({ name: "deploy", source: { type: "timer", job: "check the deploy", in: "20m" } })`; or `at: "2026-11-19T15:00"`, or `every: "45m"`
 - **Slack thread**: `monitor_create({ name: "thread", source: { type: "slack", threadUrl: "<thread-url>" } })`
 - **Whole Slack DM**: `monitor_create({ name: "DM with Alex", source: { type: "slack", channelId: "D0123456789" } })`
 - **Yab feed**: `monitor_create({ name: "inbox", source: { type: "yab", url: "https://mail.google.com/mail/u/0/feed/atom", space: "Personal", match: "interview|offer", exclude: "newsletter" } })`
@@ -40,6 +41,9 @@ You will be notified of:
 - **Schedule**: `schedule.fired` at each cron time; times that came while sourcefed was
   stopped or the Mac slept arrive as one `schedule.missed` with the latest time and a
   `missed` count. It never decides whether the work runs.
+- **Timer**: one `timer.fired` when a one-shot (`in` or `at`) is due, with `late` when it
+  is found more than two minutes after; an interval (`every`) sends `timer.fired` each
+  period and one `timer.missed` for periods that came while sourcefed was stopped.
 - **Slack thread**: new replies in the thread.
 - **Slack DM**: new top-level messages in the DM. Slack monitors are always detect-only
   and never reply.
@@ -49,7 +53,8 @@ You will be notified of:
   entry's title, summary and author. Yab must be running.
 
 GitHub and Slack use webhook delivery when configured and fall back to polling
-when unavailable. Jira and Yab always use polling. You can lower `pollIntervalSec`
+when unavailable. Jira, Yab, schedules and timers always use polling; schedules and
+timers check every 15 seconds by default. You can lower `pollIntervalSec`
 (min 15) for time-sensitive work, but prefer the default to avoid hammering
 APIs.
 
@@ -64,6 +69,7 @@ avoid notification noise; other informational events are added as context only.
 - GitHub monitors remove themselves after the PR is merged. Jira monitors
   remove themselves when `SOURCEFED_JIRA_TERMINAL_STATUS` matches the issue
   status; leave it unset to disable automatic Jira removal.
+- A one-shot timer removes itself once it fires.
 
 ## When an event arrives
 

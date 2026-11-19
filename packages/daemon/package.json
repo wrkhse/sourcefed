@@ -20,6 +20,7 @@
     "@sourcefed/provider-jira": "*",
     "@sourcefed/provider-schedule": "*",
     "@sourcefed/provider-slack": "*",
+    "@sourcefed/provider-timer": "*",
     "@sourcefed/provider-yab": "*"
   },
   "private": true

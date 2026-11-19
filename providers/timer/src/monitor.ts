@@ -3,7 +3,7 @@ import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { buildTimer } from "./build.ts"
 import { timerKey } from "./events.ts"
 import { pollTimer } from "./poll.ts"
-import { TimerCursorSchema, TimerSourceSchema, type TimerCreateInput, type TimerSource } from "./schema.ts"
+import { TimerCursorSchema, TimerSourceSchema, type TimerSource } from "./schema.ts"
 
 /** A one-shot or interval timer as data, plus the poll the host drives with its own clock. */
 export const timerSource: SourceDefinition<TimerSource> = {
@@ -21,8 +21,7 @@ export const timerSource: SourceDefinition<TimerSource> = {
     },
     required: ["job"],
   },
-  // The raw input is checked at the create boundary, which the daemon's wiring adds.
-  build: (input: MonitorCreateInput, now) => buildTimer(input as TimerCreateInput, now()),
+  build: (input: MonitorCreateInput, now) => buildTimer(input, now()),
   key: timerKey,
   label: (source) => source.job,
   detail: (source) => ("due" in source ? ` at ${source.due}` : ` every ${source.every}`) + ` ${source.timezone}`,
