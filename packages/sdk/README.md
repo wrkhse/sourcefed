@@ -92,6 +92,12 @@ from it, so the daemon routes, retries and heartbeats it as it does core's.
 event's fallback time are judged by the host, so a recorded delivery replays at
 its recorded instant.
 
+Routing uses the parsed event's `source.type`, falling back to the path's
+source when the event has none. A definition may give an optional
+`webhook.matches(source, event)` predicate to decide which monitors of that
+source receive the event; it receives the validated monitor source and the
+parsed event, and defaults to exact `source.key` equality.
+
 ```ts
 webhook: {
   path: "/webhooks/feed",
