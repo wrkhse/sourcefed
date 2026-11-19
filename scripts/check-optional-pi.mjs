@@ -27,9 +27,9 @@ async function main() {
     const audit = await auditConsumer(consumer, env)
     await run(process.execPath, ["--input-type=module", "--eval", [
       'import assert from "node:assert/strict";',
-      'const core = await import("@fdcn/sourcefed/core"); assert.ok(core.MonitorService);',
-      'const daemon = await import("@fdcn/sourcefed/daemon"); assert.equal(typeof daemon.connectDaemonClient, "function");',
-      'const mcp = await import("@fdcn/sourcefed/mcp"); assert.equal(typeof mcp.createSourcefedMcp, "function");',
+      'const core = await import("@wrkhse/sourcefed/core"); assert.ok(core.MonitorService);',
+      'const daemon = await import("@wrkhse/sourcefed/daemon"); assert.equal(typeof daemon.connectDaemonClient, "function");',
+      'const mcp = await import("@wrkhse/sourcefed/mcp"); assert.equal(typeof mcp.createSourcefedMcp, "function");',
     ].join("\n")], consumer, env)
     await run(process.execPath, [path.join(installed, "dist/cli.js"), "skills", "list"], consumer, env)
     const opencode = JSON.parse(await run(process.execPath, [
@@ -60,7 +60,7 @@ async function candidate(dir, env) {
   ], root, env))
   const archive = path.join(dir, packed[0].filename)
   await run("npm", ["install", archive, "--omit=dev", "--ignore-scripts", "--no-audit"], consumer, env)
-  return { consumer, archive, installed: path.join(consumer, "node_modules/@fdcn/sourcefed") }
+  return { consumer, archive, installed: path.join(consumer, "node_modules/@wrkhse/sourcefed") }
 }
 
 function isolatedEnvironment(dir) {
@@ -141,7 +141,7 @@ async function checkPi(dir, archive, installed, baseEnv) {
   }
   await run(process.execPath, [cli, "install", `npm:${manifest.name}@${manifest.version}`], project, env)
   await assertNoPi(path.join(agent, "npm"))
-  const managed = path.join(agent, "npm/node_modules/@fdcn/sourcefed/dist/pi.js")
+  const managed = path.join(agent, "npm/node_modules/@wrkhse/sourcefed/dist/pi.js")
   assert.deepEqual(await readFile(managed), await readFile(path.join(installed, "dist/pi.js")))
   const daemonPort = await freePort()
   env.SOURCEFED_DAEMON_URL = `http://127.0.0.1:${daemonPort}`

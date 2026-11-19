@@ -1,13 +1,13 @@
 name: Release
 
-# A tag such as v0.4.2 names a final release: `publish` stages @fdcn/sourcefed
+# A tag such as v0.4.2 names a final release: `publish` stages @wrkhse/sourcefed
 # on npm, and a maintainer approves it with 2FA on npmjs.com (Staged Packages)
 # or with `npm stage approve`, which publishes it. npm trusted publishing
 # authenticates this workflow (release.yml) with OIDC and adds provenance;
 # NPM_TOKEN, a granular publish token, is the fallback.
 #
 # A tag with a `-`, such as v0.6.0-rc.1, names a release candidate:
-# `candidate` packs @fdcn/sourcefed and attaches the tarball and its SHA256SUMS
+# `candidate` packs @wrkhse/sourcefed and attaches the tarball and its SHA256SUMS
 # to a GitHub prerelease. A candidate never reaches npm, so people who install
 # from npm only ever get a final release.
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease \
             --title "$GITHUB_REF_NAME" \
-            --notes "A release candidate of @fdcn/sourcefed. It is not on npm. Install it from the attached tarball after checking the tarball against SHA256SUMS." \
+            --notes "A release candidate of @wrkhse/sourcefed. It is not on npm. Install it from the attached tarball after checking the tarball against SHA256SUMS." \
             "$RUNNER_TEMP"/candidate/*.tgz "$RUNNER_TEMP/candidate/SHA256SUMS"
         env:
           GH_TOKEN: ${{ github.token }}
@@ -148,15 +148,15 @@ jobs:
             exit 1
           }
           gh release download "$TAG" --repo "$GH_REPO" \
-            --pattern "fdcn-sourcefed-$VERSION.tgz" \
+            --pattern "wrkhse-sourcefed-$VERSION.tgz" \
             --pattern "SHA256SUMS" \
             --dir "$RUNNER_TEMP/rc"
-          test -f "fdcn-sourcefed-$VERSION.tgz"
+          test -f "wrkhse-sourcefed-$VERSION.tgz"
           test -f "SHA256SUMS"
           test "$(wc -l < SHA256SUMS)" -eq 1
           grep -Eq '^[0-9a-f]{64}  [^[:space:]]+\.tgz$' SHA256SUMS
-          [[ "$(awk 'NR == 1 {print $2}' SHA256SUMS)" == "fdcn-sourcefed-$VERSION.tgz" ]] || {
-            echo "::error::SHA256SUMS does not name fdcn-sourcefed-$VERSION.tgz"
+          [[ "$(awk 'NR == 1 {print $2}' SHA256SUMS)" == "wrkhse-sourcefed-$VERSION.tgz" ]] || {
+            echo "::error::SHA256SUMS does not name wrkhse-sourcefed-$VERSION.tgz"
             exit 1
           }
           shasum -a 256 -c SHA256SUMS
@@ -165,15 +165,15 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/rc"
-          npm view @fdcn/sourcefed dist-tags.latest > "$RUNNER_TEMP/rc/latest-before.txt"
-          integrity="sha512-$(openssl dgst -sha512 -binary "fdcn-sourcefed-$VERSION.tgz" | openssl base64 -A)"
-          if npm view "@fdcn/sourcefed@$VERSION" dist.integrity > "$RUNNER_TEMP/rc/published-integrity.txt" 2> "$RUNNER_TEMP/rc/npm-view.err"; then
+          npm view @wrkhse/sourcefed dist-tags.latest > "$RUNNER_TEMP/rc/latest-before.txt"
+          integrity="sha512-$(openssl dgst -sha512 -binary "wrkhse-sourcefed-$VERSION.tgz" | openssl base64 -A)"
+          if npm view "@wrkhse/sourcefed@$VERSION" dist.integrity > "$RUNNER_TEMP/rc/published-integrity.txt" 2> "$RUNNER_TEMP/rc/npm-view.err"; then
             published=$(cat "$RUNNER_TEMP/rc/published-integrity.txt")
             if [[ "$published" != "$integrity" ]]; then
-              echo "::error::@fdcn/sourcefed@$VERSION is already on npm with different bytes; refusing to publish"
+              echo "::error::@wrkhse/sourcefed@$VERSION is already on npm with different bytes; refusing to publish"
               exit 1
             fi
-            echo "::error::@fdcn/sourcefed@$VERSION is already on npm; refusing to republish or change a dist-tag"
+            echo "::error::@wrkhse/sourcefed@$VERSION is already on npm; refusing to republish or change a dist-tag"
             exit 1
           fi
           grep -q 'E404' "$RUNNER_TEMP/rc/npm-view.err" || {
@@ -190,12 +190,12 @@ jobs:
             echo "::error::the rc job publishes with OIDC only; no npm token is allowed"
             exit 1
           }
-          npm publish "fdcn-sourcefed-$VERSION.tgz" --tag rc --access public --provenance
-          [[ "$(npm view @fdcn/sourcefed dist-tags.latest)" == "$(cat "$RUNNER_TEMP/rc/latest-before.txt")" ]] || {
+          npm publish "wrkhse-sourcefed-$VERSION.tgz" --tag rc --access public --provenance
+          [[ "$(npm view @wrkhse/sourcefed dist-tags.latest)" == "$(cat "$RUNNER_TEMP/rc/latest-before.txt")" ]] || {
             echo "::error::publishing moved the latest dist-tag"
             exit 1
           }
-          [[ "$(npm view @fdcn/sourcefed dist-tags.rc)" == "$VERSION" ]] || {
+          [[ "$(npm view @wrkhse/sourcefed dist-tags.rc)" == "$VERSION" ]] || {
             echo "::error::the rc dist-tag is not $VERSION after publishing"
             exit 1
           }

@@ -118,7 +118,7 @@ export async function stopProcess(proc) {
 export async function startHostDaemon(env) {
   const port = await freePort()
   const url = `http://127.0.0.1:${port}`
-  const cli = path.resolve("node_modules/@fdcn/sourcefed/dist/cli.js")
+  const cli = path.resolve("node_modules/@wrkhse/sourcefed/dist/cli.js")
   const daemon = startProcess(process.execPath, [cli, "daemon", "--port", String(port)], { env: { ...env, SOURCEFED_DAEMON_URL: url }, silent: true })
   try {
     await waitForReachable(url)

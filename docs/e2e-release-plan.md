@@ -258,7 +258,7 @@ to the scrubbed test environment. Credential/2FA failures stop the release.
 The registry canary is a post-publication gate. An unpublished version reports
 `blocked`, not success. It requires the expected integrity and latest tag, a
 fresh registry install, installed CLI checks, real OpenCode loading and real
-`pi install npm:@fdcn/sourcefed@<version>` without tarball substitution.
+`pi install npm:@wrkhse/sourcefed@<version>` without tarball substitution.
 
 The Release workflow packs the tarball again on CI, whose gzip differs from the
 verifying Mac's, so the registry's integrity can differ from the candidate's.

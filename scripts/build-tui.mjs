@@ -43,7 +43,7 @@ async function transformFile(src, out) {
       // Keep the daemon client external and pointed at the published subpath, so the
       // TUI bundle imports connectDaemonClient at runtime instead of inlining the whole
       // daemon (registry + every provider) into the plugin.
-      if (specifier === "@sourcefed/daemon") return "@fdcn/sourcefed/daemon"
+      if (specifier === "@sourcefed/daemon") return "@wrkhse/sourcefed/daemon"
       return specifier
     },
   })
@@ -73,7 +73,7 @@ await build({
   bundle: true,
   format: "esm",
   platform: "browser",
-  external: ["node:*", "@opencode/plugin/tui", "@fdcn/sourcefed/daemon", "opentui:runtime-module:*"],
+  external: ["node:*", "@opencode/plugin/tui", "@wrkhse/sourcefed/daemon", "opentui:runtime-module:*"],
   logLevel: "info",
 })
 

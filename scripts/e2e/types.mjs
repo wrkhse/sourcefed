@@ -67,9 +67,9 @@ const hostPeers = {
 const hostContract = [
   'import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"',
   'import type { Plugin } from "@opencode/plugin/tui"',
-  'import sourcefedExtension from "@fdcn/sourcefed/pi"',
-  'import tui, { id } from "@fdcn/sourcefed/tui"',
-  'import openTui, { id as openId } from "@fdcn/sourcefed/opencode/tui"',
+  'import sourcefedExtension from "@wrkhse/sourcefed/pi"',
+  'import tui, { id } from "@wrkhse/sourcefed/tui"',
+  'import openTui, { id as openId } from "@wrkhse/sourcefed/opencode/tui"',
   "export const extension: (pi: ExtensionAPI) => Promise<void> = sourcefedExtension",
   "export const definitions: Plugin.Definition[] = [tui, openTui]",
   'export const ids: ["sourcefed-tui", "sourcefed-tui"] = [id, openId]',
@@ -83,7 +83,7 @@ const hostContract = [
 
 function imports(entries) {
   return entries.map((key, index) => {
-    const specifier = "@fdcn/sourcefed" + (key === "." ? "" : key.slice(1))
+    const specifier = "@wrkhse/sourcefed" + (key === "." ? "" : key.slice(1))
     return "import * as surface" + index + " from " + JSON.stringify(specifier) + "; void surface" + index + ";"
   }).join("\n") + "\n"
 }

@@ -9,7 +9,7 @@ export async function registryGate(context) {
   let lookup
   try {
     lookup = await command("npm", ["view",
-    `@fdcn/sourcefed@${context.version}`, "version", "dist.integrity", "dist-tags.latest", "--json",
+    `@wrkhse/sourcefed@${context.version}`, "version", "dist.integrity", "dist-tags.latest", "--json",
     ], { cwd: context.root, env, timeout: 30_000 })
   } catch (error) {
     if (/E404/.test(String(error))) throw new Blocked(`registry ${context.version} is unpublished; this is a post-publish gate`)
@@ -28,8 +28,8 @@ export async function registryGate(context) {
   const consumer = path.join(context.work, "registry-consumer")
   await mkdir(consumer, { recursive: true })
   await writeFile(path.join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }))
-  await command("npm", ["install", `@fdcn/sourcefed@${context.version}`, "--ignore-scripts", "--no-audit"], { cwd: consumer, env })
-  const installed = path.join(consumer, "node_modules/@fdcn/sourcefed")
+  await command("npm", ["install", `@wrkhse/sourcefed@${context.version}`, "--ignore-scripts", "--no-audit"], { cwd: consumer, env })
+  const installed = path.join(consumer, "node_modules/@wrkhse/sourcefed")
   await command(path.join(consumer, "node_modules/.bin/sourcefed"), ["skills", "list"], { cwd: consumer, env })
   const hosts = await piGate({ ...context, consumer, packageDir: installed }, true)
   const visual = await evidence(context, context.options["registry-proof"], "registry-hosts", [
@@ -45,7 +45,7 @@ export async function registryGate(context) {
 async function samePackage(context, env, integrity) {
   const directory = path.join(context.work, "registry-tarball")
   await mkdir(directory, { recursive: true })
-  const packed = JSON.parse((await command("npm", ["pack", `@fdcn/sourcefed@${context.version}`, "--json", "--pack-destination", directory],
+  const packed = JSON.parse((await command("npm", ["pack", `@wrkhse/sourcefed@${context.version}`, "--json", "--pack-destination", directory],
     { cwd: directory, env, timeout: 60_000 })).stdout)
   const artifact = path.join(directory, packed[0].filename)
   assert.equal(packed[0].integrity, integrity, "npm pack fetched the registry tarball")

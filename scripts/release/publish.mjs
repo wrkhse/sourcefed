@@ -28,7 +28,7 @@ async function publish() {
   assert.ok(/^\d+\.\d+\.\d+$/.test(version))
   const isolated = await environment(path.join(root, ".release/publish-preflight"))
   // Registry lookup failures are errors, never evidence that a version is unused.
-  const versions = JSON.parse(execFileSync("npm", ["view", "@fdcn/sourcefed", "versions", "--json"], {
+  const versions = JSON.parse(execFileSync("npm", ["view", "@wrkhse/sourcefed", "versions", "--json"], {
     env: isolated, encoding: "utf8", timeout: 30000,
   }))
   assert.ok(!versions.includes(version), `${version} is already published; run npm run release first`)
@@ -46,14 +46,14 @@ async function publish() {
     console.error("Resume with npm run release:registry -- --registry-proof <file> after reviewing the failure.")
     throw error
   }
-  console.log(`released @fdcn/sourcefed@${version} ${record.integrity}; pins remain opt-in`)
+  console.log(`released @wrkhse/sourcefed@${version} ${record.integrity}; pins remain opt-in`)
 }
 
 async function sync(version) {
   const manifest = path.join(root, "packages/sourcefed/package.json")
   await rewrite(manifest, (source) => withVersion(source, version))
   for (const name of ["README.md", "packages/sourcefed/README.md"]) {
-    await rewrite(path.join(root, name), (source) => source.replace(/@fdcn\/sourcefed@[\d.]+/g, `@fdcn/sourcefed@${version}`))
+    await rewrite(path.join(root, name), (source) => source.replace(/@wrkhse\/sourcefed@[\d.]+/g, `@wrkhse/sourcefed@${version}`))
   }
   const env = await environment(path.join(root, ".release/sync"))
   execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit"], { cwd: root, env, timeout: 120000 })
@@ -62,7 +62,7 @@ async function sync(version) {
   const files = ["packages/sourcefed/package.json", "package-lock.json", "README.md", "packages/sourcefed/README.md"]
   for (const line of changed.split("\n")) assert.ok(files.includes(line.trim().slice(2).trim()), `unexpected release sync change: ${line}`)
   mutate("git", ["add", "--", ...files])
-  mutate("git", ["commit", "-m", `chore: sync @fdcn/sourcefed to ${version}`])
+  mutate("git", ["commit", "-m", `chore: sync @wrkhse/sourcefed to ${version}`])
 }
 
 async function rewrite(file, change) {

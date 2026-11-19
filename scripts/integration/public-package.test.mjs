@@ -9,15 +9,15 @@ const env = { SOURCEFED_STATE_DIR: dir, SOURCEFED_DAEMON_URL: url }
 const bin = path.resolve("node_modules/.bin/sourcefed")
 
 try {
-  const packageDir = path.resolve("node_modules/@fdcn/sourcefed")
+  const packageDir = path.resolve("node_modules/@wrkhse/sourcefed")
   const distFiles = readdirSync(path.join(packageDir, "dist"))
   assert(!distFiles.some((name) => /\.tsx?$/.test(name)), "dist ships no TypeScript sources")
 
-  const core = await import("@fdcn/sourcefed/core")
+  const core = await import("@wrkhse/sourcefed/core")
   assert(core.MonitorService || core.JsonMonitorStore || Object.keys(core).length > 0, "core subpath imports")
-  const daemon = await import("@fdcn/sourcefed/daemon")
+  const daemon = await import("@wrkhse/sourcefed/daemon")
   assertEqual(typeof daemon.connectDaemonClient, "function", "daemon subpath imports")
-  const mcp = await import("@fdcn/sourcefed/mcp")
+  const mcp = await import("@wrkhse/sourcefed/mcp")
   assertEqual(typeof mcp.createSourcefedMcp, "function", "mcp subpath imports")
 
   const skills = run(bin, ["skills", "list"], { env })

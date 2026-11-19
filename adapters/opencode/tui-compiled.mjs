@@ -8,7 +8,7 @@ import { setProp as _$setProp2 } from "opentui:runtime-module:%40opentui%2Fsolid
 import { createElement as _$createElement2 } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { createComponent as _$createComponent2 } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { createMemo as createMemo2, createSignal as createSignal2, Show as Show2 } from "opentui:runtime-module:solid-js";
-import { connectDaemonClient as connectDaemonClient2, defaultDaemonUrl as defaultDaemonUrl2 } from "@fdcn/sourcefed/daemon";
+import { connectDaemonClient as connectDaemonClient2, defaultDaemonUrl as defaultDaemonUrl2 } from "@wrkhse/sourcefed/daemon";
 
 // .tui-build/tui/sidebar.mjs
 import { memo as _$memo } from "opentui:runtime-module:%40opentui%2Fsolid";
@@ -20,7 +20,7 @@ import { insertNode as _$insertNode } from "opentui:runtime-module:%40opentui%2F
 import { setProp as _$setProp } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { createElement as _$createElement } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { Show, createMemo, createSignal, onCleanup } from "opentui:runtime-module:solid-js";
-import { connectDaemonClient, defaultDaemonUrl } from "@fdcn/sourcefed/daemon";
+import { connectDaemonClient, defaultDaemonUrl } from "@wrkhse/sourcefed/daemon";
 function tone(theme) {
   return {
     text: theme.text.base,

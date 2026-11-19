@@ -19,7 +19,7 @@ const dir = await tempDir("sourcefed-it-pi-pkg-")
 const agentDir = path.join(dir, "agent")
 const sessionDir = path.join(dir, "sessions")
 const stateDir = path.join(dir, "state")
-const extensionPath = path.resolve("node_modules/@fdcn/sourcefed/dist/pi.js")
+const extensionPath = path.resolve("node_modules/@wrkhse/sourcefed/dist/pi.js")
 
 const env = cleanEnvironment({
   PI_CODING_AGENT_DIR: agentDir,

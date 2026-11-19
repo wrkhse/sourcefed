@@ -2,7 +2,7 @@ import path from "node:path"
 import { assert, assertEqual, freePort, removeDir, sleep, startJsonServer, startProcess, tempDir, waitForReachable } from "./harness.mjs"
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client"
 
-const CLI = path.resolve("node_modules/@fdcn/sourcefed/dist/cli.js")
+const CLI = path.resolve("node_modules/@wrkhse/sourcefed/dist/cli.js")
 const dir = await tempDir("sourcefed-it-mcp-")
 const port = await freePort()
 const url = `http://127.0.0.1:${port}`

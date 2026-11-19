@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/client"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
 import { cleanEnvironment, startJsonServer } from "./harness.mjs"
 
-const cli = path.resolve("node_modules/@fdcn/sourcefed/dist/cli.js")
+const cli = path.resolve("node_modules/@wrkhse/sourcefed/dist/cli.js")
 const fixture = await startJsonServer(() => ({ body: { fields: { status: { name: "Open" } }, changelog: { histories: [] }, comments: [] } }))
 const client = new Client({ name: "sourcefed-release-stdio", version: "0" })
 const transport = new StdioClientTransport({

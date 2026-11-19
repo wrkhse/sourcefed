@@ -58,7 +58,7 @@ tag picks the job:
 | `v0.6.0-rc.1`, any tag with a `-` | `candidate` | GitHub prerelease only |
 | `v0.6.0` | `publish` | Staged on npm for approval |
 
-`candidate` runs `npm run check`, packs `@fdcn/sourcefed`, and publishes a
+`candidate` runs `npm run check`, packs `@wrkhse/sourcefed`, and publishes a
 GitHub prerelease with the tarball and its `SHA256SUMS`; nothing goes to npm.
 `publish` runs the same check and stages the package on npm for approval.
 
@@ -87,7 +87,7 @@ One-time prerequisites, owned by the release maintainer:
 Steps:
 
 1. Confirm the prerelease `v<version>` carries exactly
-   `fdcn-sourcefed-<version>.tgz` and `SHA256SUMS`.
+   `wrkhse-sourcefed-<version>.tgz` and `SHA256SUMS`.
 2. In the repository's Actions tab, select **Release** → **Run workflow**, then
    enter `version` as `0.6.0-rc.3` and `tag` as `v0.6.0-rc.3` (the tag must be
    exactly `v` plus the version) and run it.
@@ -99,7 +99,7 @@ Steps:
    publishes that exact tarball with
    `npm publish --tag rc --access public --provenance`. It checks that `latest`
    is unchanged and that `rc` points at the dispatched version.
-5. Confirm with `npm view @fdcn/sourcefed dist-tags`.
+5. Confirm with `npm view @wrkhse/sourcefed dist-tags`.
 
 Every check fails closed: bad inputs, a missing asset, a checksum mismatch, or
 an existing version stops the job with a clear message and no retry. A failed

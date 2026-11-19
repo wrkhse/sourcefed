@@ -1,5 +1,5 @@
 {
-  "name": "@fdcn/sourcefed",
+  "name": "@wrkhse/sourcefed",
   "version": "0.6.0-rc.3",
   "description": "Live Jira, GitHub, and Slack monitoring for agent hosts: CLI, daemon, MCP server, and host plugins.",
   "license": "MIT",
