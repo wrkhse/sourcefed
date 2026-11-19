@@ -1,7 +1,6 @@
 # P1b: timers
 
-**Status: In progress.** Built on main ([#45]–[#49]); the release candidate
-0.6.0-rc.2 and its recording are left. Part of the plan in [#31]; it runs
+**Status: Implemented** in [0.6.0-rc.2]. Part of the plan in [#31]; it runs
 in-process on today's daemon and does not wait for barn.
 
 ## You can
@@ -77,6 +76,34 @@ stateDiagram-v2
     Removed --> [*]
     Stopped --> [*]
 ```
+
+## Recording
+
+The recording installs the released 0.6.0-rc.2 tarball in a disposable `node:24`
+container with no host mounts and no published ports. `sha256sum -c SHA256SUMS`
+passes for the tarball, whose digest is
+`911ce14836357c16d4348b101efc4f68646fcf811440bec77b610358ec9872fe`. The daemon
+answers 401 without a bearer token and 200 with one, listing all eight source
+types. OpenCode 2.3.0 runs on the Mac with `--standalone`, the saved Go
+credential and a scratch config that loads only the rc's plugin, on model
+`opencode-go/hy4-flash-free`, a route the owner approved on 2026-11-19.
+
+The agent creates three timers: `in: "1m"`, `every: "1m"` and one at 12:26 in
+`Asia/Kolkata`, each with a job that tells it what to write to `timers.log`. The
+one-shot fires at 12:23:53+05:30 and is gone after; the interval fires at
+12:23:53 and 12:24:53, and the agent stops it after the second. The daemon is
+SIGTERMed inside the container at 06:55:59Z, just before the 12:26 due time, and
+restarted over the same state at 06:58:40Z. Exactly one `timer.fired` arrives at
+12:26:00+05:30 marked `, 2m late`; the agent writes that line. Verification shows
+`standupFired=1`, `standupLate=true`, `logKinds timer.fired:1` and `queued=0`,
+unchanged after another poll cycle. The captions carry the real event times from
+the events and the daemon log.
+
+![OpenCode with the rc.2 timers: one-shot, interval and a restart across a due
+time](../media/p1b-timers.gif)
+
+The three timers and their events are real; the waits between firings are cut.
+One of the eight sources is shown (timer); the goldens cover the rest.
 
 ## What it builds
 
@@ -541,15 +568,21 @@ export const TimerMonitor: Monitor<TimerSource>;
 
 - The tests above on the final tree, with [#29]'s replay fixtures and the seven
   goldens unchanged, and CI's "Timer integration" job.
-- A release candidate, 0.6.0-rc.2, as a GitHub prerelease.
-- A recording of rc.2. OpenCode runs on the Mac with `--standalone`, the saved
-  Go credential and a scratch config that loads only the rc's plugin, a route the
-  owner approved on 2026-11-19. The daemon runs from the rc tarball in a
-  disposable container with no host mounts and no published ports. The agent
-  sets `in: "1m"` and `every: "1m"`. The one-shot fires and its monitor ends; the
-  interval fires twice. The daemon stops across a due time and restarts, and that
-  timer fires once, late, and never again. The daemon's monitor log shows each
-  event with its real time. Waits are cut.
+- The [0.6.0-rc.2] release candidate, installed from its released tarball. The
+  tarball is checked against the release's `SHA256SUMS` and this digest:
+
+  ```text
+  911ce14836357c16d4348b101efc4f68646fcf811440bec77b610358ec9872fe  fdcn-sourcefed-0.6.0-rc.2.tgz
+  ```
+
+- The [recording](#recording). OpenCode runs on the Mac with `--standalone`, the
+  saved Go credential and a scratch config that loads only the rc's plugin, a
+  route the owner approved on 2026-11-19. The daemon runs from the rc tarball in
+  a disposable container with no host mounts and no published ports. The agent
+  creates three timers: `in: "1m"`, `every: "1m"` and one at 12:26 Asia/Kolkata.
+  The one-shot fires and its monitor ends; the interval fires twice. The daemon
+  stops across the due time and restarts, and that timer fires once, late. The
+  monitor log shows each event with its real time. Waits are cut.
 
 ## Known bound
 
@@ -571,3 +604,4 @@ not, and both are bounded by the monitors a person created.
 [#47]: https://github.com/wrkhse/sourcefed/pull/47
 [#48]: https://github.com/wrkhse/sourcefed/pull/48
 [#49]: https://github.com/wrkhse/sourcefed/pull/49
+[0.6.0-rc.2]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.2

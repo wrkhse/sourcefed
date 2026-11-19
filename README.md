@@ -343,6 +343,18 @@ deliveries](docs/media/p0-sdk.gif)
 model's reaction with the monitor tools; the wait between the events is cut. It
 shows two of the seven sources; the golden replays cover all seven.</sub>
 
+The [timer source](docs/source-plugins/p1b-timer.md) in
+[0.6.0-rc.2](https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.2)
+adds one-shot and interval monitors, including one that fires across a daemon
+restart.
+
+![OpenCode with the rc.2 timers: one-shot, interval and a restart across a due
+time](docs/media/p1b-timers.gif)
+
+<sub>OpenCode with the rc.2 candidate on a free model. Three real timer events
+are delivered, one across a daemon restart; the waits between firings are
+cut.</sub>
+
 ### Integration Tests
 
 `npm run integration` packs every workspace package, installs the tarballs into an isolated
