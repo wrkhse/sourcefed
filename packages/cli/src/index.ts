@@ -2,6 +2,7 @@
 
 import { realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
+import { runComment } from "./commands/comment/index.ts"
 import { runDaemon } from "./commands/daemon.ts"
 import { runMcp } from "./commands/mcp.ts"
 import { runMonitor } from "./commands/monitor/index.ts"
@@ -9,6 +10,7 @@ import { runSetup } from "./commands/setup.ts"
 import { runSkillsCommand } from "./skills"
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
+  comment: runComment,
   daemon: runDaemon,
   mcp: runMcp,
   monitor: runMonitor,
@@ -28,6 +30,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 }
 
 function printUsage(): void {
+  console.error("sourcefed comment issue --repo OWNER/NAME --issue-number N --body TEXT")
   console.error("sourcefed daemon [--port PORT] [--host HOST]")
   console.error("sourcefed mcp --stdio|--http [--port PORT]")
   console.error("sourcefed monitor create|list|status|stop|start|remove|events|follow|ack|logs|sources [options]")

@@ -35,6 +35,7 @@ function harness() {
       return { close: async () => { closed.push(target.id); callbacks.delete(target.id) } }
     },
     close: async () => { disconnects += 1 },
+    comment: { issue: async () => ({ id: 0, url: "" }) },
   }
   const originalSubscribe = daemon.subscribe
   daemon.subscribe = async (target, callback, options) => {

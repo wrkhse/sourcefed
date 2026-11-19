@@ -9,6 +9,7 @@ pastes a log or reminds the agent to check the PR.
 A monitor watches one thing:
 
 - a GitHub pull request, or the issues carrying a set of labels;
+- specific GitHub issues by number;
 - a Jira issue, or the issues matching a JQL query;
 - a Slack thread or DM;
 - a cron schedule;
@@ -283,6 +284,9 @@ sourcefed monitor create --source-type jira-query \
 sourcefed monitor create --source-type github-issues --repo owner/name \
   --labels agent:build --include-existing --name build
 
+sourcefed monitor create --source-type github-issues --repo owner/name \
+  --issue-number 56 --name issue-56
+
 sourcefed monitor create --source-type slack \
   --thread-url https://myteam.slack.com/archives/C0123/p1700000000000000
 
@@ -297,10 +301,15 @@ sourcefed monitor create --source-type yab \
 - **`jira`** sends the issue's new comments and edits, and changes to its status,
   assignee, priority and labels.
 - **`github-issues`** follows every open issue carrying all of `--labels`,
-  narrowed by `--assignee`, `--author` or search terms in `--query`. It sends
-  `item.matched` when an issue starts matching and `item.unmatched` when it
-  stops. The first poll is silent unless `--include-existing`. Past 1,000
-  matching issues it sends one `error` event and pauses matching.
+  narrowed by `--assignee`, `--author` or search terms in `--query`, or the
+  issues named by `--issue-number` (up to 100 numbers). It sends `item.matched`
+  when an issue starts matching and `item.unmatched` when it stops. With
+  `SOURCEFED_GITHUB_WEBHOOK_SECRET` set, a verified `issue_comment` webhook
+  delivers an `issue.comment` event for a new comment on a watched issue
+  directly, without a poll; comments on pull requests keep the existing PR
+  behavior, and edited or deleted comments emit nothing. The first poll is
+  silent unless `--include-existing`. Past 1,000 matching issues it sends one
+  `error` event and pauses matching.
 - **`jira-query`** does the same for the issues matching a bounded JQL query.
 - **`slack`** takes `--thread-url`, or `--channel-id` with `--thread-ts`. A DM's
   `D…` `--channel-id` alone watches the DM's new top-level messages. It only

@@ -1,5 +1,6 @@
 import type { MonitorTarget, QueuedMonitorEvent } from "@sourcefed/core"
-import type { DaemonClient, DaemonClientOptions, SubscribeOptions } from "./types"
+import { MAX_COMMENT_BODY } from "@sourcefed/provider-github"
+import type { CommentIssueInput, CommentIssueResult, DaemonClient, DaemonClientOptions, SubscribeOptions } from "./types"
 import { DaemonEventStream, pause } from "./event-stream.ts"
 import { defaultDaemonUrl, encodeTarget } from "./utils"
 
@@ -17,6 +18,16 @@ class HttpDaemonClient implements DaemonClient {
 
   constructor(baseURL: string, private readonly token?: string) {
     this.baseURL = baseURL.replace(/\/+$/, "")
+  }
+
+  readonly comment = {
+    issue: async (input: CommentIssueInput): Promise<CommentIssueResult> => {
+      if (!input || typeof input.repo !== "string" || !input.repo) throw new Error("comment.issue requires a non-empty repo")
+      if (!Number.isInteger(input.issueNumber) || input.issueNumber <= 0) throw new Error("comment.issue requires a positive integer issueNumber")
+      if (typeof input.body !== "string" || !input.body.trim()) throw new Error("comment.issue requires a non-empty body")
+      if (input.body.length > MAX_COMMENT_BODY) throw new Error(`comment.issue body exceeds ${MAX_COMMENT_BODY} characters`)
+      return await this.request("comment.issue", { repo: input.repo, issueNumber: input.issueNumber, body: input.body }) as CommentIssueResult
+    },
   }
 
   private headers(): Record<string, string> {

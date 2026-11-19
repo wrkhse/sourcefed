@@ -1,7 +1,9 @@
 import { ISSUE_NUMBER_ERROR, orderedIssueNumbers, type MonitorTarget } from "@sourcefed/core"
+import { MAX_COMMENT_BODY } from "@sourcefed/provider-github"
+import { commentOnIssue } from "./comment.ts"
 import type { SourcefedDaemon } from "./daemon.ts"
 import { daemonHealth } from "./health.ts"
-import type { DaemonCreateInput } from "./types"
+import type { CommentIssueInput, DaemonCreateInput } from "./types"
 
 export async function dispatchDaemonRequest(daemon: SourcefedDaemon, method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
@@ -26,6 +28,8 @@ export async function dispatchDaemonRequest(daemon: SourcefedDaemon, method: str
       return { logs: await daemon.readLogs(createTarget(params)) }
     case "monitor.ack":
       return daemon.acknowledgeEvents(createTarget(params), (params.eventIDs as string[] | undefined) ?? [])
+    case "comment.issue":
+      return commentOnIssue(createCommentIssueInput(params))
     case "daemon.health":
       return daemonHealth()
     case "daemon.sourceTypes":
@@ -41,6 +45,14 @@ function createTarget(params: Record<string, unknown>): MonitorTarget {
     throw new Error("params.target is required and must be { kind: string, id: string }")
   }
   return { kind: target.kind, id: target.id }
+}
+
+function createCommentIssueInput(params: Record<string, unknown>): CommentIssueInput {
+  if (typeof params.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(params.repo)) throw new Error("comment.issue requires params.repo as owner/name")
+  if (typeof params.issueNumber !== "number" || !Number.isInteger(params.issueNumber) || params.issueNumber <= 0) throw new Error("comment.issue requires a positive integer params.issueNumber")
+  if (typeof params.body !== "string" || !params.body.trim()) throw new Error("comment.issue requires a non-empty params.body")
+  if (params.body.length > MAX_COMMENT_BODY) throw new Error(`comment.issue params.body exceeds ${MAX_COMMENT_BODY} characters`)
+  return { repo: params.repo, issueNumber: params.issueNumber, body: params.body }
 }
 
 function createCreateInput(params: Record<string, unknown>): DaemonCreateInput {
