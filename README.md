@@ -34,6 +34,10 @@ export const timerSource: SourceDefinition<TimerSource> = {
       in: { type: "string", description: "Fire once after 45m" },
       at: { type: "string", description: "Fire once at a time" },
       every: { type: "string", description: "Fire each 45m" },
+      timezone: {
+        type: "string",
+        description: "IANA timezone; the system's when left out",
+      },
     },
     required: ["job"],
   },
@@ -43,7 +47,10 @@ export const timerSource: SourceDefinition<TimerSource> = {
   detail: (source) =>
     ("due" in source ? ` at ${source.due}` : ` every ${source.every}`) +
     ` ${source.timezone}`,
-  describe: (source) => `Timer ${source.job}`,
+  describe: (source) =>
+    "due" in source
+      ? `Timer ${source.job} (at ${source.due})`
+      : `Timer ${source.job} (every ${source.every})`,
   icon: "󰔛",
   defaultPollIntervalSec: 15,
   poll: async ({ source, cursor, now }) => {
