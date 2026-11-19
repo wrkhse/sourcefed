@@ -1,4 +1,4 @@
-import type { MonitorTarget } from "@sourcefed/core"
+import { ISSUE_NUMBER_ERROR, orderedIssueNumbers, type MonitorTarget } from "@sourcefed/core"
 import type { SourcefedDaemon } from "./daemon.ts"
 import { daemonHealth } from "./health.ts"
 import type { DaemonCreateInput } from "./types"
@@ -60,6 +60,11 @@ function createCreateInput(params: Record<string, unknown>): DaemonCreateInput {
       throw new Error("labels must be an array of strings")
     }
     input.labels = params.labels
+  }
+  if (params.issueNumbers !== undefined) {
+    const numbers = orderedIssueNumbers(params.issueNumbers)
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
+    input.issueNumbers = numbers
   }
   if (params.includeExisting !== undefined) {
     if (typeof params.includeExisting !== "boolean") throw new Error("includeExisting must be a boolean")

@@ -47,6 +47,33 @@ export async function listIssues(source: GithubIssuesSource, etag: string | unde
   return { status: "listed", listing: { overLimit: true } }
 }
 
+/**
+ * Each named issue read directly. Only open issues are listed, so a closed issue is absent
+ * like a missing or gone one: the comparison emits item.unmatched without failing the poll.
+ * A rename redirect is followed once; pull requests share the endpoint and are skipped.
+ */
+export async function listNumberedIssues(source: GithubIssuesSource, request: GithubFetch): Promise<IssueListing> {
+  const issues: GithubIssue[] = []
+
+  for (const number of source.issueNumbers ?? []) {
+    const url = `${API}/repos/${source.repo}/issues/${number}`
+    let response = await request(url, {})
+
+    if (response.status === 301 || response.status === 302) {
+      const location = response.headers.get("location")
+      if (!location) throw new PollSourceError(`GitHub issue ${source.repo}#${number} redirected without a location`)
+      response = await request(location, {})
+    }
+
+    if (response.status === 404 || response.status === 410) continue
+
+    const body = await githubBody(response, url)
+    if (body?.state === "open" && !body.pull_request) issues.push(toIssue(source.repo, body))
+  }
+
+  return { status: "listed", listing: { overLimit: false, items: issues } }
+}
+
 async function searchIssues(source: GithubIssuesSource, request: GithubFetch): Promise<IssueListing> {
   const issues: GithubIssue[] = []
   const query = new URLSearchParams({ q: searchQuery(source), per_page: String(PAGE_SIZE), sort: "created", order: "asc" })
@@ -66,14 +93,14 @@ async function searchIssues(source: GithubIssuesSource, request: GithubFetch): P
 }
 
 function issuesUrl(source: GithubIssuesSource): string {
-  const query = new URLSearchParams({ state: "open", labels: source.labels.join(","), per_page: String(PAGE_SIZE) })
+  const query = new URLSearchParams({ state: "open", labels: (source.labels ?? []).join(","), per_page: String(PAGE_SIZE) })
   if (source.assignee) query.set("assignee", source.assignee)
   if (source.author) query.set("creator", source.author)
   return `${API}/repos/${source.repo}/issues?${query}`
 }
 
 function searchQuery(source: GithubIssuesSource): string {
-  const terms = [`repo:${source.repo}`, "is:issue", "is:open", ...source.labels.map((label) => `label:"${label}"`)]
+  const terms = [`repo:${source.repo}`, "is:issue", "is:open", ...(source.labels ?? []).map((label) => `label:"${label}"`)]
   if (source.assignee) terms.push(`assignee:${source.assignee}`)
   if (source.author) terms.push(`author:${source.author}`)
   if (source.query) terms.push(source.query)

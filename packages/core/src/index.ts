@@ -15,4 +15,5 @@ export {
   type CollectionCursor,
   type CollectionListing,
 } from "./utils/compare-collection.ts"
+export { ISSUE_NUMBER_ERROR, orderedIssueNumbers } from "./utils/issue-numbers.ts"
 export { MonitorRecordSchema, MonitorRegistrySchema } from "./monitors/schema.ts"

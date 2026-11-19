@@ -1,11 +1,18 @@
-import { PollSourceError, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { ISSUE_NUMBER_ERROR, PollSourceError, orderedIssueNumbers, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
 import { filterText } from "./events.ts"
 import { pollGithubIssues } from "./poll.ts"
-import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
+import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, ISSUE_NUMBER_FILTERS_ERROR, type GithubIssuesSource } from "./schema.ts"
 
 const REPO = /^[\w.-]+\/[\w.-]+$/
+
+function applyFilters(source: GithubIssuesSource, input: MonitorCreateInput): void {
+  if (input.assignee) source.assignee = input.assignee
+  if (input.author) source.author = input.author
+  if (input.query) source.query = input.query
+  if (input.includeExisting) source.includeExisting = true
+}
 
 /** A labelled issue collection as data, plus the poll the host drives with its own http and clock. */
 export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
@@ -15,8 +22,12 @@ export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
   wake: {
     path: "/webhooks/github",
     matches: (source: GithubIssuesSource, payload: unknown, eventName: string): boolean => {
-      const repo = (payload as { repository?: { full_name?: unknown } })?.repository?.full_name
-      return eventName === "issues" && typeof repo === "string" && repo.toLowerCase() === source.repo.toLowerCase()
+      const body = payload as { repository?: { full_name?: unknown }; issue?: { number?: unknown } }
+      const repo = body?.repository?.full_name
+      if (eventName !== "issues" || typeof repo !== "string" || repo.toLowerCase() !== source.repo.toLowerCase()) return false
+      if (!source.issueNumbers) return true
+
+      return typeof body?.issue?.number === "number" && source.issueNumbers.includes(body.issue.number)
     },
   },
   input: {
@@ -24,29 +35,47 @@ export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
     properties: {
       repo: { type: "string", description: "GitHub owner/name, e.g. owner/repository" },
       labels: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, description: "Labels an issue must all carry" },
+      issueNumbers: { type: "array", items: { type: "integer", minimum: 1 }, maxItems: 100, description: "Watch only these issue numbers, e.g. [56]" },
       assignee: { type: "string", description: "Only issues assigned to this login" },
       author: { type: "string", description: "Only issues opened by this login" },
       query: { type: "string", description: "Extra GitHub search terms, e.g. 'milestone:v2'; uses the search API" },
       includeExisting: { type: "boolean", description: "Send item.matched for every issue already matching on the first poll" },
     },
-    required: ["repo", "labels"],
+    required: ["repo"],
   },
   build: (input: MonitorCreateInput): SourceInput => {
     if (!input.repo || !REPO.test(input.repo)) return { error: "repo must be owner/name for a github-issues monitor" }
 
+    const hasLabels = input.labels !== undefined
     const labels = [...new Set((input.labels ?? []).map((label) => label.trim()).filter(Boolean))].sort()
-    if (labels.length === 0) return { error: "labels is required for a github-issues monitor" }
+
+    if (hasLabels && input.issueNumbers !== undefined) {
+      return { error: "give either labels or issueNumbers for a github-issues monitor, not both" }
+    }
+
+    if (input.issueNumbers !== undefined) {
+      const numbers = orderedIssueNumbers(input.issueNumbers)
+      if (!numbers) return { error: ISSUE_NUMBER_ERROR }
+      if (input.assignee || input.author || input.query) return { error: ISSUE_NUMBER_FILTERS_ERROR }
+
+      const numbered: GithubIssuesSource = { type: "github-issues", repo: input.repo, issueNumbers: numbers }
+      applyFilters(numbered, input)
+      return numbered
+    }
+
+    if (labels.length === 0) {
+      return { error: hasLabels ? "labels is required for a github-issues monitor" : "give labels or issueNumbers for a github-issues monitor" }
+    }
 
     const source: GithubIssuesSource = { type: "github-issues", repo: input.repo, labels }
-    if (input.assignee) source.assignee = input.assignee
-    if (input.author) source.author = input.author
-    if (input.query) source.query = input.query
-    if (input.includeExisting) source.includeExisting = true
+    applyFilters(source, input)
     return source
   },
   key: (source) =>
-    `github-issues:${source.repo}:${source.labels.join(",")}:${source.assignee ?? ""}:${source.author ?? ""}:${source.query ?? ""}`,
-  label: (source) => source.labels.join(", "),
+    source.issueNumbers
+      ? `github-issues:${source.repo}:numbers:${source.issueNumbers.join(",")}`
+      : `github-issues:${source.repo}:${source.labels?.join(",") ?? ""}:${source.assignee ?? ""}:${source.author ?? ""}:${source.query ?? ""}`,
+  label: (source) => source.issueNumbers ? source.issueNumbers.map((number) => `#${number}`).join(", ") : source.labels?.join(", ") ?? "",
   detail: (source) => ` ${source.repo} · ${filterText(source)}`,
   describe: (source) => `GitHub issues in ${source.repo} with ${filterText(source)}`,
   icon: "󰊤",

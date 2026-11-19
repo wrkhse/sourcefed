@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import { afterEach, describe, mock, test } from "node:test"
 import { InMemoryMonitorEventQueue, InMemoryMonitorStore, type MonitorTarget, type QueuedMonitorEvent } from "@sourcefed/core"
 import { SourcefedDaemon } from "./daemon.ts"
+import { dispatchDaemonRequest } from "./dispatch.ts"
+import type { DaemonCreateInput } from "./types"
 
 const target: MonitorTarget = { kind: "test", id: "session-1" }
 
@@ -240,5 +242,40 @@ describe("SourcefedDaemon", () => {
 
     assert.equal(received.reduce((total, count) => total + count, 0), 1)
     await daemon.stop()
+  })
+})
+
+describe("monitor.create dispatch", () => {
+  const createTarget = { kind: "test", id: "session-1" }
+
+  async function createWith(params: Record<string, unknown>): Promise<DaemonCreateInput> {
+    let captured: DaemonCreateInput | undefined
+    const fake = {
+      createMonitor: (_target: unknown, input: DaemonCreateInput) => {
+        captured = input
+        return Promise.resolve({ ok: true })
+      },
+    } as unknown as SourcefedDaemon
+
+    await dispatchDaemonRequest(fake, "monitor.create", {
+      target: createTarget,
+      name: "issues",
+      sourceType: "github-issues",
+      ...params,
+    })
+    if (!captured) throw new Error("no create input reached the daemon")
+    return captured
+  }
+
+  test("passes a bounded issue-number list through", async () => {
+    assert.deepEqual((await createWith({ issueNumbers: [56, 57] })).issueNumbers, [56, 57])
+  })
+
+  test("refuses malformed issue numbers at the boundary", async () => {
+    const bad = [[0], [-1], [1.5], ["56"], [56, 56], Array.from({ length: 101 }, (_, i) => i + 1), Number.NaN]
+
+    for (const issueNumbers of bad) {
+      await assert.rejects(createWith({ issueNumbers }), /issueNumbers/)
+    }
   })
 })

@@ -45,7 +45,10 @@ export function limitEvent(source: GithubIssuesSource, limit: number, at: string
 }
 
 export function filterText(source: GithubIssuesSource): string {
-  const parts = [`${source.labels.length === 1 ? "label" : "labels"} ${source.labels.join(", ")}`]
+  if (source.issueNumbers) return `issues ${source.issueNumbers.map((number) => `#${number}`).join(", ")}`
+
+  const labels = source.labels ?? []
+  const parts = [`${labels.length === 1 ? "label" : "labels"} ${labels.join(", ")}`]
   if (source.assignee) parts.push(`assignee ${source.assignee}`)
   if (source.author) parts.push(`author ${source.author}`)
   if (source.query) parts.push(`"${source.query}"`)

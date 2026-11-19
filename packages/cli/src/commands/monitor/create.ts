@@ -1,3 +1,4 @@
+import { ISSUE_NUMBER_ERROR, orderedIssueNumbers } from "@sourcefed/core"
 import { flag } from "../../utils/flags.ts"
 import { printResult } from "../../utils/format.ts"
 import type { MonitorContext } from "./index.ts"
@@ -41,6 +42,15 @@ export async function create(context: MonitorContext): Promise<void> {
   // GitHub's own issue filter separates labels with commas, so no label can contain one.
   const labels = flag(context.args, "labels")
   if (labels) input.labels = labels.split(",").map((label) => label.trim()).filter(Boolean)
+  // Issue numbers are numeric, so refuse a list a source build would reject later.
+  const issueNumbers = flag(context.args, "issue-numbers")
+  if (issueNumbers) {
+    const parts = issueNumbers.split(",").map((part) => part.trim())
+    if (!parts.every((part) => /^[1-9]\d*$/.test(part))) throw new Error("--issue-numbers must be comma-separated positive integers")
+    const numbers = orderedIssueNumbers(parts.map(Number))
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
+    input.issueNumbers = numbers
+  }
   if (context.args.includes("--include-existing")) input.includeExisting = true
   const prNumber = flag(context.args, "pr-number")
   if (prNumber) input.prNumber = Number(prNumber)
