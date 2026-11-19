@@ -117,7 +117,7 @@ export class WebhookMonitor<TSource extends MonitorSource = MonitorSource> {
       await context.service.setDelivery(fresh.id, "webhook")
       await context.service.updateCursor(fresh, cursorKey, true)
       await this.removePending(context, fresh, deliveryId)
-      if (event.terminal) await context.service.remove(fresh.id)
+      if (event.terminal) await context.service.end(fresh.id)
       return 1
     } finally {
       pendingDeliveries.delete(reservationKey)

@@ -70,7 +70,7 @@ export class PollMonitor<TSource extends MonitorSource = MonitorSource> {
         return result.cursor
       })
       await context.service.updateCursor(fresh, "__routedEventIds", [])
-      if (result.terminal) await context.service.remove(fresh.id)
+      if (result.terminal) await context.service.end(fresh.id)
       await context.service.updateCursor(fresh, "__lastPolledAt", Date.now())
       return result.events.length
     } finally {

@@ -54,12 +54,12 @@ class PollOnlyMonitor extends Monitor<TestSource> {
     matches: (source: TestSource, payload: unknown): boolean => (payload as { key?: string }).key === source.key,
   }
 
-  constructor(run: () => Promise<{ cursor: unknown; events: MonitorEvent[] } | { deferred: true }>) {
+  constructor(run: () => Promise<{ cursor: unknown; events: MonitorEvent[]; terminal?: boolean } | { deferred: true }>) {
     super({ type: "test", schema: testSourceSchema })
     this.poll = new PollMonitor({
       run: async () => {
         const result = await run()
-        return "deferred" in result ? result : { ...result, terminal: false }
+        return "deferred" in result ? result : { terminal: false, ...result }
       },
     })
   }
@@ -139,6 +139,48 @@ describe("Monitor transport orchestration", () => {
     await tick(current)
 
     assert.equal(polls, 2)
+  })
+
+  test("a terminal poll ends its monitor, which is not polled again", async () => {
+    const service = new MonitorService(new InMemoryMonitorStore())
+    let polls = 0
+    const source = { type: "test" as const, key: "issue-1" }
+    const monitor = new PollOnlyMonitor(async () => {
+      polls += 1
+      return { cursor: {}, events: [event(source)], terminal: true }
+    })
+    const delivered: MonitorEvent[] = []
+    const sink: MonitorEventSink = { deliver: async ({ event: next }) => { delivered.push(next); return { ok: true } } }
+    const current = { ...context(service, sink), sources: { test: monitor } }
+    const record = await createRecord(service)
+
+    await tick(current)
+    const ended = await service.get(record.id)
+    assert.equal(ended?.enabled, false)
+    assert.equal(typeof ended?.endedAt, "string")
+
+    // Due again by its interval, so only the ending keeps it from being polled.
+    await service.updateCursor(record, "__lastPolledAt", Date.now() - 61_000)
+    await tick(current)
+
+    assert.equal(polls, 1)
+    assert.equal(delivered.length, 1)
+  })
+
+  test("an ended monitor cannot be started and does not block a new one", async () => {
+    const service = new MonitorService(new InMemoryMonitorStore())
+    const record = await createRecord(service)
+    await service.end(record.id)
+
+    assert.deepEqual(await service.start(record.id), { error: `monitor ${record.id} has ended` })
+    const again = await service.create({
+      name: "test",
+      source: { type: "test", key: "issue-1" },
+      delivery: "poll",
+      target: { kind: "test", id: "session-1" },
+      pollIntervalSec: 60,
+    })
+    assert.equal(again.created, true)
   })
 
   test("a deferred poll keeps the cursor and stays due", async () => {

@@ -15,6 +15,9 @@ export const MonitorRecordSchema = v.object({
   createdAt: v.string(),
   updatedAt: v.string(),
   cursors: v.record(v.string(), v.unknown()),
+  // Set when the source said the monitor is finished: the record stays, not polled, until
+  // its queued events are delivered, so an ending nobody heard is not lost.
+  endedAt: v.optional(v.string()),
 })
 
 export const MonitorRegistrySchema = v.object({
