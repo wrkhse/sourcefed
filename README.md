@@ -6,136 +6,17 @@
 
 <sub>OpenCode with the sourcefed plugin, on a free model, in a throwaway private repository. The failing commit and the review comment are staged; GitHub's CI, the comment and sourcefed's delivery are real. Waiting time is sped up.</sub>
 
-SourceFed delivers new Jira, GitHub, Slack, Yab and timer events into the session.
+SourceFed is a tool that solves one problem: how does your agent get notified of
+changes from different sources like Slack, Jira, or GitHub? This solves it.
+Your agent can independently create monitors that keep up with updates from
+these sources.
 
-## Define a source
+For example, after the agent creates a PR, it can create a monitor that will be
+notified of CI, reviews, comments, merge conflicts, and more. No more copy
+pasting or reminding the agent to check the PR status.
 
-A source is a definition on `@sourcefed/sdk`; `defineSource` turns it into the
-core `Monitor` the daemon already runs.
-
-This is the shape the built-in timer uses:
-
-```ts
-import { toMonitorEvent, type MonitorCreateInput } from "@sourcefed/core"
-import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
-import { buildTimer } from "./build.ts"
-import { timerKey } from "./events.ts"
-import { pollTimer } from "./poll.ts"
-import { TimerCursorSchema, TimerSourceSchema, type TimerSource } from "./schema.ts"
-
-export const timerSource: SourceDefinition<TimerSource> = {
-  type: "timer",
-  schema: TimerSourceSchema,
-  cursor: TimerCursorSchema,
-  input: {
-    description: "A timer: fire once at in or at, or each period with every",
-    properties: {
-      job: { type: "string", minLength: 1, description: "What it is for" },
-      in: { type: "string", description: "Fire once after 45m" },
-      at: { type: "string", description: "Fire once at a time" },
-      every: { type: "string", description: "Fire each 45m" },
-      timezone: {
-        type: "string",
-        description: "IANA timezone; the system's when left out",
-      },
-    },
-    required: ["job"],
-  },
-  build: (input: MonitorCreateInput, now) => buildTimer(input, now()),
-  key: timerKey,
-  label: (source) => source.job,
-  detail: (source) =>
-    ("due" in source ? ` at ${source.due}` : ` every ${source.every}`) +
-    ` ${source.timezone}`,
-  describe: (source) =>
-    "due" in source
-      ? `Timer ${source.job} (at ${source.due})`
-      : `Timer ${source.job} (every ${source.every})`,
-  icon: "󰔛",
-  defaultPollIntervalSec: 15,
-  poll: async ({ source, cursor, now }) => {
-    const result = pollTimer(source, cursor, now())
-
-    return {
-      cursor: result.cursor,
-      events: result.events.map((e) => toMonitorEvent(e, source)),
-      terminal: result.terminal,
-    }
-  },
-}
-
-export const TimerMonitor = defineSource(timerSource)
-```
-
-Register it in `SOURCE_MAP` in `packages/daemon/src/registry.ts`.
-
-Jira shows the HTTP seam, with its issue key as input:
-
-```ts
-import { toMonitorEvent } from "@sourcefed/core"
-import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
-import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
-import { JiraCursorSchema, JiraSourceSchema } from "./schema.ts"
-import { pollJira } from "./poll/utils"
-import type { JiraSourceRecord } from "./types"
-
-export const jiraSource: SourceDefinition<JiraSourceRecord> = {
-  type: "jira",
-  schema: JiraSourceSchema,
-  cursor: JiraCursorSchema,
-  input: {
-    description: "A Jira issue: comments, edits and status changes",
-    properties: {
-      issueKey: { type: "string", description: "Jira issue key, e.g. PROJ-12345" },
-    },
-    required: ["issueKey"],
-  },
-  build: (input: MonitorCreateInput): SourceInput => {
-    if (input.issueKey) return { type: "jira", issueKey: input.issueKey }
-    return { error: "issueKey is required for a jira monitor" }
-  },
-  key: (source) => `jira:${source.issueKey}`,
-  label: (source) => source.issueKey,
-  detail: (source) => ` ${source.issueKey}`,
-  describe: (source) => `Jira ${source.issueKey}`,
-  icon: "󰌃",
-  poll: async ({ source, cursor, http }) => {
-    const result = await pollJira(http, source.issueKey, cursor)
-
-    return {
-      cursor: result.cursor,
-      events: result.events.map((e) => toMonitorEvent(e, source)),
-      terminal: result.terminal,
-    }
-  },
-}
-
-export const JiraMonitor = defineSource(jiraSource)
-```
-
-A source never handles tokens itself; it names the header through the host's `http`:
-
-```ts
-const issue = await http.json(url, {
-  headers: { Authorization: jiraAuth(), Accept: "application/json" },
-})
-```
-
-```sh
-sourcefed monitor create --name deploy --source-type timer \
-  --job "check the deploy" --in 20m
-sourcefed monitor create --source-type jira --issueKey PROJ-123 --name PROJ-123
-```
-
-## Source plugins
-
-`defineSource`, a source's schemas and its input are set out in the
-[P0 SDK page][p0-sdk] and the [SDK README][sdk-readme]. `build(input, now)`
-gets the host's clock, shown in the [P1b timer page][p1b-timer].
-`poll({ source, cursor, http, mcp, now, monitorId })` returns
-`{ events, cursor, terminal }` or `{ deferred: true }`, and the host owns the
-clock, HTTP and MCP ([P0 SDK page][p0-sdk]). A terminal event is delivered
-before its record goes ([P1b timer page][p1b-timer]).
+It's also named after the [SourceFed](https://www.youtube.com/sourcefed) YouTube
+channel (I used watch them all the time as a kid [RIP])
 
 ## Install
 
@@ -204,61 +85,60 @@ heartbeat); ↑/↓ selects, `s` stops or starts it, and `d` deletes it after a 
 Without `SOURCEFED_DAEMON_URL`, a host spawns one local HTTP daemon when none is running
 and connects to it, so monitors persist across sessions and share one registry.
 
+## Define a source
+
+A source is a small definition; the daemon polls it and delivers its events.
+
+```ts
+import { defineSource } from "@sourcefed/sdk"
+
+export default defineSource({
+  type: "clock",
+  input: { description: "Fire every minute", properties: {}, required: [] },
+  key: () => "clock",
+  label: () => "Clock",
+  describe: () => "Clock",
+  build: () => ({ type: "clock" }),
+  poll: async ({ now }) => ({
+    cursor: { at: now().toISOString() },
+    events: [{ kind: "tick", at: now().toISOString(), summary: "A minute passed" }],
+  }),
+})
+```
+
+```sh
+sourcefed monitor create --source-type clock --name clock
+```
+
+The clock above is only a sketch; the built-in types are jira, jira-query,
+github, github-issues, slack, yab, schedule and timer.
+
 ## Daemon
+
+Start the daemon with:
 
 ```sh
 sourcefed daemon
 ```
 
-The HTTP daemon serves `POST /rpc`, `GET /events?target=...` (SSE push), and provider
-webhooks at `/webhooks/github` and `/webhooks/slack`. It defaults to
-`http://127.0.0.1:18787` (`SOURCEFED_DAEMON_HOST`/`SOURCEFED_DAEMON_PORT`, or `--host`/
-`--port`); clients use `SOURCEFED_DAEMON_URL` or `SOURCEFED_DAEMON_PORT`. Binding to a
-non-loopback address requires `SOURCEFED_DAEMON_TOKEN`, which clients send as a bearer
-token on `/rpc` and `/events`.
+It polls every monitor, holds cursors and state, triages and delivers events, and
+serves the CLI, MCP and host bridges over one JSON protocol at
+`http://127.0.0.1:18787` by default (`SOURCEFED_DAEMON_HOST`/
+`SOURCEFED_DAEMON_PORT`, or `--host`/`--port`). Clients connect with
+`SOURCEFED_DAEMON_URL`; a non-loopback bind requires `SOURCEFED_DAEMON_TOKEN`.
 
-When any webhook secret is configured (or `SOURCEFED_ENABLE_WEBHOOKS=1`), the daemon also
-starts a webhook-only listener on `SOURCEFED_WEBHOOK_HOST`:`SOURCEFED_WEBHOOK_PORT`
-(default `127.0.0.1:8788`). Point a tunnel or reverse proxy at it (e.g. bind `0.0.0.0`) to
-receive GitHub/Slack webhooks publicly while RPC and events stay on loopback; webhook
-signature (HMAC / Slack signing) authenticates requests, not the daemon token.
+When a Chauffeur v2 daemon runs, the daemon triages each event at its sink before
+queuing it, so the CLI, MCP and every host see the same filtered stream: only an
+explicit `withhold: "event"` intent drops an event; a missing daemon, an error
+or a 3-second deadline lets it through. See
+[Chauffeur v2 triage](packages/daemon/src/triage/README.md).
 
-In OpenCode, a plugin can gate delivery: sourcefed asks it about each event, with the
-event's `monitorID`, and skips events it judges need no action (bot comments, approvals,
-status churn). With no gate, or if the gate fails or takes over 3 s, every event is
-delivered. Events delivered to OpenCode carry `metadata.sourcefed` (`eventID`, `monitorID`,
-`kind`), so plugins can tell them from the user's own messages.
+## Roadmap
 
-OpenCode plugin instances share one process-wide subscription hub: at most one SSE
-stream per enabled, owned session target, regardless of how many project locations
-are loaded. Stopped monitors, deleted sessions and unloaded owners release streams;
-external CLI/Chauffeur changes are reconciled every 15 seconds. Long-lived SSE uses
-dedicated HTTP/HTTPS sockets rather than `fetch`, so valid monitoring demand cannot
-occupy Bun’s process-wide fetch slots needed by providers and other plugins. See
-[subscription lifecycle](docs/subscription-lifecycle.md) for ownership and cleanup rules.
-
-### Chauffeur triage
-
-When a Chauffeur v2 daemon runs, every event is triaged at the daemon's sink before it is
-queued, so OpenCode, Pi, MCP and the CLI see the same filtered stream. Only an explicit
-`withhold: "event"` intent drops an event; a missing daemon, a v1 daemon, an error or a
-3-second deadline lets it through, so delivery never depends on Chauffeur. The daemon
-looks on `$XDG_RUNTIME_DIR/chauffeur/daemon.sock`, then `chauffeur-next/daemon.sock`
-(the temporary folder when `XDG_RUNTIME_DIR` is unset); set `CHAUFFEUR_SOCKET` to point
-it at one socket. See [Chauffeur v2 triage](packages/daemon/src/triage/README.md).
-
-The triage rule itself is installed with:
-
-```sh
-sourcefed setup chauffeur                  # for chauffeur-next
-sourcefed setup chauffeur --name chauffeur # only when a v2 daemon answers there
-```
-
-It writes `sourcefed/triage` to `$XDG_CONFIG_HOME/chauffeur-next/rules/sourcefed/triage.json`
-(`~/.config` when unset), which Chauffeur v2 loads on its next rule reload. The install is
-v2 only: `--name chauffeur` is refused unless a Chauffeur v2 daemon answers on that name's
-socket, because v1 reads the same folder. chauffeur-next is the default until Chauffeur's
-cutover, and an existing rule file is never overwritten.
+- [x] SDK and seven providers on the shared SDK (P0, 0.6.0-rc.1)
+- [x] Timer plugin, terminal-event delivery (P1b, 0.6.0-rc.2)
+- [ ] Plugins in sourcefed's stall under barn (P1–P4, waiting on barn B1–B4)
+- [ ] User plugins loaded from `~/.config/sourcefed/plugins` (P5)
 
 ## MCP
 
@@ -509,6 +389,10 @@ Slack URLs, session IDs, webhook payloads, or credentials in tests and examples.
 
 MIT. See [LICENSE](./LICENSE).
 
-[p0-sdk]: docs/source-plugins/p0-sdk.md
-[sdk-readme]: packages/sdk/README.md
-[p1b-timer]: docs/source-plugins/p1b-timer.md
+## Further reading
+
+- [Source plugins](docs/source-plugins/)
+- [P0: the SDK](docs/source-plugins/p0-sdk.md)
+- [P1b: the timer source](docs/source-plugins/p1b-timer.md)
+- [SDK README](packages/sdk/README.md)
+- [Chauffeur v2 triage](packages/daemon/src/triage/README.md)
