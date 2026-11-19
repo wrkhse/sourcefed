@@ -1,0 +1,23 @@
+{
+  "name": "@sourcefed/provider-timer",
+  "version": "0.1.0",
+  "description": "One-shot and interval timer monitor provider for Sourcefed.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@sourcefed/core": "*",
+    "@sourcefed/sdk": "*",
+    "valibot": "1.4.2"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "private": true
+}
