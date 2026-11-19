@@ -25,7 +25,11 @@ the comment and sourcefed's delivery are real. Waiting time is sped up.</sub>
 
 ## Install
 
-SourceFed needs Node 22.19 or later.
+```sh
+brew install stevenjpx2/taps/sourcefed
+```
+
+The tap's formula pins 0.5.2. With npm instead, on Node 22.19 or later:
 
 ```sh
 npm install --global @fdcn/sourcefed@0.5.2
