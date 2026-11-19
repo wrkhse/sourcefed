@@ -1,7 +1,7 @@
 # P1b: timers
 
 **Status: Planned.** Part of the plan in [#31]; it runs in-process on today's
-daemon and does not wait for barn. The open question is at the end.
+daemon and does not wait for barn.
 
 ## You can
 
@@ -247,11 +247,14 @@ pollTimer(
 - The tests above on the final tree, with [#29]'s replay fixtures and the seven
   goldens unchanged.
 - A release candidate, 0.6.0-rc.2, as a GitHub prerelease.
-- A recording of rc.2. In OpenCode the agent sets `in: "1m"` and `every: "1m"`.
-  The one-shot fires and its monitor ends; the interval fires twice. The daemon
-  stops across a due time and restarts, and that timer fires once, late, and
-  never again. The daemon's monitor log shows each event with its real time.
-  Waits are cut.
+- A recording of rc.2. OpenCode runs on the Mac with `--standalone`, the saved
+  Go credential and a scratch config that loads only the rc's plugin, a route the
+  owner approved on 2026-11-19. The daemon runs from the rc tarball in a
+  disposable container with no host mounts and no published ports. The agent
+  sets `in: "1m"` and `every: "1m"`. The one-shot fires and its monitor ends; the
+  interval fires twice. The daemon stops across a due time and restarts, and that
+  timer fires once, late, and never again. The daemon's monitor log shows each
+  event with its real time. Waits are cut.
 
 ## Known bound
 
@@ -259,11 +262,6 @@ Never twice holds across restarts and sleep. A crash in the instant between the
 queue write and the store write, after the session already acknowledged the
 event, can repeat it once: closing that needs one transaction across two files,
 which this slice does not build.
-
-## Open question
-
-1. The recording's OpenCode runs on the Mac with `--standalone`, the route of the
-   rc.1 recording that End to end assumes, or inside the container.
 
 [#29]: https://github.com/wrkhse/sourcefed/pull/29
 [#31]: https://github.com/wrkhse/sourcefed/issues/31
