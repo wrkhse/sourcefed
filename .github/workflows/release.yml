@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   publish:
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,7 +58,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   candidate:
-    if: ${{ contains(github.ref_name, '-') }}
+    if: ${{ github.event_name == 'push' && contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
