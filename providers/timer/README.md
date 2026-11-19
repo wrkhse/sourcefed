@@ -62,8 +62,10 @@ than two minutes after `due` it carries `late`, `lateSec` and the delay in its
 summary, in its two largest units, such as `45m`, `3h 20m` or `2d 4h`. An interval reads the firings in (`checkedAt`, `now`], or from the
 anchor when there is no cursor: one found on time is `timer.fired`, more than
 one or a late one is a single `timer.missed` naming the count and the latest.
-An event's id is fixed by its firing, so a repeated poll repeats it and the
-queue keeps one.
+An interval whose cursor is missing or corrupt counts its window from the
+anchor, so it gives at most one event, never a flood. An event's id is fixed by
+its firing, `timer:<key>:<at>`, whatever its kind, so a repeated poll repeats it
+and the queue keeps one.
 
 ```ts
 const oneShot = { type: "timer", job: "check the deploy", due: "2026-11-19T15:20:00+05:30", timezone: "Asia/Kolkata" }

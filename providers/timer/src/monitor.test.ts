@@ -93,4 +93,39 @@ describe("a timer across a restart", () => {
 
     assert.equal(delivered.length, 1)
   })
+
+  test("an interval stopped across two periods sends one missed, then fires on its phase", async () => {
+    const store = new InMemoryMonitorStore()
+    const clock = { now: created }
+    const delivered: MonitorEvent[] = []
+    const first = runtime(store, clock, delivered)
+    const source = timerAt(clock).build(input({ job: "stretch", every: "45m", timezone: "Asia/Kolkata" }))
+    await first.service.create({
+      name: "stretch",
+      source: source as TimerSource,
+      delivery: "poll",
+      target: { kind: "test", id: "session-1" },
+      pollIntervalSec: 15,
+    })
+
+    clock.now = new Date("2026-11-19T15:10:00+05:30")
+    await first.tick()
+    assert.equal(delivered.length, 0)
+    await first.stop()
+
+    clock.now = new Date("2026-11-19T16:31:00+05:30")
+    const second = runtime(store, clock, delivered)
+    await due(second)
+    await second.tick()
+
+    clock.now = new Date("2026-11-19T17:16:00+05:30")
+    const third = runtime(store, clock, delivered)
+    await due(third)
+    await third.tick()
+
+    assert.deepEqual(delivered.map((event) => [event.kind, event.at, event.subject?.missed]), [
+      ["timer.missed", "2026-11-19T16:30:00+05:30", 2],
+      ["timer.fired", "2026-11-19T17:15:00+05:30", undefined],
+    ])
+  })
 })

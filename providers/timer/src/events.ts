@@ -14,7 +14,7 @@ export function firedEvent(source: TimerSource, at: string, timezone: string, la
   const subject = { type: "timer", key: source.job, job: source.job, at, timezone, ...every(source) }
   return {
     kind: "timer.fired",
-    id: `timer.fired:${timerKey(source)}:${at}`,
+    id: firingId(source, at),
     at,
     summary: `Timer ${source.job} fired at ${at}${late}`,
     actionable: true,
@@ -27,13 +27,19 @@ export function missedEvent(source: TimerSource, at: string, timezone: string, m
   const times = missed === 1 ? "1 time" : `${missed.toLocaleString("en")} times`
   return {
     kind: "timer.missed",
-    id: `timer.missed:${timerKey(source)}:${at}`,
+    id: firingId(source, at),
     at,
     summary: `Timer ${source.job} missed ${times}; the latest was ${at}`,
     body: "Sourcefed was not running, or the Mac was asleep, when these times came. This one event stands for all of them.",
     actionable: true,
     subject: { type: "timer", key: source.job, job: source.job, at, timezone, ...every(source), missed },
   }
+}
+
+// One id per firing whatever its kind, so a firing sent on time and again late after a
+// crash before the cursor write is one event in the queue.
+function firingId(source: TimerSource, at: string): string {
+  return `timer:${timerKey(source)}:${at}`
 }
 
 function every(source: TimerSource): { every?: string } {

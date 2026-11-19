@@ -39,7 +39,7 @@ function lastFiringAtOrBefore(firing: (k: number) => Date, periodMs: number, anc
     else return k
   }
 
-  throw new Error(`timer firings did not settle near ${t.toISOString()}`)
+  throw new PollSourceError(`timer firings did not settle near ${t.toISOString()}`)
 }
 
 function scale(duration: Duration, k: number): Duration {

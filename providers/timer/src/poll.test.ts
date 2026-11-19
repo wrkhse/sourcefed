@@ -25,7 +25,7 @@ describe("pollTimer, one-shot", () => {
       cursor: { checkedAt: now.toISOString() },
       events: [{
         kind: "timer.fired",
-        id: `timer.fired:${key}:2026-11-19T15:20:00+05:30`,
+        id: `timer:${key}:2026-11-19T15:20:00+05:30`,
         at: "2026-11-19T15:20:00+05:30",
         summary: "Timer check the deploy fired at 2026-11-19T15:20:00+05:30",
         actionable: true,
@@ -41,7 +41,7 @@ describe("pollTimer, one-shot", () => {
     assert.equal(result.terminal, true)
     assert.deepEqual(result.events, [{
       kind: "timer.fired",
-      id: `timer.fired:${key}:2026-11-19T15:20:00+05:30`,
+      id: `timer:${key}:2026-11-19T15:20:00+05:30`,
       at: "2026-11-19T15:20:00+05:30",
       summary: "Timer check the deploy fired at 2026-11-19T15:20:00+05:30, 3h late",
       actionable: true,
@@ -79,7 +79,7 @@ describe("pollTimer, interval", () => {
     assert.equal(result.terminal, false)
     assert.deepEqual(result.events, [{
       kind: "timer.fired",
-      id: `timer.fired:${stretchKey}:2026-11-19T09:45:00+05:30`,
+      id: `timer:${stretchKey}:2026-11-19T09:45:00+05:30`,
       at: "2026-11-19T09:45:00+05:30",
       summary: "Timer stretch fired at 2026-11-19T09:45:00+05:30",
       actionable: true,
@@ -92,7 +92,7 @@ describe("pollTimer, interval", () => {
 
     assert.deepEqual(result.events, [{
       kind: "timer.missed",
-      id: `timer.missed:${stretchKey}:2026-11-19T12:45:00+05:30`,
+      id: `timer:${stretchKey}:2026-11-19T12:45:00+05:30`,
       at: "2026-11-19T12:45:00+05:30",
       summary: "Timer stretch missed 5 times; the latest was 2026-11-19T12:45:00+05:30",
       body: "Sourcefed was not running, or the Mac was asleep, when these times came. This one event stands for all of them.",
@@ -121,6 +121,16 @@ describe("pollTimer, interval", () => {
     const now = new Date("2026-11-19T12:50:00+05:30")
 
     assert.equal(pollTimer(stretch, cursor, now).events[0]?.id, pollTimer(stretch, cursor, now).events[0]?.id)
+  })
+
+  test("a firing found on time, then again late after a crash, keeps its id", () => {
+    const cursor = { checkedAt: "2026-11-19T09:40:00+05:30" }
+
+    const onTime = pollTimer(stretch, cursor, new Date("2026-11-19T09:45:10+05:30")).events
+    const late = pollTimer(stretch, cursor, new Date("2026-11-19T09:50:00+05:30")).events
+
+    assert.deepEqual(onTime.map((event) => [event.kind, event.id]), [["timer.fired", `timer:${stretchKey}:2026-11-19T09:45:00+05:30`]])
+    assert.deepEqual(late.map((event) => [event.kind, event.id, event.subject?.missed]), [["timer.missed", `timer:${stretchKey}:2026-11-19T09:45:00+05:30`, 1]])
   })
 
   test("after a sleep, one missed and then the next firing keeps its phase", () => {
