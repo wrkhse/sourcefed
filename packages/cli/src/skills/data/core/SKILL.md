@@ -43,7 +43,9 @@ You will be notified of:
   `missed` count. It never decides whether the work runs.
 - **Timer**: one `timer.fired` when a one-shot (`in` or `at`) is due, with `late` when it
   is found more than two minutes after; an interval (`every`) sends `timer.fired` each
-  period and one `timer.missed` for periods that came while sourcefed was stopped.
+  period and one `timer.missed` for periods that came while sourcefed was stopped. A crash
+  in the instant between saving an event and saving the monitor can, rarely, repeat a
+  firing once.
 - **Slack thread**: new replies in the thread.
 - **Slack DM**: new top-level messages in the DM. Slack monitors are always detect-only
   and never reply.

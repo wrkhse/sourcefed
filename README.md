@@ -219,7 +219,8 @@ a `missed` count for the times that came while the daemon was stopped or the Mac
 `--every` (a period such as `45m`). A one-shot sends one `timer.fired`, marked late when
 found more than two minutes after it was due, and then removes itself; an interval sends
 `timer.fired` each period and one `timer.missed` for periods that came while the daemon was
-stopped. Yab takes `--url` (an Atom, RSS or
+stopped. A crash in the instant between saving an event and saving the monitor can, rarely,
+repeat a firing once. Yab takes `--url` (an Atom, RSS or
 JSON feed), an optional `--space`, and `--match`/`--exclude` case-insensitive regexes over
 each entry's title, summary and author. Set `SOURCEFED_DAEMON_URL`
 when the daemon is not at the default URL.
