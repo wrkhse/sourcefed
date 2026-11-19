@@ -12,8 +12,13 @@ export function systemTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone
 }
 
-/** Refuses a name Intl does not know, so a stored timer always names a usable zone. */
+// Intl reads an offset such as +05:30 or -0400 as a zone, but it has no rules and no name.
+const FIXED_OFFSET = /^[+-]\d/
+
+/** Refuses a name Intl does not know, and a fixed offset, so a stored timer always names an IANA zone. */
 export function checkTimezone(name: string): { error: string } | undefined {
+  if (FIXED_OFFSET.test(name)) return { error: `timezone "${name}" is not an IANA time zone` }
+
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: name })
     return undefined
