@@ -162,6 +162,26 @@ describe("terminal events", () => {
     await daemon.stop()
   })
 
+  test("an ended monitor's event waiting across a restart arrives once, then the record goes", async () => {
+    await withSecret(async () => {
+      const store = new InMemoryMonitorStore()
+      const queue = new InMemoryMonitorEventQueue()
+      const before = createDaemon(store, queue)
+      await mergeWhileNobodyListens(before)
+      await before.stop()
+
+      const after = createDaemon(store, queue)
+      await after.start()
+      const received = await subscribeAndSettle(after)
+      await after.acknowledgeEvents(target, received.map((queued) => queued.id))
+      await settle()
+
+      assert.deepEqual(received.map((queued) => queued.event.id), ["pr:MERGED"])
+      assert.deepEqual((await store.load()).monitors, [])
+      await after.stop()
+    })
+  })
+
   test("starting removes ended monitors with nothing queued and keeps those with events waiting", async () => {
     const drained = endedRecord("m-drained", 6)
     const waiting = endedRecord("m-waiting", 7)

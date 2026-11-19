@@ -86,9 +86,9 @@ export class MonitorService {
   }
 
   /**
-   * Marks a monitor finished by its source. It is no longer polled or fed webhooks, but its
-   * record stays so the events it queued last are still delivered; the host removes it once
-   * they are gone. Its last events may be taken before the ending is stored, so the host
+   * Marks a monitor finished by its source. It is no longer polled and takes no webhook
+   * deliveries; its record stays until the events it queued last are delivered, and the host
+   * removes it then. Its last events may be taken before the ending is stored, so the host
    * hears of each ending through `onEnd` and removes the record then if nothing waits.
    */
   async end(id: string): Promise<void> {

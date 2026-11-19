@@ -290,6 +290,7 @@ export class SourcefedDaemon {
   private async removeDrainedEnded(target: MonitorTarget): Promise<void> {
     const ended = (await this.service.list()).filter((monitor) => monitor.endedAt && sameTarget(monitor.target, target))
     if (ended.length === 0) return
+    // Not atomic with the list on purpose: a record missed here goes at the next acknowledgement or start.
     const queued = new Set((await this.queue.read(target)).map((event) => event.monitorID))
     for (const monitor of ended) {
       if (!queued.has(monitor.id)) await this.service.remove(monitor.id)
