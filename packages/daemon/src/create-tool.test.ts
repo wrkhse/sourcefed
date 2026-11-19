@@ -18,6 +18,20 @@ describe("monitor_create tool schema", () => {
     }
   })
 
+  test("the github-issues branch offers issueNumbers and requires only repo", () => {
+    const schema = monitorCreateToolSchema() as { properties: { source: { anyOf: Branch[] } } }
+    const branch = schema.properties.source.anyOf.find((item) => item.properties.type.enum?.[0] === "github-issues")
+    if (!branch) assert.fail("github-issues branch")
+
+    assert.deepEqual(branch.properties.issueNumbers, {
+      type: "array",
+      items: { type: "integer", minimum: 1 },
+      maxItems: 100,
+      description: "Watch only these issue numbers, e.g. [56]",
+    })
+    assert.deepEqual(branch.required, ["type", "repo"])
+  })
+
   test("flattens a tool input into the daemon's create input", () => {
     const input = { name: "PR #42", source: { type: "github", repo: "octo/repo", prNumber: 42 }, pollIntervalSec: 30 }
 
@@ -27,6 +41,17 @@ describe("monitor_create tool schema", () => {
       repo: "octo/repo",
       prNumber: 42,
       pollIntervalSec: 30,
+    })
+  })
+
+  test("keeps issue numbers intact when flattening a github-issues source", () => {
+    const input = { name: "Issues", source: { type: "github-issues", repo: "octo/repo", issueNumbers: [56] } }
+
+    assert.deepEqual(toDaemonCreateInput(input), {
+      name: "Issues",
+      sourceType: "github-issues",
+      repo: "octo/repo",
+      issueNumbers: [56],
     })
   })
 

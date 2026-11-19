@@ -1,6 +1,6 @@
 import * as v from "valibot"
 import { COLLECTION_LIMIT, compareCollection, type SourceEvent } from "@sourcefed/core"
-import { listIssues, type GithubFetch } from "./api.ts"
+import { listIssues, listNumberedIssues, type GithubFetch } from "./api.ts"
 import { issueKey, limitEvent, matchedEvent, unmatchedEvent } from "./events.ts"
 import { GithubIssuesCursorSchema, type GithubIssuesCursor, type GithubIssuesSource } from "./schema.ts"
 
@@ -16,7 +16,7 @@ export async function pollGithubIssues(
   const parsed = v.safeParse(GithubIssuesCursorSchema, cursorRaw)
   const etag = parsed.success ? parsed.output.etag : undefined
 
-  const result = await listIssues(source, etag, request)
+  const result = source.issueNumbers ? await listNumberedIssues(source, request) : await listIssues(source, etag, request)
   if (result.status === "unchanged") return { cursor: cursorRaw, events: [] }
 
   const changes = compareCollection(cursorRaw, result.listing, issueKey, source.includeExisting ?? false)

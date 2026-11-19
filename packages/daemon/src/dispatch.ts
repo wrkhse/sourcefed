@@ -61,6 +61,14 @@ function createCreateInput(params: Record<string, unknown>): DaemonCreateInput {
     }
     input.labels = params.labels
   }
+  if (params.issueNumbers !== undefined) {
+    const numbers = params.issueNumbers
+    if (!Array.isArray(numbers) || numbers.length === 0 || numbers.length > 100 ||
+      !numbers.every((number) => typeof number === "number" && Number.isInteger(number) && number > 0)) {
+      throw new Error("issueNumbers must be an array of at most 100 positive integers")
+    }
+    input.issueNumbers = numbers
+  }
   if (params.includeExisting !== undefined) {
     if (typeof params.includeExisting !== "boolean") throw new Error("includeExisting must be a boolean")
     input.includeExisting = params.includeExisting

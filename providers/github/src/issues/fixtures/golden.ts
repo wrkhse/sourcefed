@@ -104,6 +104,15 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "minItems": 1,
             "description": "Labels an issue must all carry"
           },
+          "issueNumbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "description": "Watch only these issue numbers, e.g. [56]"
+          },
           "assignee": {
             "type": "string",
             "description": "Only issues assigned to this login"
@@ -122,8 +131,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
           }
         },
         "required": [
-          "repo",
-          "labels"
+          "repo"
         ]
       },
       "events": [],
@@ -207,6 +215,15 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "minItems": 1,
             "description": "Labels an issue must all carry"
           },
+          "issueNumbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "description": "Watch only these issue numbers, e.g. [56]"
+          },
           "assignee": {
             "type": "string",
             "description": "Only issues assigned to this login"
@@ -225,8 +242,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
           }
         },
         "required": [
-          "repo",
-          "labels"
+          "repo"
         ]
       },
       "events": [],
@@ -334,6 +350,15 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "minItems": 1,
             "description": "Labels an issue must all carry"
           },
+          "issueNumbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "description": "Watch only these issue numbers, e.g. [56]"
+          },
           "assignee": {
             "type": "string",
             "description": "Only issues assigned to this login"
@@ -352,8 +377,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
           }
         },
         "required": [
-          "repo",
-          "labels"
+          "repo"
         ]
       },
       "events": [
@@ -491,6 +515,15 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "minItems": 1,
             "description": "Labels an issue must all carry"
           },
+          "issueNumbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "description": "Watch only these issue numbers, e.g. [56]"
+          },
           "assignee": {
             "type": "string",
             "description": "Only issues assigned to this login"
@@ -509,8 +542,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
           }
         },
         "required": [
-          "repo",
-          "labels"
+          "repo"
         ]
       },
       "events": [
@@ -612,6 +644,15 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
             "minItems": 1,
             "description": "Labels an issue must all carry"
           },
+          "issueNumbers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxItems": 100,
+            "description": "Watch only these issue numbers, e.g. [56]"
+          },
           "assignee": {
             "type": "string",
             "description": "Only issues assigned to this login"
@@ -630,8 +671,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
           }
         },
         "required": [
-          "repo",
-          "labels"
+          "repo"
         ]
       },
       "deferred": true

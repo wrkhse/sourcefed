@@ -23,6 +23,9 @@ function github(...replies: Array<(call: Call) => Response>) {
 }
 
 const list = (items: RecordedIssue[], options?: { etag?: string; next?: string }) => () => listReply(items, options)
+const direct = (item: RecordedIssue) => () => new Response(JSON.stringify(item), { status: 200, headers: { "content-type": "application/json" } })
+const missing = () => () => new Response('{"message":"Not Found"}', { status: 404, headers: { "content-type": "application/json" } })
+const numbered: GithubIssuesSource = { type: "github-issues", repo: REPO, issueNumbers: [56, 57] }
 
 describe("github-issues", () => {
   test("the first poll primes silently and keeps the list's ETag", async () => {
@@ -148,6 +151,58 @@ describe("github-issues", () => {
 
     assert.deepEqual(result.events.map((event) => event.kind), ["error"])
   })
+
+  test("a numbered source primes from direct reads, in order, without an ETag", async () => {
+    const { request, calls } = github(direct(issue(56)), direct(issue(57)))
+
+    const result = await pollGithubIssues(numbered, undefined, request, now)
+
+    assert.deepEqual(result.events, [])
+    assert.deepEqual(result.cursor, { primed: true, keys: [`${REPO}#56`, `${REPO}#57`], overLimit: false })
+    assert.deepEqual(calls.map((call) => call.url), [
+      `https://api.github.com/repos/${REPO}/issues/56`,
+      `https://api.github.com/repos/${REPO}/issues/57`,
+    ])
+    assert.deepEqual(calls.map((call) => call.headers), [{}, {}])
+  })
+
+  test("a numbered source with includeExisting reports every found issue on the first poll", async () => {
+    const { request } = github(direct(issue(56, "Issue 56")), direct(issue(57, "Issue 57")))
+
+    const result = await pollGithubIssues({ ...numbered, includeExisting: true }, undefined, request, now)
+
+    assert.deepEqual(result.events.map((event) => [event.kind, event.subject?.number]), [
+      ["item.matched", 56],
+      ["item.matched", 57],
+    ])
+  })
+
+  test("a numbered source reports matched and unmatched from its direct reads", async () => {
+    const primed = { primed: true, keys: [`${REPO}#56`, `${REPO}#57`], overLimit: false }
+    const { request } = github(direct(issue(56)), direct(issue(58, "Issue 58")))
+
+    const result = await pollGithubIssues(numbered, primed, request, now)
+
+    assert.deepEqual(result.events.map((event) => [event.kind, event.subject?.key]), [
+      ["item.unmatched", `${REPO}#57`],
+      ["item.matched", `${REPO}#58`],
+    ])
+  })
+
+  test("a numbered source refuses a missing issue so the poll keeps its cursor", async () => {
+    const { request } = github(missing())
+
+    await assert.rejects(pollGithubIssues(numbered, undefined, request, now), /example-org\/example-repo#56 does not exist/)
+  })
+
+  test("a numbered source skips a pull request", async () => {
+    const { request } = github(direct(pullRequest(56)))
+
+    const result = await pollGithubIssues({ ...numbered, issueNumbers: [56], includeExisting: true }, undefined, request, now)
+
+    assert.deepEqual(result.events, [])
+    assert.deepEqual(result.cursor, { primed: true, keys: [], overLimit: false })
+  })
 })
 
 describe("GithubIssuesMonitor", () => {
@@ -172,5 +227,65 @@ describe("GithubIssuesMonitor", () => {
     assert.equal(wake.matches(source, payload, "issues"), true)
     assert.equal(wake.matches(source, payload, "pull_request"), false)
     assert.equal(wake.matches(source, { repository: { full_name: "other/repo" } }, "issues"), false)
+  })
+
+  test("builds a numbered source from sorted, distinct issue numbers", () => {
+    const built = monitor.build({ repo: REPO, issueNumbers: [57, 56], includeExisting: true })
+
+    assert.deepEqual(built, { type: "github-issues", repo: REPO, issueNumbers: [56, 57], includeExisting: true })
+  })
+
+  test("builds a numbered source with no label filters", () => {
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [56] }), {
+      type: "github-issues",
+      repo: REPO,
+      issueNumbers: [56],
+    })
+  })
+
+  test("refuses label filters on a numbered source", () => {
+    const error = { error: "assignee, author and query do not apply with issueNumbers" }
+
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [56], assignee: "octocat" }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [56], author: "octocat" }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [56], query: "milestone:v2" }), error)
+  })
+
+  test("refuses malformed issue numbers", () => {
+    const error = { error: "issueNumbers must be positive integers, at most 100, without duplicates" }
+
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [0] }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [-1] }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [1.5] }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: Array.from({ length: 101 }, (_, i) => i + 1) }), error)
+    assert.deepEqual(monitor.build({ repo: REPO, issueNumbers: [56, 56] }), error)
+  })
+
+  test("refuses both selectors, or neither", () => {
+    assert.deepEqual(monitor.build({ repo: REPO, labels: ["a"], issueNumbers: [56] }), {
+      error: "give either labels or issueNumbers for a github-issues monitor, not both",
+    })
+    assert.deepEqual(monitor.build({ repo: REPO }), { error: "give labels or issueNumbers for a github-issues monitor" })
+  })
+
+  test("keys name the numbered set and leave label keys alone", () => {
+    assert.equal(monitor.key(numbered), "github-issues:example-org/example-repo:numbers:56,57")
+    assert.notEqual(monitor.key(numbered), monitor.key({ ...numbered, issueNumbers: [56] }))
+    assert.equal(monitor.key(source), "github-issues:example-org/example-repo:atelier:build:::")
+  })
+
+  test("a numbered source wakes only for its own issue numbers", () => {
+    const payload = (issueNumber: number, fullName = "Example-Org/Example-Repo") => ({
+      action: "labeled",
+      issue: { number: issueNumber },
+      repository: { full_name: fullName },
+    })
+    const wake = monitor.wake
+    assert.ok(wake, "github-issues wakes on the issues webhook")
+
+    assert.equal(wake.matches(numbered, payload(56), "issues"), true)
+    assert.equal(wake.matches(numbered, payload(58), "issues"), false)
+    assert.equal(wake.matches(numbered, payload(56), "pull_request"), false)
+    assert.equal(wake.matches(numbered, payload(56, "other/repo"), "issues"), false)
   })
 })

@@ -41,6 +41,13 @@ export async function create(context: MonitorContext): Promise<void> {
   // GitHub's own issue filter separates labels with commas, so no label can contain one.
   const labels = flag(context.args, "labels")
   if (labels) input.labels = labels.split(",").map((label) => label.trim()).filter(Boolean)
+  // Issue numbers are numeric, so refuse a list a source build would reject later.
+  const issueNumbers = flag(context.args, "issue-numbers")
+  if (issueNumbers) {
+    const parts = issueNumbers.split(",").map((part) => part.trim())
+    if (!parts.every((part) => /^[1-9]\d*$/.test(part))) throw new Error("--issue-numbers must be comma-separated positive integers")
+    input.issueNumbers = parts.map(Number)
+  }
   if (context.args.includes("--include-existing")) input.includeExisting = true
   const prNumber = flag(context.args, "pr-number")
   if (prNumber) input.prNumber = Number(prNumber)

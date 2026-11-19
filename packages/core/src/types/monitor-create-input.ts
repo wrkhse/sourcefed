@@ -10,6 +10,7 @@ export type MonitorCreateInput = {
   match?: string
   exclude?: string
   labels?: string[]
+  issueNumbers?: number[]
   assignee?: string
   author?: string
   query?: string
