@@ -12,7 +12,7 @@ recording.
 | --- | --- | --- |
 | [P0 SDK and golden tests][p0] | Implemented (0.6.0-rc.1) | Run the seven providers on the SDK |
 | P1 schedule, jira-query, jira | Planned (waits on barn) | Run them as plugins |
-| [P1b timer][p1b] | In progress (0.6.0-rc.2) | Set one-shot and interval timers as monitors |
+| [P1b timer][p1b] | Implemented (0.6.0-rc.2) | Set one-shot and interval timers as monitors |
 | P2 yab | Planned (waits on barn) | Read Yab with no process per poll |
 | P3 github-issues and github | Planned (waits on barn) | Use one budget per token |
 | P4 slack | Planned (waits on barn) | Slack with its limiter, user cache, webhook |
@@ -23,7 +23,7 @@ What each later slice builds:
 - **P1** runs schedule, jira-query and jira as plugins in sourcefed's stall
   under barn. It needs barn B1 and B2.
 - **P1b** adds one-shot and interval timers as monitors, in-process on today's
-  daemon, after the P0 release candidate.
+  daemon; see its [recording][p1b-recording].
 - **P2** reads Yab through barn's `mcp.call`, with no process per poll. It
   needs barn B3.
 - **P3** gives github-issues and github the shared per-token budget and the
@@ -35,5 +35,6 @@ P0 is in [0.6.0-rc.1][rc]; its [recording][p0-recording] shows two real events.
 [plan]: https://github.com/wrkhse/sourcefed/issues/31
 [p0]: p0-sdk.md
 [p0-recording]: p0-sdk.md#recording
+[p1b-recording]: p1b-timer.md#recording
 [p1b]: p1b-timer.md
 [rc]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.1
