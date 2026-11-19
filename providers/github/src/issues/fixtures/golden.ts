@@ -89,7 +89,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
       "describe": "GitHub issues in example-org/example-repo with label agent",
       "icon": "󰊤",
       "schema": {
-        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
         "properties": {
           "repo": {
             "type": "string",
@@ -200,7 +200,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
       "describe": "GitHub issues in example-org/example-repo with label agent",
       "icon": "󰊤",
       "schema": {
-        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
         "properties": {
           "repo": {
             "type": "string",
@@ -335,7 +335,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
       "describe": "GitHub issues in example-org/example-repo with label agent",
       "icon": "󰊤",
       "schema": {
-        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
         "properties": {
           "repo": {
             "type": "string",
@@ -500,7 +500,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
       "describe": "GitHub issues in example-org/example-repo with label agent, \"milestone:v2\"",
       "icon": "󰊤",
       "schema": {
-        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
         "properties": {
           "repo": {
             "type": "string",
@@ -629,7 +629,7 @@ export const GITHUB_ISSUES_GOLDEN: GoldenFixture = {
       "describe": "GitHub issues in example-org/example-repo with label agent",
       "icon": "󰊤",
       "schema": {
-        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+        "description": "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
         "properties": {
           "repo": {
             "type": "string",

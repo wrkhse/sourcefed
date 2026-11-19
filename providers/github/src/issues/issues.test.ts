@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import * as v from "valibot"
-import { GithubIssuesMonitor } from "./monitor.ts"
+import { GithubIssuesMonitor, githubIssuesSource } from "./monitor.ts"
 import { pollGithubIssues } from "./poll.ts"
 import { GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
 import { ETAG, REPO, issue, listReply, nextPage, notModified, pullRequest, searchReply, type RecordedIssue } from "./fixtures/recorded-replies.ts"
+import { parseIssueCommentWebhook } from "./webhook.ts"
 
 const source: GithubIssuesSource = { type: "github-issues", repo: REPO, labels: ["atelier:build"] }
 const now = () => new Date("2026-11-13T10:00:00.000Z")
@@ -422,5 +423,133 @@ describe("GithubIssuesSourceSchema", () => {
       assert.equal(result.success, false)
       assert.deepEqual(messages(result), ["issueNumbers must be positive integers, at most 100, without duplicates"])
     }
+  })
+})
+
+describe("parseIssueCommentWebhook", () => {
+  const payload = {
+    action: "created",
+    repository: { full_name: REPO },
+    issue: { number: 56, title: "Issue 56", html_url: `https://github.com/${REPO}/issues/56` },
+    comment: {
+      id: 901,
+      body: "Please bound it.",
+      user: { login: "alice" },
+      created_at: "2026-11-14T09:00:00.000Z",
+    },
+    sender: { login: "alice" },
+  }
+
+  test("a created comment on a plain issue becomes an issue.comment event", () => {
+    assert.deepEqual(parseIssueCommentWebhook(payload, now), {
+      source: { type: "github-issues", repo: REPO, issueNumbers: [56] },
+      kind: "issue.comment",
+      id: `issue.comment:${REPO}#56:901`,
+      at: "2026-11-14T09:00:00.000Z",
+      summary: `New comment by alice on GitHub issue ${REPO}#56`,
+      body: "Please bound it.",
+      actionable: true,
+      subject: {
+        type: "github-issue",
+        key: `${REPO}#56`,
+        repo: REPO,
+        number: 56,
+        url: `https://github.com/${REPO}/issues/56`,
+        commentId: 901,
+        author: "alice",
+        title: "Issue 56",
+      },
+    })
+  })
+
+  test("falls back to the sender, a constructed url, the clock and no title", () => {
+    const bare = {
+      action: "created",
+      repository: { full_name: "Example-Org/Example-Repo" },
+      issue: { number: 7 },
+      comment: { id: 42, body: "Ping" },
+      sender: { login: "bob" },
+    }
+
+    assert.deepEqual(parseIssueCommentWebhook(bare, now), {
+      source: { type: "github-issues", repo: "Example-Org/Example-Repo", issueNumbers: [7] },
+      kind: "issue.comment",
+      id: "issue.comment:Example-Org/Example-Repo#7:42",
+      at: "2026-11-13T10:00:00.000Z",
+      summary: "New comment by bob on GitHub issue Example-Org/Example-Repo#7",
+      body: "Ping",
+      actionable: true,
+      subject: {
+        type: "github-issue",
+        key: "Example-Org/Example-Repo#7",
+        repo: "Example-Org/Example-Repo",
+        number: 7,
+        url: "https://github.com/Example-Org/Example-Repo/issues/7",
+        commentId: 42,
+        author: "bob",
+      },
+    })
+  })
+
+  test("edited and deleted comments deliver nothing", () => {
+    assert.equal(parseIssueCommentWebhook({ ...payload, action: "edited" }, now), undefined)
+    assert.equal(parseIssueCommentWebhook({ ...payload, action: "deleted" }, now), undefined)
+  })
+
+  test("a comment on a pull request is left to the PR source", () => {
+    const pr = { ...payload, issue: { ...payload.issue, pull_request: { html_url: "https://github.com/example-org/example-repo/pull/56" } } }
+
+    assert.equal(parseIssueCommentWebhook(pr, now), undefined)
+  })
+
+  test("malformed payloads deliver nothing", () => {
+    const malformed = [
+      undefined,
+      null,
+      "not an object",
+      {},
+      { action: "created" },
+      { ...payload, repository: { full_name: "not a repo" } },
+      { ...payload, repository: { full_name: 5 } },
+      { ...payload, issue: { ...payload.issue, number: 0 } },
+      { ...payload, issue: { ...payload.issue, number: 1.5 } },
+      { ...payload, comment: { ...payload.comment, id: "nope" } },
+      { ...payload, comment: { ...payload.comment, user: undefined }, sender: undefined },
+      { ...payload, comment: { ...payload.comment, body: undefined } },
+    ]
+
+    for (const input of malformed) assert.equal(parseIssueCommentWebhook(input, now), undefined)
+  })
+})
+
+describe("githubIssuesSource webhook", () => {
+  const event = parseIssueCommentWebhook({
+    action: "created",
+    repository: { full_name: REPO },
+    issue: { number: 56, html_url: `https://github.com/${REPO}/issues/56` },
+    comment: { id: 901, body: "Ping", user: { login: "alice" } },
+    sender: { login: "alice" },
+  }, now)!
+  const webhook = githubIssuesSource.webhook!
+  const matches = webhook.matches!
+  const watched: GithubIssuesSource = { type: "github-issues", repo: REPO, issueNumbers: [56, 57] }
+  const labelled: GithubIssuesSource = { type: "github-issues", repo: REPO, labels: ["agent"] }
+
+  test("polling stays the primary transport", () => {
+    assert.equal(webhook.preferred, false)
+  })
+
+  test("matches a watched issue number in the same repo, case-insensitively", () => {
+    assert.equal(matches(watched, event), true)
+    assert.equal(matches({ ...watched, repo: "EXAMPLE-ORG/EXAMPLE-REPO" }, event), true)
+  })
+
+  test("rejects an unwatched number, another repo, a label-only source and other kinds", () => {
+    assert.equal(matches({ ...watched, issueNumbers: [58] }, event), false)
+    assert.equal(matches({ ...watched, repo: "other/repo" }, event), false)
+    assert.equal(matches(labelled, event), false)
+    assert.equal(matches(watched, { ...event, kind: "item.matched" }), false)
+    assert.equal(matches(watched, { ...event, source: { type: "github", repo: REPO } }), false)
+    assert.equal(matches(watched, { ...event, source: { type: "github-issues", repo: "other/repo" } }), false)
   })
 })

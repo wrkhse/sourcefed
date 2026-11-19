@@ -26,6 +26,7 @@ flowchart LR
 | `poll.ts` | `pollGithubIssues`: one poll, from the listing to the events and the next cursor. |
 | `api.ts` | `listIssues`: every matching issue, through the issues list or the search API. |
 | `events.ts` | The events and their `github-issue` subject. |
+| `webhook.ts` | `parseIssueCommentWebhook`: a verified new comment on a plain issue becomes an `issue.comment` event. |
 | `schema.ts` | The source record and the cursor. |
 | `fixtures/` | Replies shaped on recorded GitHub replies, for `issues.test.ts`. |
 
@@ -46,3 +47,8 @@ flowchart LR
   the poll with its cursor unchanged; a GraphQL wait does not hold it.
 - **Webhook wake.** With `SOURCEFED_GITHUB_WEBHOOK_SECRET` set, a verified
   `issues` webhook for the repository makes the monitor's next tick poll at once.
+- **Direct comment delivery.** With `SOURCEFED_GITHUB_WEBHOOK_SECRET` set, a verified
+  `issue_comment` webhook for a newly created comment delivers an `issue.comment` event
+  straight to monitors watching that `repo` and `issueNumbers`; polling stays the primary
+  transport. Comments on pull requests keep the PR source's behavior, and edited or
+  deleted comments deliver nothing.
