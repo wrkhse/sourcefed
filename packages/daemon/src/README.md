@@ -58,4 +58,4 @@ sequenceDiagram
   probe in `scripts/check-opencode-subscriptions.mjs` proves trusted HTTPS too.
 
 See [subscription lifecycle](../../../docs/subscription-lifecycle.md) for OpenCode
-ownership, transport limits, verification commands and rollout.
+ownership, transport limits and verification.

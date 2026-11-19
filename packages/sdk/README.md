@@ -123,8 +123,7 @@ golden harness supplies its own, and `fetchHttp`, `stdioMcp(hostMcpServers)`
 and `new Date()` are the only ones in production.
 `http.fetch` answers as the upstream answered (status, headers, body), and
 `http.json` reduces a request to its JSON or an `HttpError`. A poll gets no
-timer, no store and no secret, so `SourceHost` is the seam the broker replaces
-once barn owns the network.
+timer, no store and no secret.
 
 ## MCP servers
 
@@ -165,19 +164,13 @@ is its credential, so the source decides whether and how to show them.
 
 The poll's `source`, `cursor` and `monitorId`, and its result
 (`{ events, cursor, terminal }` or `{ deferred: true }`), are plain JSON.
-That lets the same poll run behind a worker or engine boundary later without
-changing a source. `http` is a seam the host supplies, not data, so a source
-never holds a network handle of its own.
+So the poll needs no live handle to the daemon. `http` is a seam the host
+supplies, not data, so a source never holds a network handle of its own.
 
-## Not in this slice
+## Proposed source API
 
-- **No grants, budgets or secret-by-name resolution.** The barn B2 broker adds
-  them behind `Http`, so a plugin keeps calling `http.json`.
-- **No worker, loader, manifest or cancellation signal.** The worker boundary
-  brings them, and `SourceContext` grows with it.
-- **No timer owned by the source.** A definition's `wake` only wakes the
-  monitor for an early poll, and a source that waits returns
-  `{ deferred: true }` and core polls it again.
+The [source and plugin API RFC](https://github.com/wrkhse/sourcefed/issues/56)
+describes the proposed design.
 
 ## Golden transcripts
 
@@ -186,8 +179,8 @@ nothing. Each case holds the create input, the starting cursor, the upstream
 replies in order, the redacted requests the plugin made, and the display,
 input schema, events and cursor the core `Monitor` returned. `assertGolden`
 replays the cases in order and names the provider and case on the first
-difference. A request records its `body` only when it sent a string, such as
-a GraphQL POST, so a GET's record has no `body` key.
+difference. A request records a string body or URL-encoded form body, so a
+GET's record has no `body` key.
 
 A fixture may also carry the source's `webhook`: its `path`, `preferred`,
 `acknowledgeBeforeDelivery` and `configured()`, and its recorded deliveries.
@@ -231,8 +224,9 @@ test("the jira source replays its recorded transcript", async () => {
 
 `packages/daemon/src/monitors-audit.test.ts` checks that a stored
 `monitors.json` survives the port. It builds a record from each fixture's last
-cursor under its recorded key, saves the records through `JsonMonitorStore` in
-a temporary folder and loads them back with a fresh store. Each record must
+cursor under its recorded key, plus a one-shot and an interval timer record
+since the timer has no recording, saves the records through `JsonMonitorStore`
+in a temporary folder and loads them back with a fresh store. Each record must
 keep the SDK source's key, hold its cursor under that key and parse with the
 source's `cursor` schema, and every source type must be covered. The live
 state is never read.
@@ -240,7 +234,8 @@ state is never read.
 ## Recording a fixture
 
 ```sh
-node scripts/record-golden.mjs providers/jira/src/fixtures/golden.cases.json 0a1a5e7
+node scripts/record-golden.mjs \
+  providers/jira/src/fixtures/golden.cases.json 0a1a5e7
 ```
 
 The recorder creates a temporary detached worktree at the ref and bundles

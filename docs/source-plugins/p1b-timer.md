@@ -1,50 +1,27 @@
 # P1b: timers
 
-**Status: Implemented** in [0.6.0-rc.2]. Part of the plan in [#31]; it runs
-in-process on today's daemon and does not wait for barn.
+**Status: Implemented** in [0.6.0-rc.2]. The timer runs in-process on the
+daemon. The closed [#31] records the migration scope.
 
 ## You can
 
-Set a timer as a monitor. A one-shot (`in: "20m"` or `at: "2026-11-19T15:00"`)
-fires once and its monitor ends; an interval (`every: "45m"`) fires on a fixed
-phase from creation. Each firing is an event, triaged and delivered like any
-other.
-
-```json
-{
-  "name": "deploy",
-  "sourceType": "timer",
-  "job": "check the deploy",
-  "in": "20m",
-  "timezone": "Asia/Kolkata"
-}
-```
-
-Twenty minutes later, the session receives:
-
-```json
-{
-  "kind": "timer.fired",
-  "id": "timer:timer:check the deploy:2026-11-19T15:20:00+05:30:2026-11-19T15:20:00+05:30",
-  "at": "2026-11-19T15:20:00+05:30",
-  "summary": "Timer check the deploy fired at 2026-11-19T15:20:00+05:30",
-  "actionable": true,
-  "subject": {
-    "type": "timer",
-    "key": "check the deploy",
-    "job": "check the deploy",
-    "at": "2026-11-19T15:20:00+05:30",
-    "timezone": "Asia/Kolkata"
-  }
-}
-```
-
-The CLI takes the same input:
+Set a one-shot or interval timer as a monitor and receive its firing as an
+event.
 
 ```sh
 sourcefed monitor create --name deploy --source-type timer \
   --job "check the deploy" --in 20m --timezone Asia/Kolkata
 ```
+
+Twenty minutes later the session receives a `timer.fired` event whose summary
+reads:
+
+```text
+Timer check the deploy fired at 2026-11-19T15:20:00+05:30
+```
+
+See the [timer README](../../providers/timer/README.md) for inputs, examples
+and firing behavior.
 
 ## The path of a timer
 
@@ -218,31 +195,13 @@ export class MonitorService {
 
 ### 2. `build` receives the host clock (SDK)
 
-`build(input, now)` gets the host's clock, as `poll`, `verify` and `parse` do,
-so a source with relative input pins it to an instant when the monitor is
-created. The seven existing sources ignore it, so their golden replays stay
-byte-equal.
+A source resolves relative input against the host clock when its monitor is
+created. The [SDK README](../../packages/sdk/README.md) describes the interface.
 
 Files: `packages/sdk/src/source.ts`, `packages/sdk/README.md`.
 
-```ts
-const monitor = defineSource(timerSource, { http, mcp, now: () => clock })
-// clock is 2026-11-19T15:00:00+05:30
-
-monitor.build({
-  name: "deploy",
-  sourceType: "timer",
-  job: "check the deploy",
-  in: "20m",
-  timezone: "Asia/Kolkata",
-})
-// { type: "timer", job: "check the deploy",
-//   due: "2026-11-19T15:20:00+05:30", timezone: "Asia/Kolkata" }
-```
-
-**Structure.** `build` receives the clock as a function, read only when the
-source needs it. The monitor `defineSource` returns passes `host.now`, so core's
-`Monitor.build` keeps one argument. Without a host, `now` is `new Date()`.
+**Structure.** `defineSource` binds the host clock into `build`, so core's
+`Monitor.build` takes one argument. `SourceHost` is in [P0](p0-sdk.md).
 
 ```ts
 export type SourceDefinition<T extends MonitorSource> = {
@@ -250,288 +209,41 @@ export type SourceDefinition<T extends MonitorSource> = {
   readonly build: (input: MonitorCreateInput, now: () => Date) => SourceInput
   …
 }
-
-export type SourceHost = {
-  readonly http: Http
-  readonly mcp: Mcp
-  readonly now: () => Date
-}
 ```
 
 **Verified by** "builds with the host's clock" in
-`packages/sdk/src/source.test.ts`, and every golden replay
-(`providers/*/src/golden.test.ts`), unchanged.
+`packages/sdk/src/source.test.ts` and the golden replays.
 
 ### 3. The timer source (`providers/timer`)
 
-**Input.** Exactly one of `in`, `at` or `every`, and `job`. Durations run from
-1 minute to 366 days in the units `m`, `h`, `d` and `w`, which combine
-(`"1h30m"`). `at` is local time in `timezone` (an IANA name, the system's by
-default) or carries `Z` or an offset. An `at` already past fires at once; an
-`at` more than 366 days ahead is refused. Every refusal names its reason.
+The [timer README](../../providers/timer/README.md) describes its inputs,
+firing behavior and examples. The daemon registry connects the source to the
+monitor runtime.
+
+Files: `providers/timer/src/`, `packages/daemon/src/registry.ts` and the
+CLI and host tool adapters.
+
+**Structure.** `buildTimer` resolves create input once against the creation
+instant; `pollTimer` returns the cursor, events and whether the monitor ends,
+with a firing on time when within `ON_TIME_MS`.
 
 ```ts
-monitor.build({ name: "t", sourceType: "timer", job: "x", in: "30s" })
-// { error: "in must be at least 1m" }
+type Refusal = { error: string }
 
-monitor.build({ name: "t", sourceType: "timer", job: "x", in: "20m", every: "1h" })
-// { error: "give one of in, at or every" }
-```
+type TimerPoll = { cursor: TimerCursor; events: SourceEvent[]; terminal: boolean }
 
-**Resolution.** A one-shot stores `due`. An interval stores `every` and
-`anchor`, the creation instant. The key is `timer:<job>:<due>` or
-`timer:<job>:<every>:<anchor>`, so two timers created at different times are two
-monitors.
-
-For a local `at` that falls in a spring-forward gap, the time moves forward by
-the gap; when the clock repeats, the earlier instant is used. Days and weeks in
-`every` are calendar steps in the timezone, so 09:00 stays 09:00 across a clock
-change. Minutes and hours are elapsed time.
-
-**Poll.** A one-shot fires when `now` reaches `due`: `timer.fired`, with `late`
-and the delay when it is more than 2 minutes past `due`. Either way the poll is
-terminal. A late one-shot is `timer.fired` with `late`, because it fires only
-once; a late interval firing is `timer.missed`, as schedule's is, because later
-firings follow it.
-
-An interval computes the firings in (`checkedAt`, `now`] from the anchor and the
-period, so a long gap needs no cap. One firing on time is `timer.fired`. More
-than one, or a late one, is a single `timer.missed` that names the count and the
-latest time. The first poll does not prime: its window starts at the anchor. An
-interval whose cursor is missing or corrupt counts its window from the anchor,
-so it gives at most one event, never a flood.
-
-After a sleep, the first poll on wake sees the whole gap: a one-shot due during
-it fires once, late, and ends; an interval gives one `timer.missed` for the
-firings it slept through.
-
-An event's id is fixed by its firing, `timer:<key>:<at>`, whatever its kind, so
-a repeat of the same firing (on time once, late after a restart) is
-deduplicated while it waits in the queue. `defaultPollIntervalSec` is 15.
-
-Files: `providers/timer/src/` (`schema`, `durations`, `zoned`, `at`, `build`,
-`firings`, `poll`, `events`, `monitor` and `index`, each `.ts`),
-`providers/timer/package.json`, `providers/timer/README.md`. Wiring:
-`packages/daemon/src/registry.ts`, `packages/daemon/src/dispatch.ts`,
-`packages/daemon/src/types/daemon.ts`, `packages/daemon/package.json`,
-`packages/core/src/types/monitor-create-input.ts` (`in`, `at` and `every` as
-strings), `packages/cli/src/commands/monitor/create.ts`, the three tool
-descriptions (`packages/mcp/src/server.ts`,
-`adapters/opencode/tools/monitor_create.ts`, `adapters/pi/src/index.ts`, which
-also holds Pi's icon), `scripts/build.mjs`, `scripts/integration.mjs`, the
-core and sourcefed skills under `packages/cli/src/skills/data/`, `README.md`,
-`GUIDANCE.md` and `docs/program-targets.md`.
-
-```ts
-const oneShot = {
-  type: "timer",
-  job: "check the deploy",
-  due: "2026-11-19T15:20:00+05:30",
-  timezone: "Asia/Kolkata",
-}
-
-pollTimer(oneShot, null, new Date("2026-11-19T15:20:30+05:30"))
-// { cursor: { checkedAt: "2026-11-19T09:50:30.000Z" },
-//   events: [timer.fired], terminal: true }
-
-pollTimer(oneShot, null, new Date("2026-11-19T18:40:00+05:30"))
-// events: [timer.fired], terminal: true; the summary is
-// "Timer check the deploy fired at 2026-11-19T15:20:00+05:30, 3h 20m late"
-// and the subject has late: true, lateSec: 12000
-
-const interval = {
-  type: "timer",
-  job: "stretch",
-  every: "45m",
-  anchor: "2026-11-19T09:00:00+05:30",
-  timezone: "Asia/Kolkata",
-}
-
-pollTimer(
-  interval,
-  { checkedAt: "2026-11-19T09:10:00+05:30" },
-  new Date("2026-11-19T12:50:00+05:30"),
-)
-// events: [timer.missed], terminal: false; the summary is
-// "Timer stretch missed 5 times; the latest was 2026-11-19T12:45:00+05:30"
-```
-
-**Structure.** A stored timer is a one-shot or an interval. `due` and `anchor`
-are ISO instants written with the zone's offset; `every` is the text as given,
-trimmed; `timezone` is always an IANA name. The cursor's `checkedAt` is the UTC
-instant up to which firings have been considered. Each type is inferred from
-its valibot schema (`TimerOneShotSchema`, `TimerIntervalSchema`,
-`TimerSourceSchema`, `TimerCursorSchema`).
-
-```ts
-export type TimerOneShot = {
-  type: "timer"
-  job: string
-  due: string
-  timezone: string
-}
-
-export type TimerInterval = {
-  type: "timer"
-  job: string
-  every: string
-  anchor: string
-  timezone: string
-}
-
-export type TimerSource = TimerOneShot | TimerInterval
-
-export type TimerCursor = { checkedAt: string }
-
-export type TimerCreateInput = {
-  job?: string
-  in?: string
-  at?: string
-  every?: string
-  timezone?: string
-}
-```
-
-`parseDuration` reads each unit at most once, largest first, with no spaces:
-`45m`, `1h30m`, `2w`, `1d12h`. A few seconds (`30s`) is refused as too short;
-other text is refused naming it, as `in "soon" is not a duration like 45m,
-1h30m or 2d`. The bounds, 1 minute and 366 days, count every day as 24 hours.
-Weeks and days stay apart from hours and minutes, since they are calendar steps.
-
-```ts
-export type Duration = {
-  weeks: number
-  days: number
-  hours: number
-  minutes: number
-}
-
-export type DurationField = "in" | "every"
-
-export function parseDuration(
-  text: string,
-  field: DurationField,
-): Duration | { error: string };
-```
-
-`checkTimezone` refuses a name Intl does not know, and a fixed offset such as
-`+05:30`, which Intl reads but which has no rules: `timezone "+05:30" is not an
-IANA time zone`. A timer created without a timezone takes `systemTimezone()`.
-`resolveLocal` makes Temporal's "compatible" choice: a time in a gap moves
-forward by the gap, and a repeated time is the earlier instant. `addDuration`
-steps weeks and days on the calendar, keeping the wall time, then adds hours and
-minutes as elapsed time. `zonedIso` writes an instant with the zone's offset,
-UTC as `+00:00`.
-
-```ts
-export type LocalTime = {
-  year: number
-  month: number
-  day: number
-  hour: number
-  minute: number
-  second: number
-}
-
-export function systemTimezone(): string;
-export function checkTimezone(name: string): { error: string } | undefined;
-export function resolveLocal(local: LocalTime, timeZone: string): Date;
-export function addDuration(from: Date, duration: Duration, timeZone: string): Date;
-export function zonedIso(date: Date, timeZone: string): string;
-```
-
-`parseAt` reads a day and a time to the minute or second, then `Z`, an offset up
-to ±14:59, or nothing for local time in the zone. A day or time the calendar
-does not have, such as 30 February or 24:00, is refused.
-
-```ts
-export function parseAt(text: string, timeZone: string): Date | { error: string };
-```
-
-`buildTimer` resolves create input against `now` once, so a restart or a later
-poll never reads `in` against a different clock. It requires each field it reads
-to be text when present, trims `job` and the time, requires a `job` and exactly
-one of `in`, `at` and `every`, and checks the timezone. A past `at` is kept;
-one more than 366 days ahead is refused with `at must be within 366 days`.
-
-```ts
 export function buildTimer(
   raw: TimerCreateInput,
   now: Date,
-): TimerSource | { error: string };
-```
+): TimerSource | Refusal;
 
-`firingsBetween` counts an interval's firings in (`after`, `until`]: the start
-is excluded, the end included. The k-th firing is k periods from the anchor
-through `addDuration`, so a calendar step never drifts. It estimates k from the
-nominal period and corrects it in at most 64 steps, so a year's gap at one
-minute costs no more than one period. A stored `every` that does not parse, or
-a k that does not settle, throws a `PollSourceError`, which fails the poll.
-
-```ts
-export function firingsBetween(
-  source: TimerInterval,
-  after: Date,
-  until: Date,
-): { latest: Date; count: number } | undefined;
-```
-
-`pollTimer` returns `{ checkedAt: now }` as the cursor on every poll. A
-one-shot before `due` returns nothing and is not terminal; at or after `due` it
-returns one `timer.fired` and is terminal, late when more than `ON_TIME_MS`
-past `due`. An interval reads its window from the cursor's `checkedAt`, or
-from the anchor when the cursor is missing or not a `TimerCursor`; one firing
-within `ON_TIME_MS` of `now` is `timer.fired`, anything else one
-`timer.missed` at the latest firing. An interval is never terminal.
-
-```ts
 export const ON_TIME_MS = 2 * 60_000
 
 export function pollTimer(
   source: TimerSource,
   cursorRaw: unknown,
   now: Date,
-): { cursor: TimerCursor; events: SourceEvent[]; terminal: boolean };
-```
-
-`timerKey` is the monitor's key: `timer:<job>:<due>` or
-`timer:<job>:<every>:<anchor>`. Both events take the id `timer:<key>:<at>`, so
-one firing has one id whatever its kind. Their subject holds `type`, `key` (the
-job), `job`, `at`, `timezone` and, for an interval, `every`, and both are
-actionable. `firedEvent` given `lateMs` ends its summary with the delay in its
-two largest units, such as `, 3h 20m late`, and adds `late: true` and
-`lateSec` to the subject. `missedEvent`'s summary reads `Timer stretch missed 5
-times; the latest was …`, its body says sourcefed was not running or the Mac
-was asleep, and its subject adds `missed`.
-
-```ts
-export function timerKey(source: TimerSource): string;
-
-export function firedEvent(
-  source: TimerSource,
-  at: string,
-  timezone: string,
-  lateMs?: number,
-): SourceEvent;
-
-export function missedEvent(
-  source: TimerSource,
-  at: string,
-  timezone: string,
-  missed: number,
-): SourceEvent;
-```
-
-`timerSource` is the definition. Its `build` calls `buildTimer(input, now())`,
-and its poll calls `pollTimer` with the host's clock. Its label is the job, its
-detail ` at <due> <timezone>` or ` every <every> <timezone>`, its description
-`Timer <job> (at <due>)` or `Timer <job> (every <every>)`, its icon `󰔛`, and
-`defaultPollIntervalSec` 15. `SOURCE_MAP` holds `TimerMonitor` under `timer`.
-
-```ts
-export const timerSource: SourceDefinition<TimerSource>;
-
-export const TimerMonitor: Monitor<TimerSource>;
+): TimerPoll;
 ```
 
 **Verified by**
@@ -599,9 +311,4 @@ not, and both are bounded by the monitors a person created.
 
 [#29]: https://github.com/wrkhse/sourcefed/pull/29
 [#31]: https://github.com/wrkhse/sourcefed/issues/31
-[#45]: https://github.com/wrkhse/sourcefed/pull/45
-[#46]: https://github.com/wrkhse/sourcefed/pull/46
-[#47]: https://github.com/wrkhse/sourcefed/pull/47
-[#48]: https://github.com/wrkhse/sourcefed/pull/48
-[#49]: https://github.com/wrkhse/sourcefed/pull/49
 [0.6.0-rc.2]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.2
