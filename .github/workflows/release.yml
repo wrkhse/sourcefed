@@ -99,7 +99,7 @@ jobs:
   # GitHub prerelease under the rc dist-tag with OIDC; latest is never moved.
   publish-rc:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    environment: release
+    environment: release-rc
     runs-on: ubuntu-latest
     permissions:
       contents: read
