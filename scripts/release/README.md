@@ -65,3 +65,42 @@ GitHub prerelease with the tarball and its `SHA256SUMS`; nothing goes to npm.
 The local scripts (`pins`, `homebrew`, `registry`, `publish`) are for final
 releases. `pins`, `homebrew` and `publish` match final versions only
 (`[\d.]+`), and `registry` checks npm, which holds no candidate.
+
+## Publishing a candidate to npm under `rc`
+
+Pushing a candidate tag still only creates the prerelease. To put a verified
+candidate on npm, dispatch [release.yml](../../.github/workflows/release.yml)
+manually. This path is **for candidates only**: the version must be a
+prerelease such as `0.6.0-rc.3`, and the `latest` dist-tag is never changed.
+
+One-time prerequisites, owned by the release maintainer:
+
+- The protected `release` GitHub environment, with the owner as its required
+  reviewer, exists before the dispatch. The job waits for that approval.
+- npm trusted publishing is configured for `wrkhse/sourcefed`, workflow
+  file `release.yml`, environment `release`, with direct `npm publish` allowed.
+  No npm token is passed; OIDC authenticates the job and npm adds provenance.
+
+Steps:
+
+1. Confirm the prerelease `v<version>` carries exactly
+   `fdcn-sourcefed-<version>.tgz` and `SHA256SUMS`.
+2. In the repository's Actions tab, select **Release** → **Run workflow**, then
+   enter `version` as `0.6.0-rc.3` and `tag` as `v0.6.0-rc.3` (the tag must be
+   exactly `v` plus the version) and run it.
+3. Approve the `release` deployment under **Review deployments**. The job does
+   not publish without that approval.
+4. The `publish-rc` job checks out the tag, downloads both assets from the
+   prerelease, verifies the tarball with `shasum -a 256 -c SHA256SUMS`, refuses
+   a version already on npm (especially one with different bytes), then
+   publishes that exact tarball with
+   `npm publish --tag rc --access public --provenance`. It checks that `latest`
+   is unchanged and that `rc` points at the dispatched version.
+5. Confirm with `npm view @fdcn/sourcefed dist-tags`.
+
+Every check fails closed: bad inputs, a missing asset, a checksum mismatch, or
+an existing version stops the job with a clear message and no retry. A failed
+or unapproved run is not proof of publication — check npm before considering
+anything else. Do not use this path for a final version, and do not rerun a
+version already published. Final releases keep using the tag-driven `publish`
+job; candidate prereleases keep using `candidate`.
