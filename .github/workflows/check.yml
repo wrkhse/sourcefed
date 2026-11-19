@@ -55,3 +55,19 @@ jobs:
           export PATH="$LEGACY_PI/node_modules/.bin:$PATH"
           node scripts/assert-pi-host.mjs 0.83.0
           node scripts/integration.mjs pi.test.mjs pi-package.test.mjs
+
+  # The timer's restart proof runs a packed daemon, which stays off developers' Macs.
+  timer-integration:
+    name: Timer integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:tui
+      - run: npm run build:public
+      - run: npm run integration -- provider-timer.test.mjs

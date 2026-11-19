@@ -2,8 +2,8 @@ import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 import * as v from "valibot"
 import { buildTimer } from "./build.ts"
-import { TimerSourceSchema } from "./schema.ts"
-import { systemTimezone } from "./zoned.ts"
+import { TimerSourceSchema, type TimerCreateInput } from "./schema.ts"
+import { systemTimezone, zonedIso } from "./zoned.ts"
 
 // 15:00 in Kolkata.
 const now = new Date("2026-11-19T09:30:00Z")
@@ -75,10 +75,19 @@ describe("buildTimer", () => {
     assert.deepEqual(buildTimer({ job, in: "20m", timezone: "Mars/Olympus" }, now), { error: 'timezone "Mars/Olympus" is not an IANA time zone' })
   })
 
+  test("refuses a field that is present but not text", () => {
+    const raw = (input: Record<string, unknown>) => buildTimer(input as TimerCreateInput, now)
+
+    assert.deepEqual(raw({ job, every: 45, timezone }), { error: "every must be text like 45m" })
+    assert.deepEqual(raw({ job, in: { minutes: 20 }, timezone }), { error: "in must be text like 20m" })
+    assert.deepEqual(raw({ job, at: 1_763_560_000_000, timezone }), { error: "at must be text like 2026-11-19T15:00" })
+    assert.deepEqual(raw({ job: 7, in: "20m", timezone }), { error: "job must be text" })
+    assert.deepEqual(raw({ job, in: "20m", timezone: { name: "UTC" } }), { error: "timezone must be text like Asia/Kolkata" })
+  })
+
   test("uses the system's timezone when none is given", () => {
     const source = buildTimer({ job, in: "20m" }, now)
 
-    assert.ok(!("error" in source))
-    assert.equal(source.timezone, systemTimezone())
+    assert.deepEqual(source, { type: "timer", job, due: zonedIso(new Date("2026-11-19T09:50:00Z"), systemTimezone()), timezone: systemTimezone() })
   })
 })

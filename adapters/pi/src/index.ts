@@ -18,6 +18,7 @@ const SOURCE_ICONS: Record<string, string> = {
   slack: "󰒱",
   yab: "󰖟",
   schedule: "󰃰",
+  timer: "󰔛",
 }
 
 type PiTarget = { kind: "pi-session"; id: string }
@@ -51,7 +52,7 @@ export default async function sourcefedExtension(pi: ExtensionAPI): Promise<void
   pi.registerTool({
     name: "sourcefed_monitor_create",
     label: "Sourcefed monitor create",
-    description: "Create or reuse a Jira issue, Jira query, GitHub PR, GitHub issues, Slack thread, Slack DM, schedule, or Yab feed monitor for the current Pi session. Pick one source by its type and give only that source's fields.",
+    description: "Create or reuse a Jira issue, Jira query, GitHub PR, GitHub issues, Slack thread, Slack DM, schedule, timer (once in 20m or at a time, or every 45m), or Yab feed monitor for the current Pi session. Pick one source by its type and give only that source's fields.",
     parameters: Type.Unsafe<MonitorCreateToolInput>(monitorCreateToolSchema()),
     execute: async (_toolCallID, input, _signal, _onUpdate, ctx) => {
       const request = toDaemonCreateInput(input) as unknown as Record<string, unknown>

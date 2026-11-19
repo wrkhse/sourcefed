@@ -38,6 +38,7 @@ const PACKAGES = [
   "providers/slack",
   "providers/yab",
   "providers/schedule",
+  "providers/timer",
 ]
 
 run("node", ["scripts/build.mjs"], ROOT)

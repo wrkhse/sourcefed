@@ -17,5 +17,8 @@ export type MonitorCreateInput = {
   jql?: string
   cron?: string
   job?: string
+  in?: string
+  at?: string
+  every?: string
   timezone?: string
 }

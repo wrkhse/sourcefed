@@ -3,6 +3,7 @@ import { describe, test } from "node:test"
 import { addDuration, checkTimezone, resolveLocal, zonedIso } from "./zoned.ts"
 
 const NEW_YORK = "America/New_York"
+const SYDNEY = "Australia/Sydney"
 const local = (year: number, month: number, day: number, hour: number, minute: number) => ({ year, month, day, hour, minute, second: 0 })
 const span = (weeks: number, days: number, hours: number, minutes: number) => ({ weeks, days, hours, minutes })
 
@@ -35,6 +36,14 @@ describe("resolveLocal", () => {
     assert.equal(zonedIso(resolveLocal(local(2026, 11, 1, 1, 30), NEW_YORK), NEW_YORK), "2026-11-01T01:30:00-04:00")
   })
 
+  test("Sydney's October gap moves forward by the gap", () => {
+    assert.equal(zonedIso(resolveLocal(local(2026, 10, 4, 2, 30), SYDNEY), SYDNEY), "2026-10-04T03:30:00+11:00")
+  })
+
+  test("Sydney's April repeat is the earlier instant", () => {
+    assert.equal(zonedIso(resolveLocal(local(2026, 4, 5, 2, 30), SYDNEY), SYDNEY), "2026-04-05T02:30:00+11:00")
+  })
+
   test("keeps seconds", () => {
     const time = { ...local(2026, 11, 19, 15, 0), second: 45 }
 
@@ -51,6 +60,18 @@ describe("addDuration", () => {
 
   test("24 hours is elapsed time", () => {
     assert.equal(zonedIso(addDuration(saturday, span(0, 0, 24, 0), NEW_YORK), NEW_YORK), "2026-03-08T10:00:00-04:00")
+  })
+
+  test("a day keeps the wall time across fall back", () => {
+    const start = new Date("2026-10-31T09:00:00-04:00")
+
+    assert.equal(zonedIso(addDuration(start, span(0, 1, 0, 0), NEW_YORK), NEW_YORK), "2026-11-01T09:00:00-05:00")
+  })
+
+  test("24 hours across fall back is elapsed time", () => {
+    const start = new Date("2026-10-31T09:00:00-04:00")
+
+    assert.equal(zonedIso(addDuration(start, span(0, 0, 24, 0), NEW_YORK), NEW_YORK), "2026-11-01T08:00:00-05:00")
   })
 
   test("a week is seven calendar days", () => {
@@ -87,5 +108,15 @@ describe("time zones", () => {
 
   test("an unknown name is refused with its reason", () => {
     assert.deepEqual(checkTimezone("Mars/Olympus"), { error: 'timezone "Mars/Olympus" is not an IANA time zone' })
+  })
+
+  test("a fixed offset is refused, though Intl reads it", () => {
+    assert.deepEqual(checkTimezone("+05:30"), { error: 'timezone "+05:30" is not an IANA time zone' })
+    assert.deepEqual(checkTimezone("-0400"), { error: 'timezone "-0400" is not an IANA time zone' })
+  })
+
+  test("an IANA link and UTC are accepted", () => {
+    assert.equal(checkTimezone("US/Eastern"), undefined)
+    assert.equal(checkTimezone("UTC"), undefined)
   })
 })

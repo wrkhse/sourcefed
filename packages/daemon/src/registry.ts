@@ -3,6 +3,7 @@ import { GithubIssuesMonitor, GithubMonitor } from "@sourcefed/provider-github"
 import { JiraMonitor, JiraQueryMonitor } from "@sourcefed/provider-jira"
 import { ScheduleMonitor } from "@sourcefed/provider-schedule"
 import { SlackMonitor } from "@sourcefed/provider-slack"
+import { TimerMonitor } from "@sourcefed/provider-timer"
 import { YabMonitor } from "@sourcefed/provider-yab"
 
 export const SOURCE_MAP = {
@@ -13,6 +14,7 @@ export const SOURCE_MAP = {
   slack: SlackMonitor,
   yab: YabMonitor,
   schedule: ScheduleMonitor,
+  timer: TimerMonitor,
 }
 
 export const SOURCE_TYPES = Object.keys(SOURCE_MAP) as [string, ...string[]]

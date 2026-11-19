@@ -8,6 +8,7 @@ import { githubIssuesSource, githubSource } from "@sourcefed/provider-github"
 import { jiraQuerySource, jiraSource } from "@sourcefed/provider-jira"
 import { scheduleSource } from "@sourcefed/provider-schedule"
 import { slackSource } from "@sourcefed/provider-slack"
+import { timerSource } from "@sourcefed/provider-timer"
 import { yabSource } from "@sourcefed/provider-yab"
 import type { GoldenFixture } from "@sourcefed/sdk"
 import * as v from "valibot"
@@ -39,7 +40,25 @@ const CURSORS: Readonly<Record<string, v.GenericSchema<unknown>>> = {
   slack: slackSource.cursor,
   yab: yabSource.cursor,
   schedule: scheduleSource.cursor,
+  timer: timerSource.cursor,
 }
+
+// The timer is new with the SDK, so no pre-SDK recording exists: a one-shot and an interval as the
+// daemon stores them stand in for one.
+const TIMER_RECORDS: readonly { id: string; source: unknown; key: string; cursor: unknown }[] = [
+  {
+    id: "audit-timer-once",
+    source: { type: "timer", job: "check the deploy", due: "2026-11-19T15:20:00+05:30", timezone: "Asia/Kolkata" },
+    key: "timer:check the deploy:2026-11-19T15:20:00+05:30",
+    cursor: { checkedAt: "2026-11-19T09:40:00.000Z" },
+  },
+  {
+    id: "audit-timer-every",
+    source: { type: "timer", job: "stretch", every: "45m", anchor: "2026-11-19T15:00:00+05:30", timezone: "Asia/Kolkata" },
+    key: "timer:stretch:45m:2026-11-19T15:00:00+05:30",
+    cursor: { checkedAt: "2026-11-19T10:15:00.000Z" },
+  },
+]
 
 const STAMP = "2026-11-18T00:00:00.000Z"
 const LAST_POLLED_AT = 1_763_424_000_000
@@ -73,9 +92,26 @@ function auditRecord(fixture: GoldenFixture): { record: MonitorRecord; key: stri
   return { record, key: last.key }
 }
 
+function timerRecord(timer: (typeof TIMER_RECORDS)[number]): { record: MonitorRecord; key: string } {
+  const record: MonitorRecord = {
+    id: timer.id,
+    name: timer.id,
+    source: timer.source as MonitorRecord["source"],
+    delivery: "poll",
+    target: { kind: "audit", id: "audit" },
+    pollIntervalSec: 15,
+    enabled: true,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    cursors: { [timer.key]: timer.cursor, __lastPolledAt: LAST_POLLED_AT, __routedEventIds: [] },
+  }
+
+  return { record, key: timer.key }
+}
+
 test("every record in a copy of monitors.json keeps its key and its cursor validates", async () => {
   stateDir = await mkdtemp(path.join(os.tmpdir(), "sourcefed-audit-"))
-  const audited = FIXTURES.map(auditRecord)
+  const audited = [...FIXTURES.map(auditRecord), ...TIMER_RECORDS.map(timerRecord)]
   const keys = new Map(audited.map(({ record, key }) => [record.id, key]))
 
   await new JsonMonitorStore({ stateDir }).save({ monitors: audited.map(({ record }) => record) })
@@ -83,7 +119,7 @@ test("every record in a copy of monitors.json keeps its key and its cursor valid
   // A fresh store reads the file back, so the audit covers the file format and not the objects in memory.
   const { monitors } = await new JsonMonitorStore({ stateDir }).load()
 
-  assert.deepEqual(monitors.map((record) => record.source.type).sort(), [...SOURCE_TYPES].sort(), "the audit covers every source type")
+  assert.deepEqual([...new Set(monitors.map((record) => record.source.type))].sort(), [...SOURCE_TYPES].sort(), "the audit covers every source type")
 
   for (const record of monitors) {
     const type = record.source.type

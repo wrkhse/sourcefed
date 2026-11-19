@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { describe, test } from "node:test"
+import { afterEach, describe, mock, test } from "node:test"
 import { InMemoryMonitorEventQueue, InMemoryMonitorStore, type MonitorTarget, type QueuedMonitorEvent } from "@sourcefed/core"
 import { SourcefedDaemon } from "./daemon.ts"
 
@@ -58,10 +58,46 @@ describe("SourcefedDaemon", () => {
     await daemon.stop()
   })
 
+  describe("a timer's identity", () => {
+    const noon = Date.parse("2026-11-19T12:00:00Z")
+    const one = Date.parse("2026-11-19T13:00:00Z")
+    const input = { name: "check", sourceType: "timer", job: "check", in: "20m", timezone: "UTC" }
+
+    afterEach(() => {
+      mock.timers.reset()
+    })
+
+    test("the same in, an hour apart, is two monitors", async () => {
+      const daemon = createDaemon()
+
+      mock.timers.enable({ apis: ["Date"], now: noon })
+      const first = await daemon.createMonitor(target, input)
+      mock.timers.setTime(one)
+      const later = await daemon.createMonitor(target, input)
+
+      assert.equal(first.ok && first.created, true)
+      assert.equal(later.ok && later.created, true)
+      assert.notEqual(first.ok && first.monitor?.id, later.ok && later.monitor?.id)
+      await daemon.stop()
+    })
+
+    test("the same in, at the same time, reuses the monitor", async () => {
+      const daemon = createDaemon()
+
+      mock.timers.enable({ apis: ["Date"], now: noon })
+      const first = await daemon.createMonitor(target, input)
+      const again = await daemon.createMonitor(target, input)
+
+      assert.equal(again.ok && again.created, false)
+      assert.equal(again.ok && again.monitor?.id, first.ok && first.monitor?.id)
+      await daemon.stop()
+    })
+  })
+
   test("rejects unknown source types", async () => {
     const daemon = createDaemon()
     const result = await daemon.createMonitor(target, { name: "nope", sourceType: "telepathy" })
-    assert.deepEqual(result, { ok: false, error: "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule" })
+    assert.deepEqual(result, { ok: false, error: "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule|timer" })
     await daemon.stop()
   })
 

@@ -1,3 +1,4 @@
+import * as v from "valibot"
 import { parseAt } from "./at.ts"
 import { parseDuration } from "./durations.ts"
 import type { TimerCreateInput, TimerSource } from "./schema.ts"
@@ -11,11 +12,24 @@ type When = { field: "in" | "at" | "every"; text: string }
 
 type Refusal = { error: string }
 
+// Raw create input arrives from RPC and MCP unchecked; each field, when present, must be text.
+const TimerCreateInputSchema = v.object({
+  job: v.optional(v.string("job must be text")),
+  in: v.optional(v.string("in must be text like 20m")),
+  at: v.optional(v.string("at must be text like 2026-11-19T15:00")),
+  every: v.optional(v.string("every must be text like 45m")),
+  timezone: v.optional(v.string("timezone must be text like Asia/Kolkata")),
+})
+
 /**
  * Resolves create input against `now` once, so the stored source holds instants and a
  * restart or a later poll never reads `in` against a different clock.
  */
-export function buildTimer(input: TimerCreateInput, now: Date): TimerSource | Refusal {
+export function buildTimer(raw: TimerCreateInput, now: Date): TimerSource | Refusal {
+  const checked = v.safeParse(TimerCreateInputSchema, raw)
+  if (!checked.success) return { error: checked.issues[0].message }
+
+  const input = checked.output
   const job = input.job?.trim()
   if (!job) return { error: "job is required for a timer monitor" }
 

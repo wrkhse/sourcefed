@@ -1,13 +1,13 @@
 ---
 name: sourcefed
-description: Live Jira, GitHub, Slack, and Yab feed monitoring for agent hosts. Create monitors that route new issue comments, PR reviews, CI failures, Slack thread or DM messages, and new entries of feeds read through Yab into the current session as they happen.
+description: Live Jira, GitHub, Slack, Yab feed, schedule and timer monitoring for agent hosts. Create monitors that route new issue comments, PR reviews, CI failures, Slack thread or DM messages, and new entries of feeds read through Yab into the current session as they happen.
 hidden: true
 ---
 
 # Sourcefed
 
 Sourcefed turns external collaboration threads into live agent input: create a
-monitor for a Jira issue, GitHub PR, Slack thread, Slack DM, or a feed read through Yab and NEW events are routed
+monitor for a Jira issue, GitHub PR, Slack thread, Slack DM, a cron schedule, a timer, or a feed read through Yab and NEW events are routed
 into the session you are working in, so you can react to them as they happen.
 
 This file is a discovery stub, not the usage guide. Before running any
@@ -26,6 +26,7 @@ releases, which is why it just points at `skills get core`.
 
 - A user asks to monitor a Jira ticket, GitHub PR, Slack thread, or Slack DM.
 - A user wants to hear about new entries in a feed or inbox they are signed in to in Yab.
+- A user wants a reminder once (in 20m, or at a time) or every so often (every 45m).
 - You found or are working on a Jira ticket, PR, thread, or DM and want new
   activity routed into your session.
 - You opened a PR and want to be notified of reviews, comments, CI failures,
