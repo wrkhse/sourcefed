@@ -1,9 +1,8 @@
 # P0: the SDK and golden tests
 
-**Status: In progress.** The SDK and all seven ports are on main ([#37], [#38],
-[#39], [#40] and this pull request). Left: the release candidate and its
-recording. Part of the plan in [#31]; the other slices are listed in the
-[index](README.md).
+**Status: Implemented** in [0.6.0-rc.1]. The SDK and all seven ports are on main
+([#37], [#38], [#39], [#40] and [#41]). Part of the plan in [#31]; the other
+slices are listed in the [index](README.md).
 
 ## You can
 
@@ -65,6 +64,28 @@ flowchart LR
     Fixture --> Assert["assertGolden"]
     Def["the new SourceDefinition"] --> Assert
 ```
+
+## Recording
+
+The recording shows the released 0.6.0-rc.1 acting on two real events in
+OpenCode, on a free model. A `github-issues` monitor created with
+`includeExisting` reads the public `wrkhse/sourcefed` issues labelled `plan`,
+and its first poll sends `item.matched` for [#3], "Plan: sources for programs:
+issue collections, Jira queries and schedules". A `schedule` monitor on
+`* * * * *` UTC sends `schedule.fired` at 2026-11-19T03:32:00+00:00. For each
+event the model reads the title or the instant, explains it, then calls
+`monitor_status` and `monitor_stop`: the monitor's `enabled` goes from true to
+false. The lower pane is the daemon's monitor log, whose event timestamps
+match the events above it. The wait between the two events is cut.
+
+![OpenCode with sourcefed 0.6.0-rc.1: a real GitHub issue match and a real
+minute-schedule event are delivered, the model checks each monitor's status
+and stops it, and the daemon log shows the matching
+deliveries](../media/p0-sdk.gif)
+
+The recording proves two real paths, github-issues and schedule, through the
+installed candidate. The golden fixtures prove all seven sources; the recording
+does not show every one.
 
 ## What it builds
 
@@ -565,10 +586,26 @@ The checks in the real environment:
   on Pi 0.83.0.
 - The "Yab MCP client" tests run the stdio client against a real fake Yab
   process.
-- The release candidate installed and recorded: pending.
+- The release candidate, installed from its released tarball and recorded.
+  The tarball is checked against the release's `SHA256SUMS` and this digest:
+
+  ```text
+  45362b000a0594c973be540eed443d3e4a330b128c8933b21e594be427a34073  fdcn-sourcefed-0.6.0-rc.1.tgz
+  ```
+
+  The daemon runs in a disposable `node:24` container with no host mounts and no
+  published ports, behind a bearer token: `/rpc` answers 401 without it and 200
+  with it, listing all seven source types. OpenCode 2.3.0 runs on the Mac with
+  `--standalone`, a scratch project and model `opencode-go/hy4-flash-free`; its
+  `/plugins` list shows the candidate's `sourcefed` server plugin and
+  `sourcefed-tui` and no other non-built-in plugin. See the [recording](#recording)
+  and the [release][0.6.0-rc.1].
 
 [#31]: https://github.com/wrkhse/sourcefed/issues/31
 [#37]: https://github.com/wrkhse/sourcefed/pull/37
 [#38]: https://github.com/wrkhse/sourcefed/pull/38
 [#39]: https://github.com/wrkhse/sourcefed/pull/39
 [#40]: https://github.com/wrkhse/sourcefed/pull/40
+[#41]: https://github.com/wrkhse/sourcefed/pull/41
+[#3]: https://github.com/wrkhse/sourcefed/issues/3
+[0.6.0-rc.1]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.1
