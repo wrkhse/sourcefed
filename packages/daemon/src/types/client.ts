@@ -10,10 +10,15 @@ export type DaemonClientOptions = {
   env?: Record<string, string>
 }
 
+export type CommentIssueInput = { repo: string; issueNumber: number; body: string }
+
+export type CommentIssueResult = { id: number; url: string }
+
 export interface DaemonClient {
   request(method: string, params?: Record<string, unknown>): Promise<unknown>
   subscribe(target: MonitorTarget, onEvents: (events: QueuedMonitorEvent[]) => Promise<void>, options?: SubscribeOptions): Promise<{ close(): Promise<void> }>
   close(): Promise<void>
+  readonly comment: { issue(input: CommentIssueInput): Promise<CommentIssueResult> }
 }
 
 /**

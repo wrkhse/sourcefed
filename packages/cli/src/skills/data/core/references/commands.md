@@ -4,6 +4,8 @@
 
 ```text
 sourcefed daemon [--port 18787]       Run the shared daemon (rpc, events, webhooks)
+sourcefed comment issue --repo OWNER/NAME --issue-number N --body TEXT
+                                      Post a GitHub issue comment through the daemon
 sourcefed mcp --stdio                       Serve MCP over stdio
 sourcefed mcp --http [--port 18788]          Serve MCP over HTTP at /mcp
 sourcefed monitor create [options]          Create a monitor via a running daemon
@@ -54,6 +56,14 @@ sourcefed skills path [name]                Print skill directory path
 --target-id ID        Target id for ownership scoping (default: hostname)
 ```
 
+### comment issue options
+
+```text
+--repo OWNER/NAME     GitHub repository to comment on
+--issue-number N      Positive issue number
+--body TEXT           Non-empty comment body (at most 65,536 characters)
+```
+
 ## Environment
 
 ```text
@@ -92,6 +102,6 @@ for SSE). Any harness can talk to it directly:
 data: { "type": "event", "target": { "kind": "...", "id": "..." }, "events": [ ... ] }
 ```
 
-Methods: `monitor.create`, `monitor.list`, `monitor.status`, `monitor.stop`,
+Methods: `comment.issue`, `monitor.create`, `monitor.list`, `monitor.status`, `monitor.stop`,
 `monitor.events`, `monitor.ack`, `monitor.subscribe`, `monitor.unsubscribe`,
 `daemon.sourceTypes`.

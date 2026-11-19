@@ -5,6 +5,7 @@ import type { GithubSourceRecord } from "./types"
 import { GithubCursorSchema, GithubSourceSchema } from "./schema.ts"
 import { pollGithub } from "./poll"
 import { parseGithubWebhook, verifyGithubWebhook } from "./webhook"
+import { parseIssueCommentWebhook } from "./issues/webhook.ts"
 import { updateGithubCursor } from "./webhook/utils/update-github-cursor.ts"
 import { htmlToMarkdown } from "./utils/html-to-markdown.ts"
 
@@ -52,7 +53,13 @@ export const githubSource: SourceDefinition<GithubSourceRecord> = {
     verify: (body, request) => verifyGithubWebhook(body, request),
     deliveryId: (request: Request) => request.headers.get("x-github-delivery") ?? undefined,
     eventName: (request: Request) => request.headers.get("x-github-event") ?? "github",
-    parse: parseGithubWebhook,
+    // Plain-issue comments belong to github-issues watches; PR comments keep the PR parser.
+    parse: (payload, eventName, deliveryId, now) => {
+      const body = payload as { issue?: { pull_request?: unknown } } | null
+      const plainIssueComment = eventName === "issue_comment" && typeof payload === "object" && payload !== null && body?.issue?.pull_request === undefined
+      if (plainIssueComment) return parseIssueCommentWebhook(payload, now)
+      return parseGithubWebhook(payload, eventName, deliveryId, now)
+    },
     updateCursor: updateGithubCursor,
   },
 }

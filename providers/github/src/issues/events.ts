@@ -6,6 +6,38 @@ export function issueKey(issue: GithubIssue): string {
   return `${issue.repo}#${issue.number}`
 }
 
+export type GithubIssueComment = {
+  repo: string
+  number: number
+  commentId: number
+  author: string
+  body: string
+  url: string
+  title?: string
+}
+
+export function issueCommentEvent(comment: GithubIssueComment, at: string): SourceEvent {
+  const key = `${comment.repo}#${comment.number}`
+  return {
+    kind: "issue.comment",
+    id: `issue.comment:${key}:${comment.commentId}`,
+    at,
+    summary: `New comment by ${comment.author} on GitHub issue ${key}`,
+    body: comment.body,
+    actionable: true,
+    subject: {
+      type: "github-issue",
+      key,
+      repo: comment.repo,
+      number: comment.number,
+      url: comment.url,
+      commentId: comment.commentId,
+      author: comment.author,
+      ...(comment.title !== undefined ? { title: comment.title } : {}),
+    },
+  }
+}
+
 export function matchedEvent(source: GithubIssuesSource, issue: GithubIssue, at: string): SourceEvent {
   const key = issueKey(issue)
   return {

@@ -128,6 +128,7 @@ sourcefed monitor ack --target-kind program --target-id atelier --event-id "m-â€
 | Kind | From | Subject |
 | --- | --- | --- |
 | `item.matched`, `item.unmatched` | `github-issues` | `{ type: "github-issue", key: "owner/repo#48", repo, number, url, title? }` |
+| `issue.comment` | `github-issues` | `{ type: "github-issue", key, repo, number, url, commentId, author }` |
 | `item.matched`, `item.unmatched` | `jira-query` | `{ type: "jira-issue", key: "PROJ-7", url, title? }` |
 | `schedule.fired` | `schedule` | `{ type: "schedule", key: job, job, at, cron, timezone }` |
 | `schedule.missed` | `schedule` | the same, with `missed`, the count of times it stands for |

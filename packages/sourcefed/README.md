@@ -50,6 +50,28 @@ await client.close()
 The daemon's protocol and delivery guarantees are in
 [program targets](https://github.com/wrkhse/sourcefed/blob/main/docs/program-targets.md).
 
+### Reply to an issue
+
+The daemon client offers `comment.issue` beside the monitor methods
+(`monitor.list`, `monitor.create`, `monitor.ack`). It posts a reply through the
+daemon, which sends the GitHub POST with its own `GH_TOKEN` or `GITHUB_TOKEN`,
+so the caller never handles a token:
+
+```ts
+const sf = await connectDaemonClient({ name: "my-script" })
+
+const reply = await sf.comment.issue({
+  repo: "owner/name",
+  issueNumber: 56,
+  body: "Fixed on the branch; thanks for the report.",
+})
+// reply: { id: 12345, url: "https://github.com/owner/name/issues/56#issuecomment-12345" }
+
+await sf.close()
+```
+
+`body` must be non-empty and at most 65,536 characters.
+
 ## Load it in a host
 
 OpenCode loads the server and TUI plugins from one entry:

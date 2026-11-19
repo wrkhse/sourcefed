@@ -1,9 +1,11 @@
-import { ISSUE_NUMBER_ERROR, PollSourceError, orderedIssueNumbers, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { ISSUE_NUMBER_ERROR, PollSourceError, orderedIssueNumbers, toMonitorEvent, type MonitorCreateInput, type MonitorEvent, type SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
+import { verifyGithubWebhook } from "../webhook"
 import { filterText } from "./events.ts"
 import { pollGithubIssues } from "./poll.ts"
 import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, ISSUE_NUMBER_FILTERS_ERROR, type GithubIssuesSource } from "./schema.ts"
+import { parseIssueCommentWebhook } from "./webhook.ts"
 
 const REPO = /^[\w.-]+\/[\w.-]+$/
 
@@ -30,8 +32,27 @@ export const githubIssuesSource: SourceDefinition<GithubIssuesSource> = {
       return typeof body?.issue?.number === "number" && source.issueNumbers.includes(body.issue.number)
     },
   },
+  webhook: {
+    path: "/webhooks/github",
+    // Polling stays the primary transport even when the webhook is configured.
+    preferred: false,
+    configured: () => Boolean(process.env.SOURCEFED_GITHUB_WEBHOOK_SECRET),
+    verify: (body, request) => verifyGithubWebhook(body, request),
+    deliveryId: (request: Request) => request.headers.get("x-github-delivery") ?? undefined,
+    eventName: (request: Request) => request.headers.get("x-github-event") ?? "github",
+    parse: (payload, _eventName, _deliveryId, now) => parseIssueCommentWebhook(payload, now),
+    matches: (source: unknown, event: MonitorEvent): boolean => {
+      const watched = source as GithubIssuesSource
+      if (event.kind !== "issue.comment") return false
+      const eventSource = event.source as { type?: unknown; repo?: unknown } | undefined
+      if (!eventSource || eventSource.type !== "github-issues" || typeof eventSource.repo !== "string") return false
+      if (typeof watched.repo !== "string" || eventSource.repo.toLowerCase() !== watched.repo.toLowerCase()) return false
+      if (!watched.issueNumbers) return false
+      return typeof event.subject?.number === "number" && watched.issueNumbers.includes(event.subject.number)
+    },
+  },
   input: {
-    description: "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops",
+    description: "Open GitHub issues in a repository carrying every given label: item.matched when an issue starts matching, item.unmatched when it stops; comments on watched issues are delivered as issue.comment",
     properties: {
       repo: { type: "string", description: "GitHub owner/name, e.g. owner/repository" },
       labels: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, description: "Labels an issue must all carry" },

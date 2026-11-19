@@ -15,6 +15,15 @@ export function githubToken(): string | undefined {
   return process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
 }
 
+/** Largest issue-comment body accepted here, in characters. */
+export const MAX_COMMENT_BODY = 65_536
+
+/** The minimal request shape a caller supplies when posting a comment. */
+export type GithubRequest = (url: string, init?: RequestInit) => Promise<Response>
+
+/** The fields a caller needs once a comment has been posted. */
+export type IssueCommentResult = { id: number; html_url: string }
+
 /** A request held back because its API waits out a rate limit on this token. */
 export class GithubWaiting extends Error {
   constructor(readonly api: GithubApi) {
@@ -151,6 +160,30 @@ export async function githubBody(response: Response, url: string): Promise<any> 
 
   const detail = await response.text().catch(() => "")
   throw new PollSourceError(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
+}
+
+/** Posts one comment on a GitHub issue with a token the caller holds; the token is never logged. */
+export async function postIssueComment(send: GithubRequest, token: string, repo: string, issueNumber: number, body: string): Promise<IssueCommentResult> {
+  if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("postIssueComment requires repo as owner/name")
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0) throw new Error("postIssueComment requires a positive integer issueNumber")
+  if (typeof body !== "string" || !body.trim()) throw new Error("postIssueComment requires a non-empty body")
+  if (body.length > MAX_COMMENT_BODY) throw new Error(`postIssueComment body exceeds ${MAX_COMMENT_BODY} characters`)
+
+  const url = `${API}/repos/${repo}/issues/${issueNumber}/comments`
+  const response = await send(url, {
+    method: "POST",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "user-agent": "sourcefed",
+      "x-github-api-version": "2022-11-28",
+    },
+    body: JSON.stringify({ body }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await githubBody(response, url)
+  return { id: Number(data.id), html_url: String(data.html_url ?? "") }
 }
 
 /**

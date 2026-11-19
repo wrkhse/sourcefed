@@ -16,6 +16,7 @@ export class WebhookMonitor<TSource extends MonitorSource = MonitorSource> {
   readonly configured: () => boolean
   readonly verify: (body: string, request: Request) => boolean
   readonly acknowledgeBeforeDelivery: boolean
+  readonly matches?: (source: MonitorSource, event: MonitorEvent) => boolean
   readonly challenge?: (payload: unknown) => Record<string, string> | undefined
   readonly deliveryId: (request: Request, payload: unknown) => string | undefined
   readonly eventName: (request: Request, payload: unknown) => string
@@ -28,6 +29,7 @@ export class WebhookMonitor<TSource extends MonitorSource = MonitorSource> {
     this.configured = options.configured
     this.verify = options.verify
     this.acknowledgeBeforeDelivery = options.acknowledgeBeforeDelivery ?? false
+    this.matches = options.matches
     this.challenge = options.challenge
     this.deliveryId = options.deliveryId
     this.eventName = options.eventName
@@ -91,8 +93,11 @@ export class WebhookMonitor<TSource extends MonitorSource = MonitorSource> {
     const fresh = await context.service.get(record.id)
     if (!fresh || !fresh.enabled) return 0
     const freshSource = source.validateSource(fresh.source)
-    const eventSource = source.validateSource(event.source)
-    if (source.key(freshSource) !== source.key(eventSource)) return 0
+    // A predicate decides acceptance itself, so event.source need not validate against this source.
+    const accepted = this.matches
+      ? this.matches(freshSource, event)
+      : source.key(freshSource) === source.key(source.validateSource(event.source))
+    if (!accepted) return 0
     if (event.kind === "ci" && !event.actionable) return 0
 
     const cursorKey = `webhook:${deliveryId}`
