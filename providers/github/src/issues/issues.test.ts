@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
+import * as v from "valibot"
 import { GithubIssuesMonitor } from "./monitor.ts"
 import { pollGithubIssues } from "./poll.ts"
-import type { GithubIssuesSource } from "./schema.ts"
+import { GithubIssuesSourceSchema, type GithubIssuesSource } from "./schema.ts"
 import { ETAG, REPO, issue, listReply, nextPage, notModified, pullRequest, searchReply, type RecordedIssue } from "./fixtures/recorded-replies.ts"
 
 const source: GithubIssuesSource = { type: "github-issues", repo: REPO, labels: ["atelier:build"] }
@@ -25,6 +26,9 @@ function github(...replies: Array<(call: Call) => Response>) {
 const list = (items: RecordedIssue[], options?: { etag?: string; next?: string }) => () => listReply(items, options)
 const direct = (item: RecordedIssue) => () => new Response(JSON.stringify(item), { status: 200, headers: { "content-type": "application/json" } })
 const missing = () => () => new Response('{"message":"Not Found"}', { status: 404, headers: { "content-type": "application/json" } })
+const gone = () => () => new Response('{"message":"Gone"}', { status: 410, headers: { "content-type": "application/json" } })
+const redirected = (location: string, status = 301) => () => new Response(null, { status, headers: { location } })
+const noLocation = () => () => new Response(null, { status: 301 })
 const numbered: GithubIssuesSource = { type: "github-issues", repo: REPO, issueNumbers: [56, 57] }
 
 describe("github-issues", () => {
@@ -189,10 +193,74 @@ describe("github-issues", () => {
     ])
   })
 
-  test("a numbered source refuses a missing issue so the poll keeps its cursor", async () => {
-    const { request } = github(missing())
+  test("a numbered source treats a missing issue as absent so the rest is still read", async () => {
+    const primed = { primed: true, keys: [`${REPO}#56`], overLimit: false }
+    const { request, calls } = github(missing(), direct(issue(57)))
 
-    await assert.rejects(pollGithubIssues(numbered, undefined, request, now), /example-org\/example-repo#56 does not exist/)
+    const result = await pollGithubIssues(numbered, primed, request, now)
+
+    assert.deepEqual(result.events.map((event) => [event.kind, event.subject?.key]), [
+      ["item.unmatched", `${REPO}#56`],
+      ["item.matched", `${REPO}#57`],
+    ])
+    assert.equal(calls.length, 2)
+    assert.deepEqual(result.cursor, { primed: true, keys: [`${REPO}#57`], overLimit: false })
+  })
+
+  test("a numbered source reports a closed issue as unmatched", async () => {
+    const primed = { primed: true, keys: [`${REPO}#56`], overLimit: false }
+    const closed = { ...issue(56), state: "closed" }
+    const { request } = github(direct(closed))
+
+    const result = await pollGithubIssues({ ...numbered, issueNumbers: [56] }, primed, request, now)
+
+    assert.deepEqual(result.events.map((event) => [event.kind, event.subject?.key]), [
+      ["item.unmatched", `${REPO}#56`],
+    ])
+    assert.deepEqual(result.cursor, { primed: true, keys: [], overLimit: false })
+  })
+
+  test("a numbered source treats a 410 as absent like a 404", async () => {
+    const primed = { primed: true, keys: [`${REPO}#56`], overLimit: false }
+    const { request } = github(gone(), direct(issue(57)))
+
+    const result = await pollGithubIssues(numbered, primed, request, now)
+
+    assert.deepEqual(result.events.map((event) => [event.kind, event.subject?.key]), [
+      ["item.unmatched", `${REPO}#56`],
+      ["item.matched", `${REPO}#57`],
+    ])
+  })
+
+  test("a numbered source follows one 301 or 302 for a direct read", async () => {
+    const location = `https://api.github.com/repos/${REPO}/issues/56?moved=1`
+
+    for (const status of [301, 302]) {
+      const { request, calls } = github(redirected(location, status), direct(issue(56)))
+
+      const result = await pollGithubIssues({ ...numbered, issueNumbers: [56], includeExisting: true }, undefined, request, now)
+
+      assert.deepEqual(calls.map((call) => call.url), [
+        `https://api.github.com/repos/${REPO}/issues/56`,
+        location,
+      ])
+      assert.deepEqual(result.cursor, { primed: true, keys: [`${REPO}#56`], overLimit: false })
+    }
+  })
+
+  test("a numbered source does not follow a second redirect", async () => {
+    const location = `https://api.github.com/repos/${REPO}/issues/56?moved=1`
+    const { request, calls } = github(redirected(location), redirected(location))
+
+    await assert.rejects(pollGithubIssues({ ...numbered, issueNumbers: [56] }, undefined, request, now), /GitHub 301/)
+
+    assert.equal(calls.length, 2)
+  })
+
+  test("a numbered source refuses a redirect without a location", async () => {
+    const { request } = github(noLocation())
+
+    await assert.rejects(pollGithubIssues({ ...numbered, issueNumbers: [56] }, undefined, request, now), /example-org\/example-repo#56 redirected without a location/)
   })
 
   test("a numbered source skips a pull request", async () => {
@@ -287,5 +355,42 @@ describe("GithubIssuesMonitor", () => {
     assert.equal(wake.matches(numbered, payload(58), "issues"), false)
     assert.equal(wake.matches(numbered, payload(56), "pull_request"), false)
     assert.equal(wake.matches(numbered, payload(56, "other/repo"), "issues"), false)
+  })
+})
+
+describe("GithubIssuesSourceSchema", () => {
+  const base = { type: "github-issues" as const, repo: REPO }
+  const messages = (result: v.SafeParseResult<v.GenericSchema>) => result.issues?.map((issue) => issue.message)
+
+  test("accepts exactly one non-empty selector", () => {
+    assert.equal(v.safeParse(GithubIssuesSourceSchema, { ...base, labels: ["a"] }).success, true)
+    assert.equal(v.safeParse(GithubIssuesSourceSchema, { ...base, issueNumbers: [56] }).success, true)
+  })
+
+  test("refuses a stored source with neither selector", () => {
+    const result = v.safeParse(GithubIssuesSourceSchema, base)
+
+    assert.equal(result.success, false)
+    assert.deepEqual(messages(result), ["give either labels or issueNumbers for a github-issues monitor"])
+  })
+
+  test("refuses both selectors and either empty selector", () => {
+    const sources = [
+      { ...base, labels: ["a"], issueNumbers: [56] },
+      { ...base, labels: [], issueNumbers: [56] },
+      { ...base, labels: ["a"], issueNumbers: [] },
+    ]
+
+    for (const source of sources) assert.equal(v.safeParse(GithubIssuesSourceSchema, source).success, false)
+  })
+
+  test("refuses malformed issue numbers with the shared reason", () => {
+    const issueNumbers = [[0], [1.5], [56, 56], Array.from({ length: 101 }, (_, i) => i + 1)]
+
+    for (const numbers of issueNumbers) {
+      const result = v.safeParse(GithubIssuesSourceSchema, { ...base, issueNumbers: numbers })
+      assert.equal(result.success, false)
+      assert.deepEqual(messages(result), ["issueNumbers must be positive integers, at most 100, without duplicates"])
+    }
   })
 })

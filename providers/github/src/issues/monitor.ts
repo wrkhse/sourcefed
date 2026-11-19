@@ -1,21 +1,11 @@
-import { PollSourceError, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
+import { ISSUE_NUMBER_ERROR, PollSourceError, orderedIssueNumbers, toMonitorEvent, type MonitorCreateInput, type SourceInput } from "@sourcefed/core"
 import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
 import { DEFERRED, GithubClient, deferOnWait, githubToken } from "../api/client.ts"
 import { filterText } from "./events.ts"
 import { pollGithubIssues } from "./poll.ts"
-import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, ISSUE_NUMBER_ERROR, ISSUE_NUMBER_FILTERS_ERROR, type GithubIssuesSource } from "./schema.ts"
+import { GithubIssuesCursorSchema, GithubIssuesSourceSchema, ISSUE_NUMBER_FILTERS_ERROR, type GithubIssuesSource } from "./schema.ts"
 
 const REPO = /^[\w.-]+\/[\w.-]+$/
-const MAX_ISSUE_NUMBERS = 100
-
-/** A bounded, sorted list of distinct positive issue numbers, or undefined when raw is not one. */
-function orderedIssueNumbers(raw: unknown): number[] | undefined {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_ISSUE_NUMBERS) return undefined
-  if (!raw.every((number) => typeof number === "number" && Number.isInteger(number) && number > 0)) return undefined
-
-  const numbers = [...(raw as number[])].sort((a, b) => a - b)
-  return numbers.some((number, index) => index > 0 && number === numbers[index - 1]) ? undefined : numbers
-}
 
 function applyFilters(source: GithubIssuesSource, input: MonitorCreateInput): void {
   if (input.assignee) source.assignee = input.assignee

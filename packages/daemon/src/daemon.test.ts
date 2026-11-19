@@ -272,7 +272,7 @@ describe("monitor.create dispatch", () => {
   })
 
   test("refuses malformed issue numbers at the boundary", async () => {
-    const bad = [[0], [-1], [1.5], ["56"], Array.from({ length: 101 }, (_, i) => i + 1), Number.NaN]
+    const bad = [[0], [-1], [1.5], ["56"], [56, 56], Array.from({ length: 101 }, (_, i) => i + 1), Number.NaN]
 
     for (const issueNumbers of bad) {
       await assert.rejects(createWith({ issueNumbers }), /issueNumbers/)

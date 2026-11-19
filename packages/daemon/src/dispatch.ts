@@ -1,4 +1,4 @@
-import type { MonitorTarget } from "@sourcefed/core"
+import { ISSUE_NUMBER_ERROR, orderedIssueNumbers, type MonitorTarget } from "@sourcefed/core"
 import type { SourcefedDaemon } from "./daemon.ts"
 import { daemonHealth } from "./health.ts"
 import type { DaemonCreateInput } from "./types"
@@ -62,11 +62,8 @@ function createCreateInput(params: Record<string, unknown>): DaemonCreateInput {
     input.labels = params.labels
   }
   if (params.issueNumbers !== undefined) {
-    const numbers = params.issueNumbers
-    if (!Array.isArray(numbers) || numbers.length === 0 || numbers.length > 100 ||
-      !numbers.every((number) => typeof number === "number" && Number.isInteger(number) && number > 0)) {
-      throw new Error("issueNumbers must be an array of at most 100 positive integers")
-    }
+    const numbers = orderedIssueNumbers(params.issueNumbers)
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
     input.issueNumbers = numbers
   }
   if (params.includeExisting !== undefined) {

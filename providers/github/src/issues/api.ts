@@ -48,19 +48,27 @@ export async function listIssues(source: GithubIssuesSource, etag: string | unde
 }
 
 /**
- * Each named issue read directly. A missing issue is a refusal: a monitor that names one must
- * know it does not exist. Pull requests share the endpoint and are skipped like a list item.
+ * Each named issue read directly. Only open issues are listed, so a closed issue is absent
+ * like a missing or gone one: the comparison emits item.unmatched without failing the poll.
+ * A rename redirect is followed once; pull requests share the endpoint and are skipped.
  */
 export async function listNumberedIssues(source: GithubIssuesSource, request: GithubFetch): Promise<IssueListing> {
   const issues: GithubIssue[] = []
 
   for (const number of source.issueNumbers ?? []) {
     const url = `${API}/repos/${source.repo}/issues/${number}`
-    const response = await request(url, {})
-    if (response.status === 404) throw new PollSourceError(`GitHub issue ${source.repo}#${number} does not exist`)
+    let response = await request(url, {})
+
+    if (response.status === 301 || response.status === 302) {
+      const location = response.headers.get("location")
+      if (!location) throw new PollSourceError(`GitHub issue ${source.repo}#${number} redirected without a location`)
+      response = await request(location, {})
+    }
+
+    if (response.status === 404 || response.status === 410) continue
 
     const body = await githubBody(response, url)
-    if (!body?.pull_request) issues.push(toIssue(source.repo, body))
+    if (body?.state === "open" && !body.pull_request) issues.push(toIssue(source.repo, body))
   }
 
   return { status: "listed", listing: { overLimit: false, items: issues } }

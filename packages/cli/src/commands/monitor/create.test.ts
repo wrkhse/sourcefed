@@ -45,4 +45,20 @@ describe("monitor create flags", () => {
       /issue-numbers/,
     )
   })
+
+  test("refuses more than 100 issue numbers before dispatch", async () => {
+    const issueNumbers = Array.from({ length: 101 }, (_, i) => i + 1).join(",")
+
+    await assert.rejects(
+      createInput(["--source-type", "github-issues", "--issue-numbers", issueNumbers]),
+      /issueNumbers/,
+    )
+  })
+
+  test("refuses duplicate issue numbers before dispatch", async () => {
+    await assert.rejects(
+      createInput(["--source-type", "github-issues", "--issue-numbers", "56,56"]),
+      /issueNumbers/,
+    )
+  })
 })

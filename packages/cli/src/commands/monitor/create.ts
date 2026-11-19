@@ -1,3 +1,4 @@
+import { ISSUE_NUMBER_ERROR, orderedIssueNumbers } from "@sourcefed/core"
 import { flag } from "../../utils/flags.ts"
 import { printResult } from "../../utils/format.ts"
 import type { MonitorContext } from "./index.ts"
@@ -46,7 +47,9 @@ export async function create(context: MonitorContext): Promise<void> {
   if (issueNumbers) {
     const parts = issueNumbers.split(",").map((part) => part.trim())
     if (!parts.every((part) => /^[1-9]\d*$/.test(part))) throw new Error("--issue-numbers must be comma-separated positive integers")
-    input.issueNumbers = parts.map(Number)
+    const numbers = orderedIssueNumbers(parts.map(Number))
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
+    input.issueNumbers = numbers
   }
   if (context.args.includes("--include-existing")) input.includeExisting = true
   const prNumber = flag(context.args, "pr-number")
