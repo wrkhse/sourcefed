@@ -9,10 +9,11 @@ watching a pull request, host setup, MCP and every source.
 ## Install the CLI
 
 ```sh
-npm install --global @fdcn/sourcefed@0.5.2
+npm install --global @wrkhse/sourcefed@0.6.0-rc.3
 ```
 
-> Note: Sourcefed is moving to the `@wrkhse/sourcefed` npm scope; the stable pin above stays on `@fdcn/sourcefed` until the new scope is published.
+> This is a release candidate. The stable pin moves to
+> `@wrkhse/sourcefed` when 0.6.0 ships.
 
 ```text
 sourcefed daemon [--port PORT] [--host HOST]
@@ -80,13 +81,13 @@ OpenCode loads the server and TUI plugins from one entry:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
-{ "plugins": ["@fdcn/sourcefed@0.5.2"] }
+{ "plugins": ["@wrkhse/sourcefed@0.6.0-rc.3"] }
 ```
 
 Pi loads the extension named in the package's `pi` metadata:
 
 ```sh
-pi install npm:@fdcn/sourcefed@0.5.2
+pi install npm:@wrkhse/sourcefed@0.6.0-rc.3
 ```
 
 A host that loads entry points directly finds them here:
