@@ -6,8 +6,8 @@ const dir = await tempDir("sourcefed-it-setup-")
 const binDir = path.join(dir, "bin")
 const capture = path.join(dir, "args")
 const configHome = path.join(dir, "config")
-const cli = path.resolve("node_modules/@fdcn/sourcefed/dist/cli.js")
-const manifest = JSON.parse(readFileSync(path.resolve("node_modules/@fdcn/sourcefed/package.json"), "utf8"))
+const cli = path.resolve("node_modules/@wrkhse/sourcefed/dist/cli.js")
+const manifest = JSON.parse(readFileSync(path.resolve("node_modules/@wrkhse/sourcefed/package.json"), "utf8"))
 mkdirSync(binDir, { recursive: true })
 mkdirSync(path.join(configHome, "opencode"), { recursive: true })
 writeFileSync(path.join(configHome, "opencode", "cli.json"), JSON.stringify({ theme: { name: "gruvbox" }, plugins: ["existing"] }))
@@ -26,7 +26,7 @@ try {
   })
 
   const args = readFileSync(capture, "utf8").trim().split("\n")
-  const expected = ["plugin", "add", `@fdcn/sourcefed@${manifest.version}`]
+  const expected = ["plugin", "add", `@wrkhse/sourcefed@${manifest.version}`]
   if (args.join("\0") !== expected.join("\0")) {
     throw new Error(`unexpected OpenCode installer arguments: ${JSON.stringify(args)}`)
   }

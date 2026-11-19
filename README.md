@@ -132,6 +132,8 @@ The tap's formula pins 0.5.2. With npm instead, on Node 22.19 or later:
 npm install --global @fdcn/sourcefed@0.5.2
 ```
 
+> Note: Sourcefed is moving to the `@wrkhse/sourcefed` npm scope; the stable pin above stays on `@fdcn/sourcefed` until the new scope is published.
+
 Add it to OpenCode, Pi or both:
 
 ```sh

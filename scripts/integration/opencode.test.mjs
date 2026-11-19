@@ -8,7 +8,7 @@ const opencode = spawnSync("which", ["opencode"], { encoding: "utf8" }).stdout?.
 if (!opencode) throw new Error("OpenCode release integration requires the real host on PATH")
 
 const dir = await tempDir("sourcefed-it-opencode-")
-const packageDir = path.resolve("node_modules/@fdcn/sourcefed")
+const packageDir = path.resolve("node_modules/@wrkhse/sourcefed")
 const project = path.join(dir, "project")
 const state = path.join(dir, "state")
 const config = path.join(dir, "config")

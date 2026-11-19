@@ -18,7 +18,7 @@ export function homebrewOptions(args) {
 
 export function candidateFormula(source, version, sha256) {
   assert.match(source, /class Sourcefed < Formula/)
-  assert.match(source, /url "https:\/\/registry.npmjs.org\/@fdcn\/sourcefed\/-\/sourcefed-[\d.]+\.tgz"/)
+  assert.match(source, /url "https:\/\/registry.npmjs.org\/@wrkhse\/sourcefed\/-\/sourcefed-[\d.]+\.tgz"/)
   assert.match(source, /sha256 "[a-f0-9]{64}"/)
   return source.replace(/sourcefed-[\d.]+\.tgz/g, "sourcefed-" + version + ".tgz")
     .replace(/sha256 "[a-f0-9]{64}"/, 'sha256 "' + sha256 + '"')

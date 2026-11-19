@@ -45,7 +45,7 @@ test("a repacked registry tarball becomes the record's artifact, keeping the ver
 })
 
 test("version sync preserves manifest formatting", () => {
-  const source = '{\n  "name": "@fdcn/sourcefed",\n  "version": "0.3.8",\n  "peerDependenciesMeta": {\n    "typebox": { "optional": true }\n  },\n  "dependencies": { "x": { "version": "1.0.0" } }\n}\n'
+  const source = '{\n  "name": "@wrkhse/sourcefed",\n  "version": "0.3.8",\n  "peerDependenciesMeta": {\n    "typebox": { "optional": true }\n  },\n  "dependencies": { "x": { "version": "1.0.0" } }\n}\n'
   assert.equal(withVersion(source, "0.3.8"), source)
   assert.equal(withVersion(source, "0.4.0"), source.replace('"version": "0.3.8"', '"version": "0.4.0"'))
   assert.throws(() => withVersion("{}", "0.4.0"))
@@ -82,7 +82,7 @@ test("Homebrew upgrades only the one sourcefed keg installed from the release ta
 test("Homebrew requires explicit consent and prepares only a local formula", () => {
   for (const args of [[], ["--dry-run"], ["--confirm-real-homebrew", "--dry-run"]]) assert.throws(() => homebrewOptions(args))
   homebrewOptions(["--confirm-real-homebrew"])
-  const source = 'class Sourcefed < Formula\nurl "https://registry.npmjs.org/@fdcn/sourcefed/-/sourcefed-0.3.8.tgz"\nsha256 "' + "a".repeat(64) + '"\nend'
+  const source = 'class Sourcefed < Formula\nurl "https://registry.npmjs.org/@wrkhse/sourcefed/-/sourcefed-0.3.8.tgz"\nsha256 "' + "a".repeat(64) + '"\nend'
   const result = candidateFormula(source, "0.4.0", "b".repeat(64))
   assert.match(result, /sourcefed-0\.4\.0\.tgz/)
   assert.ok(result.includes("b".repeat(64)))
@@ -103,7 +103,7 @@ test("host type gate accepts only pinned upstream diagnostics", () => {
   assert.deepEqual(accepted.unexpected, [])
   assert.equal(Object.keys(accepted.accepted).length, 4)
   for (const line of [
-    "node_modules/@fdcn/sourcefed/dist.dts/adapters/pi/src/index.d.ts(1,35): error TS2307: Cannot find module 'x'.",
+    "node_modules/@wrkhse/sourcefed/dist.dts/adapters/pi/src/index.d.ts(1,35): error TS2307: Cannot find module 'x'.",
     "contract.ts(10,1): error TS2578: Unused '@ts-expect-error' directive.",
     "node_modules/@opentui/core/lib/KeyHandler.d.ts(60,5): error TS2416: Property 'on' in type 'InternalKeyHandler' is not assignable.",
     "node_modules/@google/genai/dist/node/node.d.ts(3,29): error TS2307: Cannot find module 'other'.",

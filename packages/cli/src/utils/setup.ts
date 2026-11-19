@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url"
 
 export function setupSpec(): string {
   const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { name?: string; version?: string }
-  if (manifest.name === "@fdcn/sourcefed" && manifest.version) return `@fdcn/sourcefed@${manifest.version}`
-  return "@fdcn/sourcefed@latest"
+  if (manifest.name === "@wrkhse/sourcefed" && manifest.version) return `@wrkhse/sourcefed@${manifest.version}`
+  return "@wrkhse/sourcefed@latest"
 }
 
 export async function setupHost(name: string, args: string[], spec: string): Promise<boolean> {

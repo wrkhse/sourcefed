@@ -45,7 +45,7 @@ async function main() {
 async function tap(version, release) {
   const directory = process.env.TAP_DIR ?? path.join(os.homedir(), "Documents/Projects/taps")
   assert.equal(git(directory, ["status", "--porcelain"]).trim(), "", "tap checkout has user changes")
-  const metadata = await fetch(`https://registry.npmjs.org/@fdcn%2fsourcefed/${version}`, { signal: AbortSignal.timeout(20000) })
+  const metadata = await fetch(`https://registry.npmjs.org/@wrkhse%2fsourcefed/${version}`, { signal: AbortSignal.timeout(20000) })
   assert.equal(metadata.status, 200)
   const distribution = (await metadata.json()).dist
   assert.equal(distribution.integrity, release.integrity)
@@ -73,7 +73,7 @@ async function dotfiles(version) {
     const full = path.join(directory, file)
     const source = await readFile(full, "utf8").catch((error) => { if (error.code === "ENOENT") return; throw error })
     if (source === undefined) continue
-    const next = source.replace(/@fdcn\/sourcefed@[\d.]+/g, `@fdcn/sourcefed@${version}`)
+    const next = source.replace(/@wrkhse\/sourcefed@[\d.]+/g, `@wrkhse/sourcefed@${version}`)
     if (source === next) continue
     await writeFile(full, next)
     changed.push(file)
@@ -85,7 +85,7 @@ async function dotfiles(version) {
 }
 
 async function pi(version) {
-  mutate("pi", ["install", `npm:@fdcn/sourcefed@${version}`], root)
+  mutate("pi", ["install", `npm:@wrkhse/sourcefed@${version}`], root)
 }
 
 function git(directory, args) {

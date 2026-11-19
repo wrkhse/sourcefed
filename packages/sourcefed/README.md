@@ -1,4 +1,4 @@
-# @fdcn/sourcefed
+# @wrkhse/sourcefed
 
 SourceFed brings changes from GitHub, Jira, Slack and feeds into an agent's
 session as they happen. This package holds the `sourcefed` CLI and daemon, the
@@ -11,6 +11,8 @@ watching a pull request, host setup, MCP and every source.
 ```sh
 npm install --global @fdcn/sourcefed@0.5.2
 ```
+
+> Note: Sourcefed is moving to the `@wrkhse/sourcefed` npm scope; the stable pin above stays on `@fdcn/sourcefed` until the new scope is published.
 
 ```text
 sourcefed daemon [--port PORT] [--host HOST]
@@ -27,7 +29,7 @@ sourcefed setup [opencode|pi]
 A program reads its monitors through the daemon client:
 
 ```ts
-import { connectDaemonClient } from "@fdcn/sourcefed/daemon"
+import { connectDaemonClient } from "@wrkhse/sourcefed/daemon"
 
 const client = await connectDaemonClient({ name: "my-script" })
 
@@ -39,12 +41,12 @@ const result = await client.request("monitor.list", {
 await client.close()
 ```
 
-- `@fdcn/sourcefed`: the CLI, also the `sourcefed` binary.
-- `@fdcn/sourcefed/core`: monitors, sources, events and cursors, such as
+- `@wrkhse/sourcefed`: the CLI, also the `sourcefed` binary.
+- `@wrkhse/sourcefed/core`: monitors, sources, events and cursors, such as
   `MonitorService`.
-- `@fdcn/sourcefed/core/storage`: the JSON store and event queue.
-- `@fdcn/sourcefed/daemon`: the daemon service and its HTTP and SSE client.
-- `@fdcn/sourcefed/mcp`: the MCP server, `createSourcefedMcp` and
+- `@wrkhse/sourcefed/core/storage`: the JSON store and event queue.
+- `@wrkhse/sourcefed/daemon`: the daemon service and its HTTP and SSE client.
+- `@wrkhse/sourcefed/mcp`: the MCP server, `createSourcefedMcp` and
   `createSourcefedStdio`.
 
 The daemon's protocol and delivery guarantees are in
