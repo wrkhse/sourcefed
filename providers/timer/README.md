@@ -5,8 +5,17 @@ host's clock into the source a monitor stores: a one-shot with its `due`
 instant, or an interval with its period and `anchor`. Each poll compares the
 stored source with the host's clock and returns `timer.fired` or
 `timer.missed`; a one-shot's firing ends its monitor. Its modules are pure and
-take `now` as an argument. `TimerMonitor` is the source as a core monitor; the
-daemon's registry does not list it.
+take `now` as an argument. `TimerMonitor` is the source as a core monitor,
+registered under `timer` in the daemon.
+
+Timer monitors require sourcefed 0.6.0-rc.2 or later. The [0.6.0-rc.3
+release][rc3] provides a candidate tarball and checksums. With a compatible
+CLI and daemon:
+
+```sh
+sourcefed monitor create --name deploy --source-type timer \
+  --job "check the deploy" --in 20m --timezone Asia/Kolkata
+```
 
 ```mermaid
 flowchart LR
@@ -180,3 +189,5 @@ v.parse(TimerSourceSchema, {
 
 The cursor, `{ checkedAt }`, is the instant up to which firings have been
 considered.
+
+[rc3]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.3
