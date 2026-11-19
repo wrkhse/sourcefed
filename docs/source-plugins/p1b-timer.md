@@ -177,12 +177,18 @@ change. Minutes and hours are elapsed time.
 
 **Poll.** A one-shot fires when `now` reaches `due`: `timer.fired` when it is
 within 2 minutes of `due`, otherwise `timer.fired` with `late` and the delay.
-Either way the poll is terminal.
+Either way the poll is terminal. A late one-shot is `timer.fired` with `late`,
+because it fires only once; a late interval firing is `timer.missed`, as schedule's
+is, because later firings follow it.
 
 An interval computes the firings in (`checkedAt`, `now`] from the anchor and the
 period, so a long gap needs no cap. One firing on time is `timer.fired`. More
 than one, or a late one, is a single `timer.missed` that names the count and the
 latest time. The first poll does not prime: its window starts at the anchor.
+
+After a sleep, the first poll on wake sees the whole gap: a one-shot due during it
+fires once, late, and ends; an interval gives one `timer.missed` for the firings it
+slept through.
 
 An event's id is fixed by its firing, `timer.fired:<key>:<at>`, so a repeat of the
 same firing is deduplicated while it waits in the queue. `defaultPollIntervalSec`
@@ -238,6 +244,7 @@ pollTimer(
   host clock: a one-shot due during the downtime fires once, late, then ends;
   a second restart fires nothing.
 - Sleep, as a poll gap.
+- A past `at`: with `now` after it, the monitor's first poll fires once and ends.
 - An interval across a DST change.
 - A CI-only integration script that runs a packed daemon with a real clock
   across a restart.
@@ -262,6 +269,22 @@ Never twice holds across restarts and sleep. A crash in the instant between the
 queue write and the store write, after the session already acknowledged the
 event, can repeat it once: closing that needs one transaction across two files,
 which this slice does not build.
+
+## PR cut
+
+Each pull request is green on its own and revertable.
+
+1. Core: terminal events are delivered, starting with a test that fails on main.
+2. SDK: `build` receives the host clock; the seven goldens stay byte-equal.
+3. Timer schema and parsing: `providers/timer` with its schema, durations and
+   zoned resolution, as pure modules with their tests; not registered yet.
+4. Poll and firings: one-shot and interval polls, events, coalescing, and the
+   restart and sleep tests.
+5. Wiring: the registry, create input (`in`, `at`, `every`), CLI flags, the MCP
+   and adapter tool descriptions, Pi's icon, the build entry, the tests that list
+   the source types, the skill and README source lists, and the CI integration
+   script. The timer is reachable through the daemon from here.
+6. 0.6.0-rc.2 and its recording; this page becomes Implemented.
 
 [#29]: https://github.com/wrkhse/sourcefed/pull/29
 [#31]: https://github.com/wrkhse/sourcefed/issues/31
