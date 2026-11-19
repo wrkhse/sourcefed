@@ -116,9 +116,6 @@ occupy Bun’s process-wide fetch slots needed by providers and other plugins. S
 
 ### Chauffeur triage
 
-**Status:** the daemon does not wire Chauffeur triage yet; it arrives with the pinned
-@fdcn/chauffeur client. The rest of this section describes it as it will run.
-
 When a Chauffeur v2 daemon runs, every event is triaged at the daemon's sink before it is
 queued, so OpenCode, Pi, MCP and the CLI see the same filtered stream. Only an explicit
 `withhold: "event"` intent drops an event; a missing daemon, a v1 daemon, an error or a
@@ -328,6 +325,16 @@ git diff --exit-code -- providers/jira/src/fixtures/golden.ts
 ```
 
 See [source plugins](docs/source-plugins/).
+
+![OpenCode with sourcefed 0.6.0-rc.1: a real GitHub issue match and a real
+minute-schedule event are delivered, the model checks each monitor's status
+and stops it, and the daemon log shows the matching
+deliveries](docs/media/p0-sdk.gif)
+
+<sub>The 0.6.0-rc.1 candidate in OpenCode, on a free model. The GitHub read
+(`includeExisting` on a public issue) and the clock are real, and so is the
+model's reaction with the monitor tools; the wait between the events is cut. It
+shows two of the seven sources; the golden replays cover all seven.</sub>
 
 ### Integration Tests
 

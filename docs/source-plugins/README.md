@@ -10,7 +10,7 @@ recording.
 
 | Slice | Status | You can |
 | --- | --- | --- |
-| [P0 SDK and golden tests][p0] | In progress | Run the seven providers on the SDK |
+| [P0 SDK and golden tests][p0] | Implemented (0.6.0-rc.1) | Run the seven providers on the SDK |
 | P1 schedule, jira-query, jira | Planned (waits on barn) | Run them as plugins |
 | P1b timer | Planned (after the rc) | Set one-shot and interval timers as monitors |
 | P2 yab | Planned (waits on barn) | Read Yab with no process per poll |
@@ -30,7 +30,9 @@ What each later slice builds:
   webhook verified by barn. It needs barn B4.
 - **P4** gives slack its limiter, user cache and webhook. It needs barn B4.
 
-P0 is merged to main. It waits for its release candidate and recording.
+P0 is in [0.6.0-rc.1][rc]; its [recording][p0-recording] shows two real events.
 
 [plan]: https://github.com/wrkhse/sourcefed/issues/31
 [p0]: p0-sdk.md
+[p0-recording]: p0-sdk.md#recording
+[rc]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.1
