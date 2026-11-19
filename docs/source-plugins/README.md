@@ -17,6 +17,7 @@ recording.
 | P3 github-issues and github | Planned (waits on barn) | Use one budget per token |
 | P4 slack | Planned (waits on barn) | Slack with its limiter, user cache, webhook |
 | P5 your own plugins | Planned | Load plugins from `~/.config/sourcefed/plugins/` |
+| [P6 source authoring API][p6] | Planned | Author a source in one definition |
 
 What each later slice builds:
 
@@ -37,4 +38,5 @@ P0 is in [0.6.0-rc.1][rc]; its [recording][p0-recording] shows two real events.
 [p0-recording]: p0-sdk.md#recording
 [p1b-recording]: p1b-timer.md#recording
 [p1b]: p1b-timer.md
+[p6]: p6-authoring-api.md
 [rc]: https://github.com/wrkhse/sourcefed/releases/tag/v0.6.0-rc.1
