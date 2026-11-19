@@ -12,7 +12,7 @@ recording.
 | --- | --- | --- |
 | [P0 SDK and golden tests][p0] | Implemented (0.6.0-rc.1) | Run the seven providers on the SDK |
 | P1 schedule, jira-query, jira | Planned (waits on barn) | Run them as plugins |
-| [P1b timer][p1b] | Planned | Set one-shot and interval timers as monitors |
+| [P1b timer][p1b] | In progress (0.6.0-rc.2) | Set one-shot and interval timers as monitors |
 | P2 yab | Planned (waits on barn) | Read Yab with no process per poll |
 | P3 github-issues and github | Planned (waits on barn) | Use one budget per token |
 | P4 slack | Planned (waits on barn) | Slack with its limiter, user cache, webhook |
