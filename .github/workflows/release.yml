@@ -14,6 +14,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact candidate version, e.g. 0.6.0-rc.3'
+        required: true
+        type: string
+      tag:
+        description: 'Existing Git tag for that candidate, e.g. v0.6.0-rc.3'
+        required: true
+        type: string
 
 # Each job asks for what it needs, so neither holds the other's rights.
 permissions:
@@ -84,3 +94,108 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+
+  # Manual, candidates only. Publishes the checksum-verified tarball from the
+  # GitHub prerelease under the rc dist-tag with OIDC; latest is never moved.
+  publish-rc:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate that the inputs name one candidate
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]] || {
+            echo "::error::version must be a prerelease such as 0.6.0-rc.3, got '$VERSION'"
+            exit 1
+          }
+          [[ "$TAG" == "v$VERSION" ]] || {
+            echo "::error::tag must be v$VERSION, got '$TAG'"
+            exit 1
+          }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm 11 for trusted publishing
+        run: npm install -g npm@^11.15.0
+
+      - name: Download the candidate tarball and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rc"
+          cd "$RUNNER_TEMP/rc"
+          prerelease=$(gh release view "$TAG" --repo "$GH_REPO" --json isPrerelease --jq .isPrerelease)
+          [[ "$prerelease" == "true" ]] || {
+            echo "::error::$TAG is not a prerelease"
+            exit 1
+          }
+          gh release download "$TAG" --repo "$GH_REPO" \
+            --pattern "fdcn-sourcefed-$VERSION.tgz" \
+            --pattern "SHA256SUMS" \
+            --dir "$RUNNER_TEMP/rc"
+          test -f "fdcn-sourcefed-$VERSION.tgz"
+          test -f "SHA256SUMS"
+          test "$(wc -l < SHA256SUMS)" -eq 1
+          grep -Eq '^[0-9a-f]{64}  [^[:space:]]+\.tgz$' SHA256SUMS
+          [[ "$(awk 'NR == 1 {print $2}' SHA256SUMS)" == "fdcn-sourcefed-$VERSION.tgz" ]] || {
+            echo "::error::SHA256SUMS does not name fdcn-sourcefed-$VERSION.tgz"
+            exit 1
+          }
+          shasum -a 256 -c SHA256SUMS
+
+      - name: Refuse a version that is already on npm
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/rc"
+          npm view @fdcn/sourcefed dist-tags.latest > "$RUNNER_TEMP/rc/latest-before.txt"
+          integrity="sha512-$(openssl dgst -sha512 -binary "fdcn-sourcefed-$VERSION.tgz" | openssl base64 -A)"
+          if npm view "@fdcn/sourcefed@$VERSION" dist.integrity > "$RUNNER_TEMP/rc/published-integrity.txt" 2> "$RUNNER_TEMP/rc/npm-view.err"; then
+            published=$(cat "$RUNNER_TEMP/rc/published-integrity.txt")
+            if [[ "$published" != "$integrity" ]]; then
+              echo "::error::@fdcn/sourcefed@$VERSION is already on npm with different bytes; refusing to publish"
+              exit 1
+            fi
+            echo "::error::@fdcn/sourcefed@$VERSION is already on npm; refusing to republish or change a dist-tag"
+            exit 1
+          fi
+          grep -q 'E404' "$RUNNER_TEMP/rc/npm-view.err" || {
+            echo "::error::could not check npm for an existing $VERSION"
+            cat "$RUNNER_TEMP/rc/npm-view.err"
+            exit 1
+          }
+
+      - name: Publish the verified tarball under rc
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          set -euo pipefail
+          [[ -z "${NODE_AUTH_TOKEN:-}" && -z "${NPM_TOKEN:-}" ]] || {
+            echo "::error::the rc job publishes with OIDC only; no npm token is allowed"
+            exit 1
+          }
+          npm publish "fdcn-sourcefed-$VERSION.tgz" --tag rc --access public --provenance
+          [[ "$(npm view @fdcn/sourcefed dist-tags.latest)" == "$(cat "$RUNNER_TEMP/rc/latest-before.txt")" ]] || {
+            echo "::error::publishing moved the latest dist-tag"
+            exit 1
+          }
+          [[ "$(npm view @fdcn/sourcefed dist-tags.rc)" == "$VERSION" ]] || {
+            echo "::error::the rc dist-tag is not $VERSION after publishing"
+            exit 1
+          }
