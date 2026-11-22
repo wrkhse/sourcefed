@@ -1,10 +1,13 @@
 # SourceFed
 
-SourceFed brings changes from GitHub, Jira, Slack and your feeds into your
-agent's session as they happen. The agent opens a pull request, creates a monitor
-for it and moves on. When CI fails, a reviewer comments or the branch conflicts,
-the event arrives in the session as a message and the agent acts on it. Nobody
-pastes a log or reminds the agent to check the PR.
+SourceFed is a source event manager. It takes in events from every source
+(GitHub, Jira, Slack, timers and your feeds) and delivers them to your agents as
+they happen.
+
+The agent opens a pull request, creates a monitor for it and moves on. When
+CI fails, a reviewer comments or the branch conflicts, the event arrives in the
+session as a message and the agent acts on it. Nobody pastes a log or reminds
+the agent to check the PR.
 
 A monitor watches one thing:
 
@@ -373,6 +376,8 @@ channel. MIT licensed; see [LICENSE](LICENSE).
 - [ ] Load source plugins from outside the package
 - [ ] The daemon, sources and connections as three rings
       ([RFC #56](https://github.com/wrkhse/sourcefed/issues/56))
+- [ ] Sources as Luau modules on a Rust host, reached through tack
+      ([workhorse#56](https://github.com/wrkhse/workhorse/issues/56))
 
 ## More
 
