@@ -230,7 +230,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashSet, hash_map::DefaultHasher};
+    use std::hash::{Hash, Hasher};
 
     use proptest::{prop_assert_eq, proptest};
     use serde_json::error::Category;
@@ -356,6 +357,15 @@ mod tests {
 
         assert_eq!(event, duplicate);
         assert_ne!(event, other);
+
+        let hash_of = |event: &Event| {
+            let mut hasher = DefaultHasher::new();
+            event.hash(&mut hasher);
+
+            hasher.finish()
+        };
+
+        assert_ne!(hash_of(&event), hash_of(&other));
 
         let events = HashSet::from([event.clone(), duplicate, other.clone()]);
 
