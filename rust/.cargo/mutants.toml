@@ -1,0 +1,4 @@
+test_workspace = true
+test_tool = "nextest"
+exclude_globs = []
+exclude_re = []
