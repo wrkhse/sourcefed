@@ -1,23 +1,42 @@
+//! `sourcefed-core` is the model of sourcefed, a source event manager. It holds
+//! the types and the [`Source`] contract only, with no I/O. Each poll resumes
+//! from a saved [`Position`], returns a bounded batch of [`Event`]s and names
+//! its next step as a typed [`Next`], so polling stays safe across restarts.
+
+/// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;
+/// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
+/// The saved place a source resumes polling from.
 pub mod position;
+/// The [`Source`] contract and the request and outcome of one poll.
 pub mod source;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use position::Position;
-pub use source::{PollError, PollOutcome, PollRequest, Source, SourceName};
+pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};
 
+/// Maximum length in bytes of an event ID or a subject key.
 pub const MAX_ID_LEN: usize = 256;
+/// Maximum length in bytes of a [`Position`].
 pub const MAX_POSITION_LEN: usize = 4096;
+/// Maximum length in bytes of an event summary.
 pub const MAX_SUMMARY_LEN: usize = 512;
 
+/// Why a value fails validation; `field` names the value that failed.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ModelError {
+    /// The value has no bytes.
     #[error("{field} is empty")]
     Empty { field: &'static str },
+    /// The text exceeds `limit` bytes.
     #[error("{field} exceeds {limit} bytes")]
     TooLong { field: &'static str, limit: usize },
+    /// The collection holds more than `limit` items.
+    #[error("{field} exceeds {limit} items")]
+    TooMany { field: &'static str, limit: usize },
+    /// The value breaks the rule that `reason` states.
     #[error("{field} {reason}")]
     Invalid {
         field: &'static str,
@@ -44,4 +63,15 @@ pub(crate) fn validate_text(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn bounded_text() -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::strategy::Strategy;
+
+    r"(?s:.){0,300}".prop_map(|mut text| {
+        text.truncate(text.floor_char_boundary(300));
+
+        text
+    })
 }
