@@ -33,7 +33,10 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
             .collect()
     };
 
-    let mut first = follow(30);
+    // The first poll saves the next firing and the second prints it, so eight
+    // one-second polls end the run in about seven seconds even if no event
+    // ever arrives.
+    let mut first = follow(8);
     let mut stdout = BufReader::new(first.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
@@ -59,8 +62,9 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     let rest = remaining_ids(&mut stdout);
 
     assert!(first.wait().unwrap().success());
-    // Thirty one-second polls would take far longer than a stop.
-    assert!(stopping.elapsed() < Duration::from_secs(10));
+    // The six polls left after the first event would take about six seconds;
+    // a stop ends the run within one.
+    assert!(stopping.elapsed() < Duration::from_secs(3));
     assert!(!rest.contains(&id));
 
     let mut second = follow(3);
