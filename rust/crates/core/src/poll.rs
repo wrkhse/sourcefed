@@ -19,29 +19,59 @@ pub const DEFAULT_BACKOFF_CAP_SECS: u64 = 300;
 const ITERATIONS_PER_POLL: u64 =
     DEFAULT_BACKOFF_CAP_SECS.div_ceil(MAX_WAIT_SECS) + 1;
 
+/// A clock reading outside the timestamp range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ClockError {
+    /// The reading is earlier than [`Timestamp::MIN`].
+    #[error("past clock out of range")]
+    Past,
+    /// The reading is later than [`Timestamp::MAX`].
+    #[error("future clock out of range")]
+    Future,
+}
+
 /// Supplies time and sleep to the poll engine without an async runtime.
 pub trait Clock: Send + Sync {
     /// Returns the current instant.
-    fn now(&self) -> Timestamp;
+    ///
+    /// # Errors
+    /// Returns [`ClockError::Past`] if the reading is before the timestamp
+    /// range, or [`ClockError::Future`] if it is after the range.
+    fn now(&self) -> Result<Timestamp, ClockError>;
     /// Waits for the requested duration.
     fn sleep(&self, duration: Duration);
 }
 
 /// Reads wall-clock time and sleeps on the calling thread.
-///
-/// Falls back to [`Timestamp::MAX`] for an unrepresentable wall-clock reading,
-/// so a far-future clock reaches any scheduled due time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> Timestamp {
-        Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::MAX)
+    fn now(&self) -> Result<Timestamp, ClockError> {
+        timestamp_from(SystemTime::now())
     }
 
     fn sleep(&self, duration: Duration) {
         std::thread::sleep(duration);
     }
+}
+
+fn timestamp_from(system_now: SystemTime) -> Result<Timestamp, ClockError> {
+    Timestamp::try_from(system_now).map_err(|_| {
+        // If the platform cannot represent a bound, the epoch still tells
+        // which side of the timestamp range this failed reading is on.
+        let min =
+            SystemTime::try_from(Timestamp::MIN).unwrap_or(SystemTime::UNIX_EPOCH);
+        let max =
+            SystemTime::try_from(Timestamp::MAX).unwrap_or(SystemTime::UNIX_EPOCH);
+        let nearest = system_now.max(min).min(max);
+
+        if system_now.cmp(&nearest).is_lt() {
+            ClockError::Past
+        } else {
+            ClockError::Future
+        }
+    })
 }
 
 /// A retry delay that starts at the base and doubles up to the cap.
@@ -101,7 +131,7 @@ impl Backoff {
 pub enum EngineState {
     /// The engine has a poll scheduled, which may be in the future.
     Running,
-    /// The engine observed a stop request.
+    /// The engine observed a stop request or an out-of-range past clock reading.
     Stopped,
     /// The source finished.
     Ended,
@@ -142,6 +172,18 @@ enum Schedule {
     Ended,
 }
 
+impl Schedule {
+    fn after_clock_error(error: ClockError) -> Self {
+        let (schedule, action) = match error {
+            ClockError::Past => (Self::Stopped, "polling stopped"),
+            ClockError::Future => (Self::Due(Timestamp::MAX), "polling deferred"),
+        };
+        tracing::warn!(reason = %error, "{action}");
+
+        schedule
+    }
+}
+
 /// Polls one source at a time and saves fresh events with the source position.
 ///
 /// The store owns a bounded pending queue for this engine's position key.
@@ -159,9 +201,11 @@ pub struct PollEngine {
 }
 
 impl PollEngine {
-    /// Creates an engine whose first poll is due immediately.
+    /// Creates an engine whose first poll is due at the current clock reading.
     ///
     /// The retry base is the poll interval, limited by the default cap.
+    /// An out-of-range clock reading stops or defers the engine as described
+    /// in [`PollEngine::run`].
     ///
     /// # Errors
     /// Returns [`ModelError::Invalid`] if the source's name differs from
@@ -182,7 +226,9 @@ impl PollEngine {
         let cap = Duration::from_secs(DEFAULT_BACKOFF_CAP_SECS);
         let base = Duration::from_secs(config.poll_interval.as_secs()).min(cap);
         let backoff = Backoff::new(base, cap)?;
-        let schedule = Schedule::Due(clock.now());
+        let schedule = clock
+            .now()
+            .map_or_else(Schedule::after_clock_error, Schedule::Due);
         let key = PositionKey {
             monitor: config.id,
             source: config.source,
@@ -248,6 +294,11 @@ impl PollEngine {
     /// after sleeping. If the due time has not arrived, the iteration counts
     /// toward the iteration budget but not the poll budget.
     ///
+    /// An out-of-range past clock reading stops the engine with a
+    /// `polling stopped` warning. An out-of-range future reading defers polling
+    /// to [`Timestamp::MAX`] with a `polling deferred` warning. Neither
+    /// reading counts as due.
+    ///
     /// Source failures schedule a retry with backoff and do not return an error.
     ///
     /// # Errors
@@ -259,6 +310,7 @@ impl PollEngine {
     pub fn run(&mut self, max_polls: u32) -> Result<EngineState, EngineError> {
         let max_iterations =
             u64::from(max_polls).saturating_mul(ITERATIONS_PER_POLL);
+        let max_wait = Duration::from_secs(MAX_WAIT_SECS);
         let mut polls = 0_u32;
 
         for _ in 0..max_iterations {
@@ -271,19 +323,26 @@ impl PollEngine {
                 break;
             }
 
-            let mut now = self.clock.now();
+            let mut now = self.read_clock();
 
-            if now < due {
-                let remaining = due.duration_since(now).unsigned_abs();
-                self.clock
-                    .sleep(remaining.min(Duration::from_secs(MAX_WAIT_SECS)));
-                now = self.clock.now();
+            match now {
+                Ok(reading) if reading < due => {
+                    let remaining = due.duration_since(reading).unsigned_abs();
+                    self.clock.sleep(remaining.min(max_wait));
+                    now = self.read_clock();
+                }
+                Err(ClockError::Future) => self.clock.sleep(max_wait),
+                Ok(_) | Err(ClockError::Past) => {}
             }
 
             if self.stop.is_stopped() {
                 self.schedule = Schedule::Stopped;
                 break;
             }
+
+            let Ok(now) = now else {
+                break;
+            };
 
             if now < due {
                 continue;
@@ -300,6 +359,12 @@ impl PollEngine {
         Ok(self.state())
     }
 
+    fn read_clock(&mut self) -> Result<Timestamp, ClockError> {
+        self.clock
+            .now()
+            .inspect_err(|&error| self.schedule = Schedule::after_clock_error(error))
+    }
+
     fn poll(&mut self, now: Timestamp) -> Result<(), StoreError> {
         let request = PollRequest {
             now,
@@ -311,12 +376,13 @@ impl PollEngine {
         }
 
         self.backoff.fail();
-        let due = self
-            .clock
-            .now()
-            .checked_add(self.backoff.delay())
-            .unwrap_or(Timestamp::MAX);
-        self.schedule = Schedule::Due(due);
+
+        if let Ok(now) = self.read_clock() {
+            let due = now
+                .checked_add(self.backoff.delay())
+                .unwrap_or(Timestamp::MAX);
+            self.schedule = Schedule::Due(due);
+        }
 
         Ok(())
     }
@@ -353,13 +419,20 @@ mod tests {
     #[derive(Default)]
     struct FakeClock {
         now: Mutex<Timestamp>,
+        readings: Mutex<VecDeque<Result<Timestamp, ClockError>>>,
         sleeps: Mutex<Vec<Duration>>,
         stop_on_sleep: Mutex<Option<StopHandle>>,
     }
 
     impl Clock for FakeClock {
-        fn now(&self) -> Timestamp {
-            *self.now.lock().unwrap()
+        fn now(&self) -> Result<Timestamp, ClockError> {
+            let reading = self.readings.lock().unwrap().pop_front();
+
+            if let Some(reading) = reading {
+                return reading;
+            }
+
+            Ok(*self.now.lock().unwrap())
         }
 
         fn sleep(&self, duration: Duration) {
@@ -477,7 +550,7 @@ mod tests {
     #[test]
     fn system_clock_reads_the_current_time() {
         let before = Timestamp::now();
-        let now = SystemClock.now();
+        let now = SystemClock.now().unwrap();
         let after = Timestamp::now();
 
         assert!(before <= now);
@@ -485,9 +558,8 @@ mod tests {
     }
 
     #[test]
-    fn system_clock_does_not_use_the_fallback_in_normal_runs() {
-        // The out-of-range fallback is unreachable with a normal wall clock.
-        assert_ne!(SystemClock.now(), Timestamp::MAX);
+    fn system_clock_returns_a_representable_reading_in_normal_runs() {
+        assert_ne!(SystemClock.now().unwrap(), Timestamp::MAX);
     }
 
     #[test]
@@ -497,6 +569,84 @@ mod tests {
         SystemClock.sleep(duration);
 
         assert!(start.elapsed() >= duration);
+    }
+
+    #[test]
+    fn timestamp_from_rejects_a_reading_before_the_minimum() {
+        let min = SystemTime::try_from(Timestamp::MIN).unwrap();
+        let before = min.checked_sub(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(timestamp_from(before), Err(ClockError::Past));
+    }
+
+    #[test]
+    fn timestamp_from_rejects_a_reading_after_the_maximum() {
+        let max = SystemTime::try_from(Timestamp::MAX).unwrap();
+        let after = max.checked_add(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(timestamp_from(after), Err(ClockError::Future));
+    }
+
+    #[test]
+    fn timestamp_from_converts_a_representable_reading() {
+        assert_eq!(timestamp_from(SystemTime::UNIX_EPOCH), Ok(at(0)));
+    }
+
+    #[test]
+    fn an_out_of_range_past_reading_stops_without_polling() {
+        let mut f = Fixture::new(5, vec![Ok(outcome(Next::Done))]);
+        f.clock
+            .readings
+            .lock()
+            .unwrap()
+            .push_back(Err(ClockError::Past));
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
+        assert_eq!(f.requests(), []);
+        assert_eq!(f.sleeps(), []);
+    }
+
+    #[test]
+    fn an_out_of_range_future_reading_waits_without_polling() {
+        let mut f = Fixture::new(5, vec![Ok(outcome(Next::Done))]);
+        f.clock
+            .readings
+            .lock()
+            .unwrap()
+            .push_back(Err(ClockError::Future));
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
+        assert_eq!(f.sleeps(), [Duration::from_secs(10)]);
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
+        assert_eq!(f.sleeps(), [Duration::from_secs(10); 32]);
+        assert_eq!(f.requests(), []);
+    }
+
+    #[test]
+    fn an_out_of_range_reading_after_sleep_does_not_count_as_due() {
+        for (error, state) in [
+            (ClockError::Past, EngineState::Stopped),
+            (ClockError::Future, EngineState::Running),
+        ] {
+            let mut f = Fixture::new(5, vec![Ok(outcome(Next::Due(at(5))))]);
+            f.engine.run(1).unwrap();
+            f.clock
+                .readings
+                .lock()
+                .unwrap()
+                .extend([Ok(at(0)), Err(error)]);
+
+            assert_eq!(f.engine.run(1).unwrap(), state);
+            assert_eq!(f.sleeps(), [Duration::from_secs(5)]);
+            assert_eq!(
+                f.requests(),
+                [PollRequest {
+                    now: at(0),
+                    position: None
+                }]
+            );
+        }
     }
 
     #[test]
