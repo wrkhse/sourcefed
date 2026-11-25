@@ -1,7 +1,7 @@
-//! `sourcefed-core` is the model of sourcefed, a source event manager. It holds
-//! the types and the [`Source`] contract only, with no I/O. Each poll resumes
-//! from a saved [`Position`], returns a bounded batch of [`Event`]s and names
-//! its next step as a typed [`Next`], so polling stays safe across restarts.
+//! `sourcefed-core` holds the model and [`Source`] contract for sourcefed.
+//! Each poll resumes from a [`Position`], returns a bounded batch of [`Event`]s
+//! and names its next step as a [`Next`]. A bounded store saves each source's
+//! position and delivered event IDs so a restart neither misses nor repeats an event.
 
 /// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;
@@ -11,11 +11,14 @@ pub mod monitor;
 pub mod position;
 /// The [`Source`] contract and the request and outcome of one poll.
 pub mod source;
+/// Saved positions and bounded event ID tracking.
+pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use position::Position;
 pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};
+pub use store::{PositionKey, Store, StoreError};
 
 /// Maximum length in bytes of an event ID or a subject key.
 pub const MAX_ID_LEN: usize = 256;
