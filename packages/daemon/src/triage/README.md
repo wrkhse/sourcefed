@@ -9,11 +9,11 @@ Chauffeur v2 triages every event at the daemon's sink,
 OpenCode, Pi, MCP and the CLI read that one queue, so a withheld event reaches none of
 them and a passed event reaches them all.
 
-| Module | Responsibility |
-| --- | --- |
-| `evidence.ts` | `triageEvidence`: the event, thread and monitor text blocks, each clamped to 16 KiB. |
-| `discover.ts` | `candidateSockets`, `probe`, `discover`: which sockets to ask, and whether one answers as Chauffeur v2. |
-| `triage.ts` | `ChauffeurTriage`: one kept connection, `decide()` that never rejects, a 3 s deadline over probe and call, one re-probe per 30 s, `close()` on stop. |
+| Module         | Responsibility                                                                                                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `evidence.ts`  | `triageEvidence`: the event, thread and monitor text blocks, each clamped to 16 KiB.                                                                                                              |
+| `discover.ts`  | `candidateSockets`, `probe`, `discover`: which sockets to ask, and whether one answers as Chauffeur v2.                                                                                           |
+| `triage.ts`    | `ChauffeurTriage`: one kept connection, `decide()` that never rejects, a 3 s deadline over probe and call, one re-probe per 30 s, `close()` on stop.                                              |
 | `navigator.ts` | `chauffeurNavigators`, `ChauffeurConnect`: the client's `connect({ socket })` turned into the `Navigator` triage asks, the surface `packages/cli/src/utils/daemon.ts` hands to `ChauffeurTriage`. |
 
 ## Discovery
@@ -128,14 +128,14 @@ the event marked; a reply with no `intents` array delivers it unmarked.
 
 Every failure delivers the event unmarked, no more than 3 s late.
 
-| Failure | Outcome |
-| --- | --- |
-| No socket at any candidate | Delivered unmarked. |
-| A v1 daemon, or a reply that is not protocol 1 with a 1.x version | Delivered unmarked. |
-| A rejection whose reason is `unavailable` | Delivered unmarked, and the connection is closed. |
-| A call that neither answers nor rejects before its deadline | Delivered unmarked at the deadline, and the connection is closed. |
-| An error reply, or a rejection other than `unavailable`, such as `limit_exceeded` | Delivered unmarked, and the connection is kept. |
-| The 3 s deadline during the probe | Delivered unmarked at the deadline; the probe finishes on its own. |
+| Failure                                                                           | Outcome                                                            |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| No socket at any candidate                                                        | Delivered unmarked.                                                |
+| A v1 daemon, or a reply that is not protocol 1 with a 1.x version                 | Delivered unmarked.                                                |
+| A rejection whose reason is `unavailable`                                         | Delivered unmarked, and the connection is closed.                  |
+| A call that neither answers nor rejects before its deadline                       | Delivered unmarked at the deadline, and the connection is closed.  |
+| An error reply, or a rejection other than `unavailable`, such as `limit_exceeded` | Delivered unmarked, and the connection is kept.                    |
+| The 3 s deadline during the probe                                                 | Delivered unmarked at the deadline; the probe finishes on its own. |
 
 A rejection whose reason is `unavailable`, and a call that misses its deadline, are
 losses: the connection is dropped and closed, the log gets one `went away` line for

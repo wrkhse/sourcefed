@@ -11,13 +11,13 @@ not a clean audit: the remaining entries depend on two upstream advisories
 listed below. No ignore, override, resolution, or new advisory exception is
 configured.
 
-| Check | Result |
-| --- | --- |
-| Baseline production audit | 32: 2 low, 27 moderate, 3 high; exit 1 |
-| Compatible lockfile-only remediation | 29 findings; exit 1 |
-| Audit with approved Pi development hosts 1.5.2 | 23 moderate; exit 1 |
-| Fresh install with lifecycle scripts disabled | Pass; upstream deprecations remain |
-| Bundle, declarations, test compilation, TypeScript | Pass locally; no test bodies executed |
+| Check                                                   | Result                                                                                                                                                                                                                                 |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Baseline production audit                               | 32: 2 low, 27 moderate, 3 high; exit 1                                                                                                                                                                                                 |
+| Compatible lockfile-only remediation                    | 29 findings; exit 1                                                                                                                                                                                                                    |
+| Audit with approved Pi development hosts 1.5.2          | 23 moderate; exit 1                                                                                                                                                                                                                    |
+| Fresh install with lifecycle scripts disabled           | Pass; upstream deprecations remain                                                                                                                                                                                                     |
+| Bundle, declarations, test compilation, TypeScript      | Pass locally; no test bodies executed                                                                                                                                                                                                  |
 | Full check; both Pi scenarios on Pi 1.5.2 and Pi 0.83.0 | Pass on hosted Ubuntu at `8e04f28`: [check](https://github.com/wrkhse/sourcefed/actions/runs/43574502746/job/132385688604), [Pi integration, both legs](https://github.com/wrkhse/sourcefed/actions/runs/43574502746/job/132385688848) |
 
 The owner approves the Pi development-host refresh to 1.5.2. The published
@@ -26,12 +26,12 @@ minimum-host requirement. The Pi plugin's source is unchanged.
 
 Pi hosts in each gate:
 
-| Gate | Pi host |
-| --- | --- |
-| Hosted Pi integration, first leg | Locked development host, 1.5.2 |
-| Hosted Pi integration, second leg | `@earendil-works/pi-coding-agent@0.83.0`, installed alone under the runner's temp folder |
-| Release Pi gate (`scripts/e2e/pi.mjs` through `scripts/check-optional-pi.mjs`) | Root `node_modules` host, now 1.5.2 |
-| Release type-consumer fixture (`scripts/e2e/types.mjs`, `release:verify` only) | 0.83.0 types |
+| Gate                                                                           | Pi host                                                                                  |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| Hosted Pi integration, first leg                                               | Locked development host, 1.5.2                                                           |
+| Hosted Pi integration, second leg                                              | `@earendil-works/pi-coding-agent@0.83.0`, installed alone under the runner's temp folder |
+| Release Pi gate (`scripts/e2e/pi.mjs` through `scripts/check-optional-pi.mjs`) | Root `node_modules` host, now 1.5.2                                                      |
+| Release type-consumer fixture (`scripts/e2e/types.mjs`, `release:verify` only) | 0.83.0 types                                                                             |
 
 Each integration leg runs `scripts/assert-pi-host.mjs` first. It resolves the
 `pi` binary on PATH to its owning package and fails unless the version is the
@@ -92,31 +92,31 @@ Every remaining audit entry is moderate and has `fixAvailable: false`.
 They are listed individually below. “Via” names the reported dependency edge;
 G and M refer to the advisory constraints above, not to an allowlist.
 
-| Audit entry | Via / upstream constraint |
-| --- | --- |
-| `@npmcli/arborist` | npmcli, cache, fetch, pacote, minimatch chains; G/M |
-| `@npmcli/config` | map-workspaces and package-json; G/M |
-| `@npmcli/map-workspaces` | package-json, glob and minimatch; G/M |
-| `@npmcli/metavuln-calculator` | cacache and pacote; G/M |
-| `@npmcli/package-json` | glob 13 constraint; G/M |
-| `@npmcli/run-script` | package-json; G/M |
-| `@opencode/plugin` | util and solid; G/M |
-| `@opencode/util` | Exact glob 13/minimatch 10 pins and npmcli; G/M |
-| `@opentui/solid` | Exact Babel resolver 5.0.2 pin; G/M |
-| `@sigstore/sign` | make-fetch-happen; G/M |
-| `@sigstore/tuf` | tuf-js; G/M |
-| `@tufjs/models` | minimatch 10 constraint; M |
-| `babel-plugin-module-resolver` | glob 9 constraint; G/M |
-| `cacache` | glob 13 constraint; G/M |
-| `glob` | glob 13.0.5 / 9.3.5 and their minimatch; G/M |
-| `ignore-walk` | minimatch 10 constraint; M |
-| `make-fetch-happen` | cacache; G/M |
-| `minimatch` | minimatch 10.2.5 / 8.0.7; M |
-| `npm-packlist` | ignore-walk; M |
-| `npm-registry-fetch` | make-fetch-happen; G/M |
-| `pacote` | npmcli, cache, fetch, packlist and sigstore; G/M |
-| `sigstore` | sign and tuf; G/M |
-| `tuf-js` | models and make-fetch-happen; G/M |
+| Audit entry                    | Via / upstream constraint                           |
+| ------------------------------ | --------------------------------------------------- |
+| `@npmcli/arborist`             | npmcli, cache, fetch, pacote, minimatch chains; G/M |
+| `@npmcli/config`               | map-workspaces and package-json; G/M                |
+| `@npmcli/map-workspaces`       | package-json, glob and minimatch; G/M               |
+| `@npmcli/metavuln-calculator`  | cacache and pacote; G/M                             |
+| `@npmcli/package-json`         | glob 13 constraint; G/M                             |
+| `@npmcli/run-script`           | package-json; G/M                                   |
+| `@opencode/plugin`             | util and solid; G/M                                 |
+| `@opencode/util`               | Exact glob 13/minimatch 10 pins and npmcli; G/M     |
+| `@opentui/solid`               | Exact Babel resolver 5.0.2 pin; G/M                 |
+| `@sigstore/sign`               | make-fetch-happen; G/M                              |
+| `@sigstore/tuf`                | tuf-js; G/M                                         |
+| `@tufjs/models`                | minimatch 10 constraint; M                          |
+| `babel-plugin-module-resolver` | glob 9 constraint; G/M                              |
+| `cacache`                      | glob 13 constraint; G/M                             |
+| `glob`                         | glob 13.0.5 / 9.3.5 and their minimatch; G/M        |
+| `ignore-walk`                  | minimatch 10 constraint; M                          |
+| `make-fetch-happen`            | cacache; G/M                                        |
+| `minimatch`                    | minimatch 10.2.5 / 8.0.7; M                         |
+| `npm-packlist`                 | ignore-walk; M                                      |
+| `npm-registry-fetch`           | make-fetch-happen; G/M                              |
+| `pacote`                       | npmcli, cache, fetch, packlist and sigstore; G/M    |
+| `sigstore`                     | sign and tuf; G/M                                   |
+| `tuf-js`                       | models and make-fetch-happen; G/M                   |
 
 `@opencode/plugin` and its `@opencode/util` npmcli, glob and minimatch
 chain are runtime dependencies; treating them as development-only would

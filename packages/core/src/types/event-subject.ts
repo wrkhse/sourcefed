@@ -4,8 +4,8 @@
  * fields, such as `repo` and `number`.
  */
 export type EventSubject = {
-  type: string
-  key: string
-  url?: string
-  title?: string
-} & Record<string, unknown>
+  type: string;
+  key: string;
+  url?: string;
+  title?: string;
+} & Record<string, unknown>;

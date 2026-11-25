@@ -1,5 +1,5 @@
-import { scenario } from "./scenarios.mjs"
+import { scenario } from "./scenarios.mjs";
 
 export async function cliDaemonGate(context) {
-  return scenario(context, "cli.test.mjs")
+  return scenario(context, "cli.test.mjs");
 }

@@ -8,11 +8,11 @@ core `Monitor`, and the daemon, the store, the webhook router and
 `runtime.tick()` run the `Monitor` it returns, unchanged.
 
 ```ts
-import * as v from "valibot"
-import { defineSource } from "@sourcefed/sdk"
+import * as v from "valibot";
+import { defineSource } from "@sourcefed/sdk";
 
-const FeedSchema = v.object({ type: v.literal("feed"), url: v.string() })
-const SeenSchema = v.array(v.string())
+const FeedSchema = v.object({ type: v.literal("feed"), url: v.string() });
+const SeenSchema = v.array(v.string());
 
 export const feed = defineSource({
   type: "feed",
@@ -32,11 +32,11 @@ export const feed = defineSource({
   detail: (source) => ` ${source.url}`,
   describe: (source) => `Feed ${source.url}`,
   poll: async ({ source, cursor, http }) => {
-    const body = await http.json<{ entries: Array<{ id: string; title: string }> }>(
-      source.url,
-    )
-    const stored = v.safeParse(SeenSchema, cursor)
-    const seen = stored.success ? stored.output : []
+    const body = await http.json<{
+      entries: Array<{ id: string; title: string }>;
+    }>(source.url);
+    const stored = v.safeParse(SeenSchema, cursor);
+    const seen = stored.success ? stored.output : [];
 
     return {
       events: body.entries
@@ -51,9 +51,9 @@ export const feed = defineSource({
         })),
       cursor: body.entries.map((entry) => entry.id),
       terminal: false,
-    }
+    };
   },
-})
+});
 ```
 
 - `source.ts`: `defineSource` and the `SourceDefinition` / `SourceContext` /
@@ -137,7 +137,7 @@ A source never starts a process: it names a server the host runs and calls one
 of its tools, and gets the tool's text parts joined by newlines.
 
 ```ts
-const page = await mcp.call("yab", "fetch", { url: source.url, html: true })
+const page = await mcp.call("yab", "fetch", { url: source.url, html: true });
 ```
 
 Yab is the host's only server. `hostMcpServers` runs it from
@@ -218,12 +218,12 @@ test("the jira source replays its recorded transcript", async () => {
   const env = {
     ATLASSIAN_API_KEY: "test-key",
     SOURCEFED_JIRA_TERMINAL_STATUS: undefined,
-  }
+  };
 
   await withEnvironment(env, async () => {
-    await assertGolden(jiraFixture, jiraDefinition)
-  })
-})
+    await assertGolden(jiraFixture, jiraDefinition);
+  });
+});
 ```
 
 ## The monitors.json audit

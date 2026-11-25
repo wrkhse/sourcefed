@@ -1,7 +1,7 @@
-import { test } from "node:test"
-import { assertGolden, withEnvironment } from "@sourcefed/sdk"
-import { JIRA_QUERY_GOLDEN } from "./fixtures/golden.ts"
-import { jiraQuerySource } from "./monitor.ts"
+import { test } from "node:test";
+import { assertGolden, withEnvironment } from "@sourcefed/sdk";
+import { JIRA_QUERY_GOLDEN } from "./fixtures/golden.ts";
+import { jiraQuerySource } from "./monitor.ts";
 
 /** The port changes no behaviour: the transcript recorded from the pre-SDK provider must replay exactly. */
 test("the jira-query source replays its recorded transcript", async () => {
@@ -12,7 +12,7 @@ test("the jira-query source replays its recorded transcript", async () => {
       ATLASSIAN_API_KEY: "test-key",
     },
     async () => {
-      await assertGolden(JIRA_QUERY_GOLDEN, jiraQuerySource)
+      await assertGolden(JIRA_QUERY_GOLDEN, jiraQuerySource);
     },
-  )
-})
+  );
+});

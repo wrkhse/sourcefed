@@ -5,9 +5,9 @@ Copied byte for byte from `wrkhse/chauffeur`, `crates/protocol/fixtures/`, at v2
 read-only: never edit either file. Refresh them by copying both again from the new
 commit.
 
-| File | SHA-256 |
-| --- | --- |
-| `sourcefed-events.json` | `d7b0beb75840ce02591e413e036027038bd4991c2c8ee12e15c22e2ab6ad89eb` |
+| File                       | SHA-256                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `sourcefed-events.json`    | `d7b0beb75840ce02591e413e036027038bd4991c2c8ee12e15c22e2ab6ad89eb` |
 | `sourcefed-events.v1.json` | `6557fbeafeab0cf8345f806d4343314a66616f1dab2a914f6fc74e2a2a539cd9` |
 
 `sourcefed-events.json` holds twelve labelled events from v1's event-gate

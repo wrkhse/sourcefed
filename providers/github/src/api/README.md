@@ -4,13 +4,13 @@ The GitHub source calls GitHub's REST and GraphQL APIs directly with `GH_TOKEN` 
 `GITHUB_TOKEN`. Every request of a poll goes through one `GithubClient`, which charges
 the token's budget and turns a rate-limited answer into a wait.
 
-| Module | Does |
-| --- | --- |
-| `client.ts` | `GithubClient`: one poll's requests; `deferOnWait`; `rateLimitWait` reads a limited answer |
-| `github-limiter.ts` | `GithubRateLimiter`: a REST and a GraphQL budget per token, served in turn, each with its own wait |
-| `pr.ts` | `fetchPrData`: a pull request's state, reviews and checks (up to 300 and 500), in one GraphQL query and its pages |
-| `comments.ts` | `fetchGithubComments`: a REST comment list, up to ten pages |
-| `logs.ts` | `fetchJobLog`: a failed Actions job's log, at most 10 MB |
+| Module              | Does                                                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `client.ts`         | `GithubClient`: one poll's requests; `deferOnWait`; `rateLimitWait` reads a limited answer                        |
+| `github-limiter.ts` | `GithubRateLimiter`: a REST and a GraphQL budget per token, served in turn, each with its own wait                |
+| `pr.ts`             | `fetchPrData`: a pull request's state, reviews and checks (up to 300 and 500), in one GraphQL query and its pages |
+| `comments.ts`       | `fetchGithubComments`: a REST comment list, up to ten pages                                                       |
+| `logs.ts`           | `fetchJobLog`: a failed Actions job's log, at most 10 MB                                                          |
 
 ## Rate limits
 
@@ -19,11 +19,11 @@ hour; a pull request query is assumed to cost one point (GitHub's cost rules; no
 shares both, so every monitor on one token shares a budget of 30 requests a minute of
 each API by default (`SOURCEFED_GITHUB_REQUESTS_PER_MINUTE`, read when the daemon starts).
 
-| Setting | Effect |
-| --- | --- |
-| unset | 30 a minute of each API: 1800 an hour, about a third of the quota |
-| above 75 | capped at 75 with a warning: a burst of 8 polls can be admitted at once and each can overdraw by 22, so no hour starts more than 4500 + 8 + 8 × 22 = 4684 |
-| not a positive number | 30, with a warning |
+| Setting               | Effect                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| unset                 | 30 a minute of each API: 1800 an hour, about a third of the quota                                                                                         |
+| above 75              | capped at 75 with a warning: a burst of 8 polls can be admitted at once and each can overdraw by 22, so no hour starts more than 4500 + 8 + 8 × 22 = 4684 |
+| not a positive number | 30, with a warning                                                                                                                                        |
 
 ```mermaid
 flowchart LR
@@ -84,8 +84,17 @@ flowchart LR
   as already seen.
 
 ```ts
-const github = GithubClient.open(token, monitorId, ["graphql", "rest"], first, http, now)
-if (!github) return DEFERRED
+const github = GithubClient.open(
+  token,
+  monitorId,
+  ["graphql", "rest"],
+  first,
+  http,
+  now,
+);
+if (!github) return DEFERRED;
 
-return deferOnWait(() => readPullRequest(github, repo, prNumber, cursor, primed))
+return deferOnWait(() =>
+  readPullRequest(github, repo, prNumber, cursor, primed),
+);
 ```

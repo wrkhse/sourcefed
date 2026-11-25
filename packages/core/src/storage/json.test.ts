@@ -1,20 +1,24 @@
-import assert from "node:assert/strict"
-import { afterEach, describe, test } from "node:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
-import type { MonitorRecord } from "@sourcefed/core"
-import { JsonMonitorEventQueue, JsonMonitorStore } from "./json.ts"
+import assert from "node:assert/strict";
+import { afterEach, describe, test } from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { MonitorRecord } from "@sourcefed/core";
+import { JsonMonitorEventQueue, JsonMonitorStore } from "./json.ts";
 
-const temporaryDirectories: string[] = []
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
-})
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
 
 describe("JSON store", () => {
   test("persists monitors across store instances", async () => {
-    const directory = await temporaryDirectory()
+    const directory = await temporaryDirectory();
     const monitor = {
       id: "m-1",
       name: "ADEPT-43742",
@@ -26,21 +30,25 @@ describe("JSON store", () => {
       createdAt: "2026-08-04T12:00:00.000Z",
       updatedAt: "2026-08-04T12:00:00.000Z",
       cursors: {},
-    } satisfies MonitorRecord
+    } satisfies MonitorRecord;
 
-    const store = new JsonMonitorStore({ stateDir: directory })
-    await store.save({ monitors: [monitor] })
+    const store = new JsonMonitorStore({ stateDir: directory });
+    await store.save({ monitors: [monitor] });
 
-    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load()
-    assert.deepEqual(reloaded.monitors, [monitor])
-  })
+    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load();
+    assert.deepEqual(reloaded.monitors, [monitor]);
+  });
 
   test("keeps an ended monitor's ending across store instances", async () => {
-    const directory = await temporaryDirectory()
+    const directory = await temporaryDirectory();
     const monitor = {
       id: "m-1",
       name: "pr",
-      source: { type: "github" as const, repo: "example-org/example-repo", prNumber: 7 },
+      source: {
+        type: "github" as const,
+        repo: "example-org/example-repo",
+        prNumber: 7,
+      },
       delivery: "webhook" as const,
       target: { kind: "test", id: "session-1" },
       pollIntervalSec: 60,
@@ -49,16 +57,18 @@ describe("JSON store", () => {
       updatedAt: "2026-11-18T12:09:00.000Z",
       cursors: {},
       endedAt: "2026-11-18T12:09:00.000Z",
-    } satisfies MonitorRecord
+    } satisfies MonitorRecord;
 
-    await new JsonMonitorStore({ stateDir: directory }).save({ monitors: [monitor] })
+    await new JsonMonitorStore({ stateDir: directory }).save({
+      monitors: [monitor],
+    });
 
-    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load()
-    assert.deepEqual(reloaded.monitors, [monitor])
-  })
+    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load();
+    assert.deepEqual(reloaded.monitors, [monitor]);
+  });
 
   test("loads a monitor stored before monitors could end", async () => {
-    const directory = await temporaryDirectory()
+    const directory = await temporaryDirectory();
     const monitor = {
       id: "m-1",
       name: "ADEPT-43742",
@@ -70,38 +80,41 @@ describe("JSON store", () => {
       createdAt: "2026-08-04T12:00:00.000Z",
       updatedAt: "2026-08-04T12:00:00.000Z",
       cursors: {},
-    }
-    await writeFile(path.join(directory, "monitors.json"), JSON.stringify({ monitors: [monitor] }))
+    };
+    await writeFile(
+      path.join(directory, "monitors.json"),
+      JSON.stringify({ monitors: [monitor] }),
+    );
 
-    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load()
-    assert.equal(reloaded.monitors[0]?.endedAt, undefined)
-    assert.deepEqual(reloaded.monitors, [monitor])
-  })
+    const reloaded = await new JsonMonitorStore({ stateDir: directory }).load();
+    assert.equal(reloaded.monitors[0]?.endedAt, undefined);
+    assert.deepEqual(reloaded.monitors, [monitor]);
+  });
 
   test("refuses to overwrite malformed monitor state", async () => {
-    const directory = await temporaryDirectory()
-    await writeFile(path.join(directory, "monitors.json"), "{ not json")
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "monitors.json"), "{ not json");
 
-    const store = new JsonMonitorStore({ stateDir: directory })
-    await assert.rejects(store.load())
-  })
+    const store = new JsonMonitorStore({ stateDir: directory });
+    await assert.rejects(store.load());
+  });
 
   test("serializes exclusive daemon ownership of the state directory", async () => {
-    const directory = await temporaryDirectory()
-    const first = new JsonMonitorStore({ stateDir: directory })
-    const release = await first.acquireExclusive()
+    const directory = await temporaryDirectory();
+    const first = new JsonMonitorStore({ stateDir: directory });
+    const release = await first.acquireExclusive();
 
-    const second = new JsonMonitorStore({ stateDir: directory })
-    await assert.rejects(second.acquireExclusive(), /another sourcefed daemon/)
+    const second = new JsonMonitorStore({ stateDir: directory });
+    await assert.rejects(second.acquireExclusive(), /another sourcefed daemon/);
 
-    await release()
-    const retake = await second.acquireExclusive()
-    await retake()
-  })
+    await release();
+    const retake = await second.acquireExclusive();
+    await retake();
+  });
 
   test("deduplicates and acknowledges queued events", async () => {
-    const directory = await temporaryDirectory()
-    const queue = new JsonMonitorEventQueue(directory)
+    const directory = await temporaryDirectory();
+    const queue = new JsonMonitorEventQueue(directory);
     const monitor = {
       id: "m-1",
       name: "ADEPT-43742",
@@ -113,7 +126,7 @@ describe("JSON store", () => {
       createdAt: "2026-08-04T12:00:00.000Z",
       updatedAt: "2026-08-04T12:00:00.000Z",
       cursors: {},
-    } satisfies MonitorRecord
+    } satisfies MonitorRecord;
     const event = {
       source: monitor.source,
       kind: "comment",
@@ -121,20 +134,20 @@ describe("JSON store", () => {
       at: "2026-08-04T12:01:00.000Z",
       summary: "comment",
       actionable: true,
-    }
+    };
 
-    const first = await queue.enqueue({ monitor, event })
-    const second = await queue.enqueue({ monitor, event })
-    assert.equal(second.id, first.id)
-    assert.equal((await queue.read(monitor.target)).length, 1)
-    await queue.acknowledge(monitor.target, [first.id])
-    assert.equal((await queue.read(monitor.target)).length, 0)
-  })
-})
+    const first = await queue.enqueue({ monitor, event });
+    const second = await queue.enqueue({ monitor, event });
+    assert.equal(second.id, first.id);
+    assert.equal((await queue.read(monitor.target)).length, 1);
+    await queue.acknowledge(monitor.target, [first.id]);
+    assert.equal((await queue.read(monitor.target)).length, 0);
+  });
+});
 
 describe("JSON event queue limit", () => {
   test("keeps the overflow event on disk across queue instances", async () => {
-    const directory = await temporaryDirectory()
+    const directory = await temporaryDirectory();
     const monitor = {
       id: "m-1",
       name: "ADEPT-43742",
@@ -146,20 +159,33 @@ describe("JSON event queue limit", () => {
       createdAt: "2026-08-04T12:00:00.000Z",
       updatedAt: "2026-08-04T12:00:00.000Z",
       cursors: {},
-    } satisfies MonitorRecord
-    const queue = new JsonMonitorEventQueue(directory, 2)
-    const event = (id: string) => ({ source: monitor.source, kind: "comment", id, at: "2026-08-04T12:01:00.000Z", summary: id, actionable: true })
+    } satisfies MonitorRecord;
+    const queue = new JsonMonitorEventQueue(directory, 2);
+    const event = (id: string) => ({
+      source: monitor.source,
+      kind: "comment",
+      id,
+      at: "2026-08-04T12:01:00.000Z",
+      summary: id,
+      actionable: true,
+    });
 
-    for (const id of ["c1", "c2", "c3"]) await queue.enqueue({ monitor, event: event(id) })
+    for (const id of ["c1", "c2", "c3"])
+      await queue.enqueue({ monitor, event: event(id) });
 
-    const reloaded = await new JsonMonitorEventQueue(directory, 2).read(monitor.target)
-    assert.deepEqual(reloaded.map((queued) => queued.event.id), ["c2", "c3", "overflow"])
-    assert.equal(reloaded[2].id, "m-1:overflow")
-  })
-})
+    const reloaded = await new JsonMonitorEventQueue(directory, 2).read(
+      monitor.target,
+    );
+    assert.deepEqual(
+      reloaded.map((queued) => queued.event.id),
+      ["c2", "c3", "overflow"],
+    );
+    assert.equal(reloaded[2].id, "m-1:overflow");
+  });
+});
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "sourcefed-store-"))
-  temporaryDirectories.push(directory)
-  return directory
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sourcefed-store-"));
+  temporaryDirectories.push(directory);
+  return directory;
 }

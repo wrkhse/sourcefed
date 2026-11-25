@@ -1,77 +1,119 @@
-import path from "node:path"
-import { spawn } from "node:child_process"
-import { spawnSync } from "node:child_process"
-import { assert, cleanEnvironment, removeDir, sleep, startHostDaemon, stopProcess, tempDir } from "./harness.mjs"
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import {
+  assert,
+  cleanEnvironment,
+  removeDir,
+  sleep,
+  startHostDaemon,
+  stopProcess,
+  tempDir,
+} from "./harness.mjs";
 
 const piBin = (() => {
   try {
-    return spawnSync("which", ["pi"], { encoding: "utf8" }).stdout.trim() || null
+    return (
+      spawnSync("which", ["pi"], { encoding: "utf8" }).stdout.trim() || null
+    );
   } catch {
-    return null
+    return null;
   }
-})()
+})();
 
 if (!piBin) {
-  throw new Error("missing required Pi host: pi-package: no pi binary on PATH")
+  throw new Error("missing required Pi host: pi-package: no pi binary on PATH");
 }
 
-const dir = await tempDir("sourcefed-it-pi-pkg-")
-const agentDir = path.join(dir, "agent")
-const sessionDir = path.join(dir, "sessions")
-const stateDir = path.join(dir, "state")
-const extensionPath = path.resolve("node_modules/@wrkhse/sourcefed/dist/pi.js")
+const dir = await tempDir("sourcefed-it-pi-pkg-");
+const agentDir = path.join(dir, "agent");
+const sessionDir = path.join(dir, "sessions");
+const stateDir = path.join(dir, "state");
+const extensionPath = path.resolve("node_modules/@wrkhse/sourcefed/dist/pi.js");
 
 const env = cleanEnvironment({
   PI_CODING_AGENT_DIR: agentDir,
   SOURCEFED_STATE_DIR: stateDir,
-})
-const daemon = await startHostDaemon(env)
-env.SOURCEFED_DAEMON_URL = daemon.url
+});
+const daemon = await startHostDaemon(env);
+env.SOURCEFED_DAEMON_URL = daemon.url;
 
-const proc = spawn(piBin, [
-  "--mode", "rpc",
-  "--extension", extensionPath,
-  "--no-session",
-  "--session-dir", sessionDir,
-], { env, stdio: ["pipe", "pipe", "pipe"] })
+const proc = spawn(
+  piBin,
+  [
+    "--mode",
+    "rpc",
+    "--extension",
+    extensionPath,
+    "--no-session",
+    "--session-dir",
+    sessionDir,
+  ],
+  { env, stdio: ["pipe", "pipe", "pipe"] },
+);
 
-let output = ""
-let exited = false
-proc.stdout.on("data", (chunk) => { output += chunk })
-proc.stderr.on("data", (chunk) => { output += chunk })
-proc.on("exit", (code) => { exited = true })
+let output = "";
+let exited = false;
+proc.stdout.on("data", (chunk) => {
+  output += chunk;
+});
+proc.stderr.on("data", (chunk) => {
+  output += chunk;
+});
+proc.on("exit", (code) => {
+  exited = true;
+});
 
 try {
-  await sleep(3_000)
+  await sleep(3_000);
   if (exited) {
-    throw new Error(`pi-package: rpc exited early (${proc.exitCode}): ${output.slice(-400)}`)
+    throw new Error(
+      `pi-package: rpc exited early (${proc.exitCode}): ${output.slice(-400)}`,
+    );
   }
 
-  proc.stdin.write(JSON.stringify({ id: "cmd-1", type: "prompt", message: "/sourcefed" }) + "\n")
+  proc.stdin.write(
+    JSON.stringify({ id: "cmd-1", type: "prompt", message: "/sourcefed" }) +
+      "\n",
+  );
 
-  const deadline = Date.now() + 45_000
-  let matched = null
+  const deadline = Date.now() + 45_000;
+  let matched = null;
   while (Date.now() < deadline) {
     if (output.includes("monitors")) {
-      matched = "monitors"
-      break
+      matched = "monitors";
+      break;
     }
     if (output.includes("sourcefed")) {
-      matched = "sourcefed"
-      break
+      matched = "sourcefed";
+      break;
     }
-    await sleep(500)
+    await sleep(500);
   }
 
   if (!matched) {
-    throw new Error(`pi-package: no sourcefed output in RPC stream: ${output.slice(-500)}`)
+    throw new Error(
+      `pi-package: no sourcefed output in RPC stream: ${output.slice(-500)}`,
+    );
   }
 
-  const statusLine = output.split("\n").find((line) => line.includes("extension_ui_request") && line.includes("setStatus") && line.includes("sourcefed"))
-  assert(statusLine, "the aggregate pi extension initialized and reported its status through the RPC stream")
-  console.log("pi-package: aggregate dist extension, RPC mode, status polling — ok")
+  const statusLine = output
+    .split("\n")
+    .find(
+      (line) =>
+        line.includes("extension_ui_request") &&
+        line.includes("setStatus") &&
+        line.includes("sourcefed"),
+    );
+  assert(
+    statusLine,
+    "the aggregate pi extension initialized and reported its status through the RPC stream",
+  );
+  console.log(
+    "pi-package: aggregate dist extension, RPC mode, status polling — ok",
+  );
 } finally {
-  await stopProcess(proc)
-  await daemon.stop()
-  await removeDir(dir).catch(() => {})
+  await stopProcess(proc);
+  await daemon.stop();
+  await removeDir(dir).catch(() => {});
 }

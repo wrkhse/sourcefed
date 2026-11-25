@@ -1,9 +1,9 @@
-import { toMonitorEvent } from "@sourcefed/core"
-import type { MonitorCreateInput, SourceInput } from "@sourcefed/core"
-import { defineSource, type SourceDefinition } from "@sourcefed/sdk"
-import { JiraCursorSchema, JiraSourceSchema } from "./schema.ts"
-import { pollJira } from "./poll/utils"
-import type { JiraSourceRecord } from "./types"
+import { toMonitorEvent } from "@sourcefed/core";
+import type { MonitorCreateInput, SourceInput } from "@sourcefed/core";
+import { defineSource, type SourceDefinition } from "@sourcefed/sdk";
+import { JiraCursorSchema, JiraSourceSchema } from "./schema.ts";
+import { pollJira } from "./poll/utils";
+import type { JiraSourceRecord } from "./types";
 
 /** Jira as data: what the subclass declared, plus the poll the host drives. */
 export const jiraSource: SourceDefinition<JiraSourceRecord> = {
@@ -11,13 +11,19 @@ export const jiraSource: SourceDefinition<JiraSourceRecord> = {
   schema: JiraSourceSchema,
   cursor: JiraCursorSchema,
   input: {
-    description: "A Jira issue: new comments, description edits, and status, assignee, priority or label changes",
-    properties: { issueKey: { type: "string", description: "Jira issue key, e.g. PROJ-12345" } },
+    description:
+      "A Jira issue: new comments, description edits, and status, assignee, priority or label changes",
+    properties: {
+      issueKey: {
+        type: "string",
+        description: "Jira issue key, e.g. PROJ-12345",
+      },
+    },
     required: ["issueKey"],
   },
   build: (input: MonitorCreateInput): SourceInput => {
-    if (input.issueKey) return { type: "jira", issueKey: input.issueKey }
-    return { error: "issueKey is required for a jira monitor" }
+    if (input.issueKey) return { type: "jira", issueKey: input.issueKey };
+    return { error: "issueKey is required for a jira monitor" };
   },
   key: (source) => `jira:${source.issueKey}`,
   label: (source) => source.issueKey,
@@ -25,15 +31,15 @@ export const jiraSource: SourceDefinition<JiraSourceRecord> = {
   describe: (source) => `Jira ${source.issueKey}`,
   icon: "󰌃",
   poll: async ({ source, cursor, http }) => {
-    const result = await pollJira(http, source.issueKey, cursor)
+    const result = await pollJira(http, source.issueKey, cursor);
 
     return {
       cursor: result.cursor,
       events: result.events.map((event) => toMonitorEvent(event, source)),
       terminal: result.terminal,
-    }
+    };
   },
-}
+};
 
 /** The monitor the daemon registers. */
-export const JiraMonitor = defineSource(jiraSource)
+export const JiraMonitor = defineSource(jiraSource);

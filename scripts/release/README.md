@@ -11,15 +11,15 @@ flowchart LR
     Brew --> Tap["Explicit tap-only update"]
 ```
 
-| Module | Responsibility |
-| --- | --- |
-| `verify.mjs` | Pack once, isolate gates, retain manifest and logs |
-| `artifact.mjs` | Reject missing gates, changed source and changed artifact bytes |
-| `publish.mjs` | Opt-in authenticated push/publication after verification |
-| `registry.mjs` | Resume the postpublication registry canary; adopt a CI-repacked tarball with the same tar |
-| `homebrew.mjs` | Explicit-consent upgrade, test and keep, or exact rollback |
-| `pins.mjs` | Independent tap, dotfiles and Pi selectors |
-| `tooling.test.mjs` | Fail-closed, isolation, tampering and selector tests |
+| Module             | Responsibility                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| `verify.mjs`       | Pack once, isolate gates, retain manifest and logs                                        |
+| `artifact.mjs`     | Reject missing gates, changed source and changed artifact bytes                           |
+| `publish.mjs`      | Opt-in authenticated push/publication after verification                                  |
+| `registry.mjs`     | Resume the postpublication registry canary; adopt a CI-repacked tarball with the same tar |
+| `homebrew.mjs`     | Explicit-consent upgrade, test and keep, or exact rollback                                |
+| `pins.mjs`         | Independent tap, dotfiles and Pi selectors                                                |
+| `tooling.test.mjs` | Fail-closed, isolation, tampering and selector tests                                      |
 
 Start with a mutation-free candidate check:
 
@@ -53,10 +53,10 @@ node --test scripts/release/tooling.test.mjs
 Pushing a tag runs [release.yml](../../.github/workflows/release.yml), and the
 tag picks the job:
 
-| Tag | Job | Result |
-| --- | --- | --- |
-| `v0.6.0-rc.1`, any tag with a `-` | `candidate` | GitHub prerelease only |
-| `v0.6.0` | `publish` | Staged on npm for approval |
+| Tag                               | Job         | Result                     |
+| --------------------------------- | ----------- | -------------------------- |
+| `v0.6.0-rc.1`, any tag with a `-` | `candidate` | GitHub prerelease only     |
+| `v0.6.0`                          | `publish`   | Staged on npm for approval |
 
 `candidate` runs `npm run check`, packs `@wrkhse/sourcefed`, and publishes a
 GitHub prerelease with the tarball and its `SHA256SUMS`; nothing goes to npm.

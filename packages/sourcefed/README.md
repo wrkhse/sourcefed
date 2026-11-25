@@ -30,16 +30,16 @@ sourcefed setup [opencode|pi]
 A program reads its monitors through the daemon client:
 
 ```ts
-import { connectDaemonClient } from "@wrkhse/sourcefed/daemon"
+import { connectDaemonClient } from "@wrkhse/sourcefed/daemon";
 
-const client = await connectDaemonClient({ name: "my-script" })
+const client = await connectDaemonClient({ name: "my-script" });
 
 const result = await client.request("monitor.list", {
   target: { kind: "program", id: "my-script" },
-})
+});
 // result: { ok: true, monitors: [ … ] }
 
-await client.close()
+await client.close();
 ```
 
 - `@wrkhse/sourcefed`: the CLI, also the `sourcefed` binary.
@@ -61,16 +61,16 @@ daemon, which sends the GitHub POST with its own `GH_TOKEN` or `GITHUB_TOKEN`,
 so the caller never handles a token:
 
 ```ts
-const sf = await connectDaemonClient({ name: "my-script" })
+const sf = await connectDaemonClient({ name: "my-script" });
 
 const reply = await sf.comment.issue({
   repo: "owner/name",
   issueNumber: 56,
   body: "Fixed on the branch; thanks for the report.",
-})
+});
 // reply: { id: 12345, url: "https://github.com/owner/name/issues/56#issuecomment-12345" }
 
-await sf.close()
+await sf.close();
 ```
 
 `body` must be non-empty and at most 65,536 characters.

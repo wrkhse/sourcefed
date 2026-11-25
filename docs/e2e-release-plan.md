@@ -114,24 +114,25 @@ The host consumer installs the peers that Pi and OpenCode supply at runtime: Pi
 and fails compilation:
 
 ```ts
-export const extension: (pi: ExtensionAPI) => Promise<void> = sourcefedExtension
+export const extension: (pi: ExtensionAPI) => Promise<void> =
+  sourcefedExtension;
 
-export const definitions: Plugin.Definition[] = [tui, openTui]
+export const definitions: Plugin.Definition[] = [tui, openTui];
 
 // @ts-expect-error OpenCode supplies the plugin context
-void tui.setup()
+void tui.setup();
 ```
 
 Host entry points depend on third-party declarations that fail strict library
 checking. The gate keeps `skipLibCheck: false`, so TypeScript still checks every
 Sourcefed `.d.ts` file and the consumer. It accepts only these diagnostic sources:
 
-| Source | Code | File |
-| --- | --- | --- |
-| pi-ai JSON model imports | TS1543 | `@earendil-works/pi-ai/dist/providers/*.models.d.ts` |
-| Anthropic SDK undici-types paths | TS2307 | `@anthropic-ai/sdk/internal/types.d.mts` |
-| Google GenAI optional MCP SDK | TS2307 | `@google/genai/dist/node/node.d.ts` |
-| OpenTUI `KeyHandler.emit` with @types/node 26 | TS2416 | `@opentui/core/lib/KeyHandler.d.ts` |
+| Source                                        | Code   | File                                                 |
+| --------------------------------------------- | ------ | ---------------------------------------------------- |
+| pi-ai JSON model imports                      | TS1543 | `@earendil-works/pi-ai/dist/providers/*.models.d.ts` |
+| Anthropic SDK undici-types paths              | TS2307 | `@anthropic-ai/sdk/internal/types.d.mts`             |
+| Google GenAI optional MCP SDK                 | TS2307 | `@google/genai/dist/node/node.d.ts`                  |
+| OpenTUI `KeyHandler.emit` with @types/node 26 | TS2416 | `@opentui/core/lib/KeyHandler.d.ts`                  |
 
 Each rule names its code, file and, where needed, message. Any other diagnostic,
 including one in Sourcefed's declarations or the consumer, fails the gate. The

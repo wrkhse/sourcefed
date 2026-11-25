@@ -1,94 +1,159 @@
-import type { MonitorTarget, QueuedMonitorEvent } from "@sourcefed/core"
-import { MAX_COMMENT_BODY } from "@sourcefed/provider-github"
-import type { CommentIssueInput, CommentIssueResult, DaemonClient, DaemonClientOptions, SubscribeOptions } from "./types"
-import { DaemonEventStream, pause } from "./event-stream.ts"
-import { defaultDaemonUrl, encodeTarget } from "./utils"
+import type { MonitorTarget, QueuedMonitorEvent } from "@sourcefed/core";
+import { MAX_COMMENT_BODY } from "@sourcefed/provider-github";
+import type {
+  CommentIssueInput,
+  CommentIssueResult,
+  DaemonClient,
+  DaemonClientOptions,
+  SubscribeOptions,
+} from "./types";
+import { DaemonEventStream, pause } from "./event-stream.ts";
+import { defaultDaemonUrl, encodeTarget } from "./utils";
 
-export async function connectDaemonClient(options: DaemonClientOptions): Promise<DaemonClient> {
-  const url = options.url ?? process.env.SOURCEFED_DAEMON_URL ?? defaultDaemonUrl()
-  return new HttpDaemonClient(url, options.token ?? process.env.SOURCEFED_DAEMON_TOKEN)
+export async function connectDaemonClient(
+  options: DaemonClientOptions,
+): Promise<DaemonClient> {
+  const url =
+    options.url ?? process.env.SOURCEFED_DAEMON_URL ?? defaultDaemonUrl();
+  return new HttpDaemonClient(
+    url,
+    options.token ?? process.env.SOURCEFED_DAEMON_TOKEN,
+  );
 }
 
 class HttpDaemonClient implements DaemonClient {
-  private readonly baseURL: string
-  private readonly streams = new Set<DaemonEventStream>()
-  private readonly lifetime = new AbortController()
-  private cursor = 0
-  private closing: Promise<void> | undefined
+  private readonly baseURL: string;
+  private readonly streams = new Set<DaemonEventStream>();
+  private readonly lifetime = new AbortController();
+  private cursor = 0;
+  private closing: Promise<void> | undefined;
 
-  constructor(baseURL: string, private readonly token?: string) {
-    this.baseURL = baseURL.replace(/\/+$/, "")
+  constructor(
+    baseURL: string,
+    private readonly token?: string,
+  ) {
+    this.baseURL = baseURL.replace(/\/+$/, "");
   }
 
   readonly comment = {
     issue: async (input: CommentIssueInput): Promise<CommentIssueResult> => {
-      if (!input || typeof input.repo !== "string" || !input.repo) throw new Error("comment.issue requires a non-empty repo")
-      if (!Number.isInteger(input.issueNumber) || input.issueNumber <= 0) throw new Error("comment.issue requires a positive integer issueNumber")
-      if (typeof input.body !== "string" || !input.body.trim()) throw new Error("comment.issue requires a non-empty body")
-      if (input.body.length > MAX_COMMENT_BODY) throw new Error(`comment.issue body exceeds ${MAX_COMMENT_BODY} characters`)
-      return await this.request("comment.issue", { repo: input.repo, issueNumber: input.issueNumber, body: input.body }) as CommentIssueResult
+      if (!input || typeof input.repo !== "string" || !input.repo)
+        throw new Error("comment.issue requires a non-empty repo");
+      if (!Number.isInteger(input.issueNumber) || input.issueNumber <= 0)
+        throw new Error(
+          "comment.issue requires a positive integer issueNumber",
+        );
+      if (typeof input.body !== "string" || !input.body.trim())
+        throw new Error("comment.issue requires a non-empty body");
+      if (input.body.length > MAX_COMMENT_BODY)
+        throw new Error(
+          `comment.issue body exceeds ${MAX_COMMENT_BODY} characters`,
+        );
+      return (await this.request("comment.issue", {
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        body: input.body,
+      })) as CommentIssueResult;
     },
-  }
+  };
 
   private headers(): Record<string, string> {
-    return this.token ? { authorization: `Bearer ${this.token}` } : {}
+    return this.token ? { authorization: `Bearer ${this.token}` } : {};
   }
 
-  async request(method: string, params?: Record<string, unknown>, signal = this.lifetime.signal): Promise<unknown> {
-    if (this.closing && signal === this.lifetime.signal) throw new Error("daemon closed")
-    signal.throwIfAborted()
+  async request(
+    method: string,
+    params?: Record<string, unknown>,
+    signal = this.lifetime.signal,
+  ): Promise<unknown> {
+    if (this.closing && signal === this.lifetime.signal)
+      throw new Error("daemon closed");
+    signal.throwIfAborted();
     const response = await fetch(`${this.baseURL}/rpc`, {
       method: "POST",
       headers: { "content-type": "application/json", ...this.headers() },
       body: JSON.stringify({ id: ++this.cursor, method, params }),
-      signal: AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(15_000)]),
-    })
-    const frame = await response.json() as { result?: unknown; error?: string }
-    if (!response.ok || frame.error) throw new Error(frame.error ?? `daemon request failed: ${response.status}`)
-    return frame.result
+      signal: AbortSignal.any([
+        signal,
+        this.lifetime.signal,
+        AbortSignal.timeout(15_000),
+      ]),
+    });
+    const frame = (await response.json()) as {
+      result?: unknown;
+      error?: string;
+    };
+    if (!response.ok || frame.error)
+      throw new Error(
+        frame.error ?? `daemon request failed: ${response.status}`,
+      );
+    return frame.result;
   }
 
-  async subscribe(target: MonitorTarget, onEvents: (events: QueuedMonitorEvent[]) => Promise<void>, options?: SubscribeOptions): Promise<{ close(): Promise<void> }> {
-    if (this.closing) throw new Error("daemon closed")
-    this.lifetime.signal.throwIfAborted()
-    const acknowledge = options?.acknowledge === false
-      ? async () => {}
-      : (events: QueuedMonitorEvent[], signal: AbortSignal) => this.acknowledge(target, events, signal)
+  async subscribe(
+    target: MonitorTarget,
+    onEvents: (events: QueuedMonitorEvent[]) => Promise<void>,
+    options?: SubscribeOptions,
+  ): Promise<{ close(): Promise<void> }> {
+    if (this.closing) throw new Error("daemon closed");
+    this.lifetime.signal.throwIfAborted();
+    const acknowledge =
+      options?.acknowledge === false
+        ? async () => {}
+        : (events: QueuedMonitorEvent[], signal: AbortSignal) =>
+            this.acknowledge(target, events, signal);
     const stream = new DaemonEventStream(
-      `${this.baseURL}/events?target=${encodeTarget(target)}`, this.headers(), onEvents,
+      `${this.baseURL}/events?target=${encodeTarget(target)}`,
+      this.headers(),
+      onEvents,
       acknowledge,
       () => this.streams.delete(stream),
-    )
-    this.streams.add(stream)
+    );
+    this.streams.add(stream);
     try {
-      await stream.start(options?.signal)
-      return { close: () => stream.close() }
+      await stream.start(options?.signal);
+      return { close: () => stream.close() };
     } catch (error) {
-      await stream.close()
-      throw error
+      await stream.close();
+      throw error;
     }
   }
 
-  private async acknowledge(target: MonitorTarget, events: QueuedMonitorEvent[], signal: AbortSignal): Promise<void> {
-    let attempt = 0
+  private async acknowledge(
+    target: MonitorTarget,
+    events: QueuedMonitorEvent[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    let attempt = 0;
     while (!signal.aborted) {
       try {
-        await this.request("monitor.ack", { target, eventIDs: events.map((event) => event.id) }, signal)
-        return
+        await this.request(
+          "monitor.ack",
+          { target, eventIDs: events.map((event) => event.id) },
+          signal,
+        );
+        return;
       } catch (error) {
         if (++attempt === 3) {
-          console.error(`[sourcefed] event acknowledgement still failing; retrying without repeating delivery: ${String(error)}`)
+          console.error(
+            `[sourcefed] event acknowledgement still failing; retrying without repeating delivery: ${String(error)}`,
+          );
         }
-        await pause(Math.min(250 * 2 ** Math.min(attempt - 1, 4), 4_000), signal)
+        await pause(
+          Math.min(250 * 2 ** Math.min(attempt - 1, 4), 4_000),
+          signal,
+        );
       }
     }
   }
 
   close(): Promise<void> {
-    this.closing ??= Promise.all([...this.streams].map((stream) => stream.close())).then(() => {
-      this.lifetime.abort()
-      this.streams.clear()
-    })
-    return this.closing
+    this.closing ??= Promise.all(
+      [...this.streams].map((stream) => stream.close()),
+    ).then(() => {
+      this.lifetime.abort();
+      this.streams.clear();
+    });
+    return this.closing;
   }
 }

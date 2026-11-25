@@ -7,10 +7,7 @@
   "env": {
     "GH_TOKEN": "test-token"
   },
-  "unset": [
-    "GITHUB_TOKEN",
-    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"
-  ],
+  "unset": ["GITHUB_TOKEN", "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"],
   "cases": [
     {
       "name": "priming",
@@ -19,9 +16,7 @@
         "name": "agent issues",
         "sourceType": "github-issues",
         "repo": "example-org/example-repo",
-        "labels": [
-          "agent"
-        ]
+        "labels": ["agent"]
       },
       "replies": [
         {
@@ -78,9 +73,7 @@
         "name": "agent issues",
         "sourceType": "github-issues",
         "repo": "example-org/example-repo",
-        "labels": [
-          "agent"
-        ]
+        "labels": ["agent"]
       },
       "replies": [
         {
@@ -99,9 +92,7 @@
         "name": "agent issues",
         "sourceType": "github-issues",
         "repo": "example-org/example-repo",
-        "labels": [
-          "agent"
-        ]
+        "labels": ["agent"]
       },
       "replies": [
         {
@@ -143,9 +134,7 @@
         "name": "agent issues",
         "sourceType": "github-issues",
         "repo": "example-org/example-repo",
-        "labels": [
-          "agent"
-        ],
+        "labels": ["agent"],
         "query": "milestone:v2",
         "includeExisting": true
       },
@@ -178,9 +167,7 @@
         "name": "agent issues",
         "sourceType": "github-issues",
         "repo": "example-org/example-repo",
-        "labels": [
-          "agent"
-        ]
+        "labels": ["agent"]
       },
       "replies": [
         {

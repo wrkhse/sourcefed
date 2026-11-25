@@ -1,1 +1,1 @@
-export { pollGithub } from "./poll-github.ts"
+export { pollGithub } from "./poll-github.ts";

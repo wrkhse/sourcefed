@@ -1,4 +1,4 @@
-import type { GithubCursor } from "../../types"
+import type { GithubCursor } from "../../types";
 
 export function emptyGithubCursor(): GithubCursor {
   return {
@@ -11,5 +11,5 @@ export function emptyGithubCursor(): GithubCursor {
     ciFailureState: "",
     mergeable: "",
     prState: "",
-  }
+  };
 }

@@ -1,30 +1,42 @@
-import { execFileSync } from "node:child_process"
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
-import { cleanEnvironment } from "./integration/harness.mjs"
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { cleanEnvironment } from "./integration/harness.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const INTEGRATION = path.join(ROOT, ".integration")
-const CONSUMER = path.join(INTEGRATION, "consumer")
-const SCENARIOS = path.join(ROOT, "scripts/integration")
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const INTEGRATION = path.join(ROOT, ".integration");
+const CONSUMER = path.join(INTEGRATION, "consumer");
+const SCENARIOS = path.join(ROOT, "scripts/integration");
 
 const availableScenarioNames = readdirSync(SCENARIOS, { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
-  .map((entry) => entry.name)
-const requestedScenarioNames = process.argv.slice(2)
-const scenarioNames = requestedScenarioNames.length > 0 ? requestedScenarioNames : availableScenarioNames
+  .map((entry) => entry.name);
+const requestedScenarioNames = process.argv.slice(2);
+const scenarioNames =
+  requestedScenarioNames.length > 0
+    ? requestedScenarioNames
+    : availableScenarioNames;
 
 if (new Set(scenarioNames).size !== scenarioNames.length) {
-  throw new Error("duplicate integration scenario names are not allowed")
+  throw new Error("duplicate integration scenario names are not allowed");
 }
 
 for (const name of scenarioNames) {
-  if (!availableScenarioNames.includes(name)) throw new Error(`unknown integration scenario: ${name}`)
+  if (!availableScenarioNames.includes(name))
+    throw new Error(`unknown integration scenario: ${name}`);
 }
 
-const selection = `${scenarioNames.length} of ${availableScenarioNames.length} scenarios selected`
-if (requestedScenarioNames.length > 0) console.log(`integration: ${selection}: ${scenarioNames.join(", ")}`)
+const selection = `${scenarioNames.length} of ${availableScenarioNames.length} scenarios selected`;
+if (requestedScenarioNames.length > 0)
+  console.log(`integration: ${selection}: ${scenarioNames.join(", ")}`);
 
 const PACKAGES = [
   "packages/core",
@@ -39,54 +51,81 @@ const PACKAGES = [
   "providers/yab",
   "providers/schedule",
   "providers/timer",
-]
+];
 
-run("node", ["scripts/build.mjs"], ROOT)
-rmSync(INTEGRATION, { recursive: true, force: true })
-mkdirSync(path.join(CONSUMER, "scenarios"), { recursive: true })
+run("node", ["scripts/build.mjs"], ROOT);
+rmSync(INTEGRATION, { recursive: true, force: true });
+mkdirSync(path.join(CONSUMER, "scenarios"), { recursive: true });
 
-const dependencies = { "@modelcontextprotocol/client": "2.4.0" }
+const dependencies = { "@modelcontextprotocol/client": "2.4.0" };
 for (const packageDir of PACKAGES) {
-  const manifest = JSON.parse(readFileSync(path.join(ROOT, packageDir, "package.json"), "utf8"))
-  execFileSync("npm", ["pack", path.join(ROOT, packageDir), "--pack-destination", INTEGRATION], { cwd: ROOT, env: cleanEnvironment(), stdio: "inherit", timeout: 120_000 })
-  const tarball = `${manifest.name.replace(/^@/, "").replace("/", "-")}-${manifest.version}.tgz`
-  dependencies[manifest.name] = `file:${path.join(INTEGRATION, tarball)}`
+  const manifest = JSON.parse(
+    readFileSync(path.join(ROOT, packageDir, "package.json"), "utf8"),
+  );
+  execFileSync(
+    "npm",
+    ["pack", path.join(ROOT, packageDir), "--pack-destination", INTEGRATION],
+    { cwd: ROOT, env: cleanEnvironment(), stdio: "inherit", timeout: 120_000 },
+  );
+  const tarball = `${manifest.name.replace(/^@/, "").replace("/", "-")}-${manifest.version}.tgz`;
+  dependencies[manifest.name] = `file:${path.join(INTEGRATION, tarball)}`;
 }
 
-writeFileSync(path.join(CONSUMER, "package.json"), JSON.stringify({
-  name: "sourcefed-integration-consumer",
-  version: "0.0.0",
-  private: true,
-  type: "module",
-  dependencies,
-}, null, 2))
+writeFileSync(
+  path.join(CONSUMER, "package.json"),
+  JSON.stringify(
+    {
+      name: "sourcefed-integration-consumer",
+      version: "0.0.0",
+      private: true,
+      type: "module",
+      dependencies,
+    },
+    null,
+    2,
+  ),
+);
 
-run("npm", ["install", "--no-audit", "--no-fund"], CONSUMER)
+run("npm", ["install", "--no-audit", "--no-fund"], CONSUMER);
 
-for (const entry of readdirSync(SCENARIOS).filter((name) => name.endsWith(".mjs"))) {
-  cpSync(path.join(SCENARIOS, entry), path.join(CONSUMER, "scenarios", entry))
+for (const entry of readdirSync(SCENARIOS).filter((name) =>
+  name.endsWith(".mjs"),
+)) {
+  cpSync(path.join(SCENARIOS, entry), path.join(CONSUMER, "scenarios", entry));
 }
 
-let passed = 0
-const failures = []
+let passed = 0;
+const failures = [];
 for (const name of scenarioNames.sort()) {
   try {
-    execFileSync(process.execPath, [path.join(CONSUMER, "scenarios", name)], { cwd: CONSUMER, env: cleanEnvironment(), stdio: "inherit", timeout: 180_000 })
-    console.log(`\n\u001b[32mPASS\u001b[0m ${name}`)
-    passed += 1
+    execFileSync(process.execPath, [path.join(CONSUMER, "scenarios", name)], {
+      cwd: CONSUMER,
+      env: cleanEnvironment(),
+      stdio: "inherit",
+      timeout: 180_000,
+    });
+    console.log(`\n\u001b[32mPASS\u001b[0m ${name}`);
+    passed += 1;
   } catch (error) {
-    console.log(`\n\u001b[31mFAIL\u001b[0m ${name}`)
-    failures.push(name)
+    console.log(`\n\u001b[31mFAIL\u001b[0m ${name}`);
+    failures.push(name);
   }
 }
 
-console.log(`\n${passed}/${scenarioNames.length} integration scenarios passed (${selection})`)
+console.log(
+  `\n${passed}/${scenarioNames.length} integration scenarios passed (${selection})`,
+);
 if (failures.length > 0) {
-  console.error(`failed: ${failures.join(", ")}`)
-  process.exitCode = 1
+  console.error(`failed: ${failures.join(", ")}`);
+  process.exitCode = 1;
 }
 
 function run(command, args, cwd) {
-  console.log(`$ ${command} ${args.join(" ")}`)
-  execFileSync(command, args, { cwd, env: cleanEnvironment(), stdio: "inherit", timeout: 120_000 })
+  console.log(`$ ${command} ${args.join(" ")}`);
+  execFileSync(command, args, {
+    cwd,
+    env: cleanEnvironment(),
+    stdio: "inherit",
+    timeout: 120_000,
+  });
 }

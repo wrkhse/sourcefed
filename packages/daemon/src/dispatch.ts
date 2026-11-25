@@ -1,93 +1,164 @@
-import { ISSUE_NUMBER_ERROR, orderedIssueNumbers, type MonitorTarget } from "@sourcefed/core"
-import { MAX_COMMENT_BODY } from "@sourcefed/provider-github"
-import { commentOnIssue } from "./comment.ts"
-import type { SourcefedDaemon } from "./daemon.ts"
-import { daemonHealth } from "./health.ts"
-import type { CommentIssueInput, DaemonCreateInput } from "./types"
+import {
+  ISSUE_NUMBER_ERROR,
+  orderedIssueNumbers,
+  type MonitorTarget,
+} from "@sourcefed/core";
+import { MAX_COMMENT_BODY } from "@sourcefed/provider-github";
+import { commentOnIssue } from "./comment.ts";
+import type { SourcefedDaemon } from "./daemon.ts";
+import { daemonHealth } from "./health.ts";
+import type { CommentIssueInput, DaemonCreateInput } from "./types";
 
-export async function dispatchDaemonRequest(daemon: SourcefedDaemon, method: string, params: Record<string, unknown>): Promise<unknown> {
+export async function dispatchDaemonRequest(
+  daemon: SourcefedDaemon,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
   switch (method) {
     case "monitor.create":
-      return daemon.createMonitor(createTarget(params), createCreateInput(params))
+      return daemon.createMonitor(
+        createTarget(params),
+        createCreateInput(params),
+      );
     case "monitor.list":
-      return daemon.listMonitors(createTarget(params))
+      return daemon.listMonitors(createTarget(params));
     case "monitor.targets":
-      if (typeof params.kind !== "string" || !params.kind) throw new Error("monitor.targets requires params.kind")
-      return { targets: await daemon.listTargets(params.kind) }
+      if (typeof params.kind !== "string" || !params.kind)
+        throw new Error("monitor.targets requires params.kind");
+      return { targets: await daemon.listTargets(params.kind) };
     case "monitor.status":
-      return daemon.getMonitor(createTarget(params), String(params.id))
+      return daemon.getMonitor(createTarget(params), String(params.id));
     case "monitor.stop":
-      return daemon.stopMonitor(createTarget(params), String(params.id))
+      return daemon.stopMonitor(createTarget(params), String(params.id));
     case "monitor.start":
-      return daemon.startMonitor(createTarget(params), String(params.id))
+      return daemon.startMonitor(createTarget(params), String(params.id));
     case "monitor.remove":
-      return daemon.removeMonitor(createTarget(params), String(params.id))
+      return daemon.removeMonitor(createTarget(params), String(params.id));
     case "monitor.events":
-      return { events: await daemon.readEvents(createTarget(params)) }
+      return { events: await daemon.readEvents(createTarget(params)) };
     case "monitor.logs":
-      return { logs: await daemon.readLogs(createTarget(params)) }
+      return { logs: await daemon.readLogs(createTarget(params)) };
     case "monitor.ack":
-      return daemon.acknowledgeEvents(createTarget(params), (params.eventIDs as string[] | undefined) ?? [])
+      return daemon.acknowledgeEvents(
+        createTarget(params),
+        (params.eventIDs as string[] | undefined) ?? [],
+      );
     case "comment.issue":
-      return commentOnIssue(createCommentIssueInput(params))
+      return commentOnIssue(createCommentIssueInput(params));
     case "daemon.health":
-      return daemonHealth()
+      return daemonHealth();
     case "daemon.sourceTypes":
-      return { sourceTypes: daemon.sourceTypes }
+      return { sourceTypes: daemon.sourceTypes };
     default:
-      throw new Error(`unknown daemon method ${method}`)
+      throw new Error(`unknown daemon method ${method}`);
   }
 }
 
 function createTarget(params: Record<string, unknown>): MonitorTarget {
-  const target = params.target as Partial<MonitorTarget> | undefined
-  if (!target || typeof target.kind !== "string" || typeof target.id !== "string") {
-    throw new Error("params.target is required and must be { kind: string, id: string }")
+  const target = params.target as Partial<MonitorTarget> | undefined;
+  if (
+    !target ||
+    typeof target.kind !== "string" ||
+    typeof target.id !== "string"
+  ) {
+    throw new Error(
+      "params.target is required and must be { kind: string, id: string }",
+    );
   }
-  return { kind: target.kind, id: target.id }
+  return { kind: target.kind, id: target.id };
 }
 
-function createCommentIssueInput(params: Record<string, unknown>): CommentIssueInput {
-  if (typeof params.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(params.repo)) throw new Error("comment.issue requires params.repo as owner/name")
-  if (typeof params.issueNumber !== "number" || !Number.isInteger(params.issueNumber) || params.issueNumber <= 0) throw new Error("comment.issue requires a positive integer params.issueNumber")
-  if (typeof params.body !== "string" || !params.body.trim()) throw new Error("comment.issue requires a non-empty params.body")
-  if (params.body.length > MAX_COMMENT_BODY) throw new Error(`comment.issue params.body exceeds ${MAX_COMMENT_BODY} characters`)
-  return { repo: params.repo, issueNumber: params.issueNumber, body: params.body }
+function createCommentIssueInput(
+  params: Record<string, unknown>,
+): CommentIssueInput {
+  if (
+    typeof params.repo !== "string" ||
+    !/^[\w.-]+\/[\w.-]+$/.test(params.repo)
+  )
+    throw new Error("comment.issue requires params.repo as owner/name");
+  if (
+    typeof params.issueNumber !== "number" ||
+    !Number.isInteger(params.issueNumber) ||
+    params.issueNumber <= 0
+  )
+    throw new Error(
+      "comment.issue requires a positive integer params.issueNumber",
+    );
+  if (typeof params.body !== "string" || !params.body.trim())
+    throw new Error("comment.issue requires a non-empty params.body");
+  if (params.body.length > MAX_COMMENT_BODY)
+    throw new Error(
+      `comment.issue params.body exceeds ${MAX_COMMENT_BODY} characters`,
+    );
+  return {
+    repo: params.repo,
+    issueNumber: params.issueNumber,
+    body: params.body,
+  };
 }
 
 function createCreateInput(params: Record<string, unknown>): DaemonCreateInput {
-  if (typeof params.name !== "string" || !params.name) throw new Error("monitor.create requires params.name")
-  if (typeof params.sourceType !== "string" || !params.sourceType) throw new Error("monitor.create requires params.sourceType")
+  if (typeof params.name !== "string" || !params.name)
+    throw new Error("monitor.create requires params.name");
+  if (typeof params.sourceType !== "string" || !params.sourceType)
+    throw new Error("monitor.create requires params.sourceType");
 
   const input: DaemonCreateInput = {
     name: params.name,
     sourceType: params.sourceType,
-  }
-  const text = ["issueKey", "repo", "channelId", "threadTs", "threadUrl", "url", "space", "match", "exclude", "assignee", "author", "query", "jql", "cron", "job", "in", "at", "every", "timezone"] as const
+  };
+  const text = [
+    "issueKey",
+    "repo",
+    "channelId",
+    "threadTs",
+    "threadUrl",
+    "url",
+    "space",
+    "match",
+    "exclude",
+    "assignee",
+    "author",
+    "query",
+    "jql",
+    "cron",
+    "job",
+    "in",
+    "at",
+    "every",
+    "timezone",
+  ] as const;
   for (const key of text) {
-    if (typeof params[key] === "string") input[key] = params[key]
+    if (typeof params[key] === "string") input[key] = params[key];
   }
   if (params.labels !== undefined) {
-    if (!Array.isArray(params.labels) || !params.labels.every((label) => typeof label === "string")) {
-      throw new Error("labels must be an array of strings")
+    if (
+      !Array.isArray(params.labels) ||
+      !params.labels.every((label) => typeof label === "string")
+    ) {
+      throw new Error("labels must be an array of strings");
     }
-    input.labels = params.labels
+    input.labels = params.labels;
   }
   if (params.issueNumbers !== undefined) {
-    const numbers = orderedIssueNumbers(params.issueNumbers)
-    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
-    input.issueNumbers = numbers
+    const numbers = orderedIssueNumbers(params.issueNumbers);
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR);
+    input.issueNumbers = numbers;
   }
   if (params.includeExisting !== undefined) {
-    if (typeof params.includeExisting !== "boolean") throw new Error("includeExisting must be a boolean")
-    input.includeExisting = params.includeExisting
+    if (typeof params.includeExisting !== "boolean")
+      throw new Error("includeExisting must be a boolean");
+    input.includeExisting = params.includeExisting;
   }
-  if (typeof params.prNumber === "number") input.prNumber = params.prNumber
+  if (typeof params.prNumber === "number") input.prNumber = params.prNumber;
   if (params.pollIntervalSec !== undefined) {
-    if (typeof params.pollIntervalSec !== "number" || !Number.isFinite(params.pollIntervalSec)) {
-      throw new Error("pollIntervalSec must be a number")
+    if (
+      typeof params.pollIntervalSec !== "number" ||
+      !Number.isFinite(params.pollIntervalSec)
+    ) {
+      throw new Error("pollIntervalSec must be a number");
     }
-    input.pollIntervalSec = params.pollIntervalSec
+    input.pollIntervalSec = params.pollIntervalSec;
   }
-  return input
+  return input;
 }

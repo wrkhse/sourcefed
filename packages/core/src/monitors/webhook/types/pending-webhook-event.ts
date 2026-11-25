@@ -1,10 +1,10 @@
-import * as v from "valibot"
-import type { MonitorEvent } from "#sourcefed/types"
+import * as v from "valibot";
+import type { MonitorEvent } from "#sourcefed/types";
 
 export type PendingWebhookEvent = {
-  deliveryId: string
-  event: MonitorEvent
-}
+  deliveryId: string;
+  event: MonitorEvent;
+};
 
 const PendingWebhookEventSchema = v.object({
   deliveryId: v.string(),
@@ -18,6 +18,6 @@ const PendingWebhookEventSchema = v.object({
     actionable: v.boolean(),
     terminal: v.optional(v.boolean()),
   }),
-})
+});
 
-export const PendingWebhookEventsSchema = v.array(PendingWebhookEventSchema)
+export const PendingWebhookEventsSchema = v.array(PendingWebhookEventSchema);

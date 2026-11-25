@@ -10,4 +10,4 @@ export const EXTERNAL = [
   "typebox",
   "@opencode/plugin",
   "@opencode/plugin/*",
-]
+];

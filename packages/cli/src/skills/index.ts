@@ -1,1 +1,1 @@
-export { runSkillsCommand } from "./command.ts"
+export { runSkillsCommand } from "./command.ts";

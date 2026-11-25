@@ -1,31 +1,52 @@
-import { execFile } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
+import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export function setupSpec(): string {
-  const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { name?: string; version?: string }
-  if (manifest.name === "@wrkhse/sourcefed" && manifest.version) return `@wrkhse/sourcefed@${manifest.version}`
-  return "@wrkhse/sourcefed@latest"
+  const manifest = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../package.json", import.meta.url)),
+      "utf8",
+    ),
+  ) as { name?: string; version?: string };
+  if (manifest.name === "@wrkhse/sourcefed" && manifest.version)
+    return `@wrkhse/sourcefed@${manifest.version}`;
+  return "@wrkhse/sourcefed@latest";
 }
 
-export async function setupHost(name: string, args: string[], spec: string): Promise<boolean> {
-  console.error(`[sourcefed] installing ${spec} into ${name}`)
+export async function setupHost(
+  name: string,
+  args: string[],
+  spec: string,
+): Promise<boolean> {
+  console.error(`[sourcefed] installing ${spec} into ${name}`);
 
   try {
-    await execFile(name, args)
-    console.error(`[sourcefed] ${name} configured — restart ${name} to load the plugin`)
+    await execFile(name, args);
+    console.error(
+      `[sourcefed] ${name} configured — restart ${name} to load the plugin`,
+    );
 
-    return true
+    return true;
   } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : ""
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
 
     if (code === "ENOENT") {
-      console.error(`[sourcefed] ${name} is not on PATH — install it manually:`)
-      console.error(name === "opencode" ? `  add "${spec}" to the plugins array in ~/.config/opencode/opencode.jsonc` : `  run: pi install ${spec}`)
+      console.error(
+        `[sourcefed] ${name} is not on PATH — install it manually:`,
+      );
+      console.error(
+        name === "opencode"
+          ? `  add "${spec}" to the plugins array in ~/.config/opencode/opencode.jsonc`
+          : `  run: pi install ${spec}`,
+      );
 
-      return false
+      return false;
     }
 
-    throw error
+    throw error;
   }
 }

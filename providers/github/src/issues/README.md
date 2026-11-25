@@ -20,15 +20,15 @@ flowchart LR
     Compare --> Events["events.ts<br/>item.matched, item.unmatched, error"]
 ```
 
-| Module | Responsibility |
-| --- | --- |
+| Module       | Responsibility                                                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `monitor.ts` | `githubIssuesSource`, and `GithubIssuesMonitor` defined from it: builds and checks the source, its input schema, and the webhook wake. |
-| `poll.ts` | `pollGithubIssues`: one poll, from the listing to the events and the next cursor. |
-| `api.ts` | `listIssues`: every matching issue, through the issues list or the search API. |
-| `events.ts` | The events and their `github-issue` subject. |
-| `webhook.ts` | `parseIssueCommentWebhook`: a verified new comment on a plain issue becomes an `issue.comment` event. |
-| `schema.ts` | The source record and the cursor. |
-| `fixtures/` | Replies shaped on recorded GitHub replies, for `issues.test.ts`. |
+| `poll.ts`    | `pollGithubIssues`: one poll, from the listing to the events and the next cursor.                                                      |
+| `api.ts`     | `listIssues`: every matching issue, through the issues list or the search API.                                                         |
+| `events.ts`  | The events and their `github-issue` subject.                                                                                           |
+| `webhook.ts` | `parseIssueCommentWebhook`: a verified new comment on a plain issue becomes an `issue.comment` event.                                  |
+| `schema.ts`  | The source record and the cursor.                                                                                                      |
+| `fixtures/`  | Replies shaped on recorded GitHub replies, for `issues.test.ts`.                                                                       |
 
 - **The cursor is the set of matching keys** (`owner/repo#48`), compared by core's
   `compareCollection`. A new key is `item.matched`, a gone one `item.unmatched`;

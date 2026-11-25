@@ -8,9 +8,7 @@
     "SOURCEFED_SLACK_TOKEN": "xoxb-test",
     "SOURCEFED_SLACK_SIGNING_SECRET": "test-signing-secret"
   },
-  "unset": [
-    "SOURCEFED_SLACK_REQUESTS_PER_MINUTE"
-  ],
+  "unset": ["SOURCEFED_SLACK_REQUESTS_PER_MINUTE"],
   "cases": [
     {
       "name": "thread-priming",

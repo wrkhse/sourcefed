@@ -1,0 +1,20 @@
+// changelogen writes CHANGELOG.md, so the Format job leaves it out.
+{
+  "$schema": "https://tidy.lukeed.com/2.0.0/schema.json",
+  "indent": 2,
+  "tabs": false,
+  "eol": "lf",
+  "quote": "double",
+  "trailingComma": true,
+  "bracketSpacing": true,
+  "bracketSameLine": false,
+  "singleAttributePerLine": false,
+  "ignore": "prettier-ignore",
+  "embedded": true,
+  "js": {
+    "jsdoc": false
+  },
+  "markdown": {
+    "wrap": "preserve"
+  }
+}

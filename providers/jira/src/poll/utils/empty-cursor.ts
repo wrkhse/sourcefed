@@ -1,5 +1,5 @@
-import type { JiraCursor } from "../../types"
+import type { JiraCursor } from "../../types";
 
 export function emptyJiraCursor(): JiraCursor {
-  return { commentIds: [], descriptionVersion: undefined, changelogIds: [] }
+  return { commentIds: [], descriptionVersion: undefined, changelogIds: [] };
 }

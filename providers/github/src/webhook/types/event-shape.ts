@@ -1,7 +1,7 @@
 export type GithubEventShape = {
-  kind: string
-  id?: string
-  summary: string
-  body?: string
-  actionable: boolean
-}
+  kind: string;
+  id?: string;
+  summary: string;
+  body?: string;
+  actionable: boolean;
+};

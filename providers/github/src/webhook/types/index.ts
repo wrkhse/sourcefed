@@ -1,1 +1,1 @@
-export type { GithubEventHandler } from "./event-handler.ts"
+export type { GithubEventHandler } from "./event-handler.ts";

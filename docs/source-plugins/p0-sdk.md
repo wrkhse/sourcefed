@@ -88,15 +88,15 @@ provider's golden replay.
 Each provider is a definition in its own package under its exported name. All
 fixtures are recorded from `0a1a5e7`.
 
-| Source | Cases | Fixture |
-| --- | --- | --- |
-| jira | 6 | `providers/jira/src/fixtures/golden.ts` |
-| jira-query | 4 | `providers/jira/src/query/fixtures/golden.ts` |
-| github | 6, 4 deliveries | `providers/github/src/fixtures/golden.ts` |
-| github-issues | 5 | `providers/github/src/issues/fixtures/golden.ts` |
-| slack | 5, 4 deliveries | `providers/slack/src/fixtures/golden.ts` |
-| yab | 8, through MCP | `providers/yab/src/fixtures/golden.ts` |
-| schedule | 4, a clock per case | `providers/schedule/src/fixtures/golden.ts` |
+| Source        | Cases               | Fixture                                          |
+| ------------- | ------------------- | ------------------------------------------------ |
+| jira          | 6                   | `providers/jira/src/fixtures/golden.ts`          |
+| jira-query    | 4                   | `providers/jira/src/query/fixtures/golden.ts`    |
+| github        | 6, 4 deliveries     | `providers/github/src/fixtures/golden.ts`        |
+| github-issues | 5                   | `providers/github/src/issues/fixtures/golden.ts` |
+| slack         | 5, 4 deliveries     | `providers/slack/src/fixtures/golden.ts`         |
+| yab           | 8, through MCP      | `providers/yab/src/fixtures/golden.ts`           |
+| schedule      | 4, a clock per case | `providers/schedule/src/fixtures/golden.ts`      |
 
 What the cases cover:
 

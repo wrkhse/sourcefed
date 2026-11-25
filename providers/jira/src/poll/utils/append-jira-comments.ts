@@ -1,19 +1,24 @@
-import { adfText } from "./adf-text.ts"
-import type { JiraCursor, JiraEvent } from "../../types"
+import { adfText } from "./adf-text.ts";
+import type { JiraCursor, JiraEvent } from "../../types";
 
-export function appendJiraComments(issueKey: string, cursor: JiraCursor, events: JiraEvent[], comments: any[]): void {
-  const freshComments: any[] = []
+export function appendJiraComments(
+  issueKey: string,
+  cursor: JiraCursor,
+  events: JiraEvent[],
+  comments: any[],
+): void {
+  const freshComments: any[] = [];
   for (const comment of comments) {
-    const id = Number(comment.id)
-    if (cursor.commentIds.includes(id)) continue
-    freshComments.push(comment)
+    const id = Number(comment.id);
+    if (cursor.commentIds.includes(id)) continue;
+    freshComments.push(comment);
   }
   if (cursor.commentIds.length === 0) {
-    cursor.commentIds = freshComments.map((comment) => Number(comment.id))
-    return
+    cursor.commentIds = freshComments.map((comment) => Number(comment.id));
+    return;
   }
   for (const comment of freshComments) {
-    const body = adfText(comment.body)
+    const body = adfText(comment.body);
     events.push({
       kind: "comment",
       id: `comment:${comment.id}`,
@@ -23,7 +28,7 @@ export function appendJiraComments(issueKey: string, cursor: JiraCursor, events:
       body,
       author: comment.author?.displayName,
       actionable: true,
-    })
-    cursor.commentIds.push(Number(comment.id))
+    });
+    cursor.commentIds.push(Number(comment.id));
   }
 }

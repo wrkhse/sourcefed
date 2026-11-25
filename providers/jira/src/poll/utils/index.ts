@@ -1,1 +1,1 @@
-export { pollJira } from "./poll-jira.ts"
+export { pollJira } from "./poll-jira.ts";

@@ -1,15 +1,23 @@
 /** @jsxImportSource @opentui/solid */
 
-import { Show, createMemo, createSignal, onCleanup } from "solid-js"
-import { connectDaemonClient, defaultDaemonUrl, type DaemonClient, type MonitorView } from "@sourcefed/daemon"
-import type { Plugin } from "@opencode/plugin/tui"
+import { Show, createMemo, createSignal, onCleanup } from "solid-js";
+import {
+  connectDaemonClient,
+  defaultDaemonUrl,
+  type DaemonClient,
+  type MonitorView,
+} from "@sourcefed/daemon";
+import type { Plugin } from "@opencode/plugin/tui";
 
-type ThemeTokens = Plugin.Context["theme"]
-type Color = ThemeTokens["text"]["base"]
+type ThemeTokens = Plugin.Context["theme"];
+type Color = ThemeTokens["text"]["base"];
 
 // V2 theme tokens are deeply nested; flatten the handful the sidebar and dialogs
 // use into a flat palette so the JSX stays legible.
-export type Tone = Record<"text" | "textMuted" | "accent" | "success" | "error" | "warning", Color>
+export type Tone = Record<
+  "text" | "textMuted" | "accent" | "success" | "error" | "warning",
+  Color
+>;
 
 export function tone(theme: ThemeTokens): Tone {
   return {
@@ -19,37 +27,44 @@ export function tone(theme: ThemeTokens): Tone {
     success: theme.text.feedback.success.base,
     error: theme.text.feedback.error.base,
     warning: theme.text.feedback.warning.base,
-  }
+  };
 }
 
 export type SidebarProps = {
-  ctx: Plugin.Context
-  sessionID: string
-}
+  ctx: Plugin.Context;
+  sessionID: string;
+};
 
-const REFRESH_MS = 3_000
+const REFRESH_MS = 3_000;
 
 export function Sidebar(props: SidebarProps) {
-  const [monitors, setMonitors] = createSignal<MonitorView[]>([])
-  const palette = createMemo(() => tone(props.ctx.theme))
-  const active = createMemo(() => monitors().filter((monitor) => monitor.enabled))
+  const [monitors, setMonitors] = createSignal<MonitorView[]>([]);
+  const palette = createMemo(() => tone(props.ctx.theme));
+  const active = createMemo(() =>
+    monitors().filter((monitor) => monitor.enabled),
+  );
 
   const refresh = async () => {
-    let client: DaemonClient | undefined
+    let client: DaemonClient | undefined;
     try {
-      client = await connectDaemonClient({ name: "sourcefed-opencode-tui", url: process.env.SOURCEFED_DAEMON_URL ?? defaultDaemonUrl() })
-      const result = (await client.request("monitor.list", { target: { kind: "opencode-session", id: props.sessionID } })) as { ok?: boolean; monitors?: MonitorView[] }
-      setMonitors(result?.monitors ?? [])
+      client = await connectDaemonClient({
+        name: "sourcefed-opencode-tui",
+        url: process.env.SOURCEFED_DAEMON_URL ?? defaultDaemonUrl(),
+      });
+      const result = (await client.request("monitor.list", {
+        target: { kind: "opencode-session", id: props.sessionID },
+      })) as { ok?: boolean; monitors?: MonitorView[] };
+      setMonitors(result?.monitors ?? []);
     } catch {
-      setMonitors([])
+      setMonitors([]);
     } finally {
-      await client?.close()
+      await client?.close();
     }
-  }
+  };
 
-  void refresh()
-  const timer = setInterval(() => void refresh(), REFRESH_MS)
-  onCleanup(() => clearInterval(timer))
+  void refresh();
+  const timer = setInterval(() => void refresh(), REFRESH_MS);
+  onCleanup(() => clearInterval(timer));
 
   return (
     <Show when={active().length > 0}>
@@ -61,11 +76,15 @@ export function Sidebar(props: SidebarProps) {
         <MonitorRows monitors={active} tone={palette()} compact />
       </box>
     </Show>
-  )
+  );
 }
 
-export function MonitorRows(props: { monitors: () => MonitorView[]; tone: Tone; compact?: boolean }) {
-  const visible = createMemo(() => props.monitors().slice(0, 4))
+export function MonitorRows(props: {
+  monitors: () => MonitorView[];
+  tone: Tone;
+  compact?: boolean;
+}) {
+  const visible = createMemo(() => props.monitors().slice(0, 4));
   return (
     <box flexDirection="column" width="100%">
       {visible().map((monitor) => (
@@ -78,10 +97,10 @@ export function MonitorRows(props: { monitors: () => MonitorView[]; tone: Tone; 
         <text fg={props.tone.textMuted}>Open Sourcefed for more</text>
       </Show>
     </box>
-  )
+  );
 }
 
 function monitorTone(monitor: MonitorView, tone: Tone): Color {
-  if (!monitor.enabled) return tone.textMuted
-  return tone.success
+  if (!monitor.enabled) return tone.textMuted;
+  return tone.success;
 }

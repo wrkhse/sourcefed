@@ -1,5 +1,5 @@
 export interface JiraCursor {
-  commentIds: number[]
-  descriptionVersion?: string
-  changelogIds: string[]
+  commentIds: number[];
+  descriptionVersion?: string;
+  changelogIds: string[];
 }

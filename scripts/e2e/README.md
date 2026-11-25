@@ -18,19 +18,19 @@ Run the full pipeline from the repository root:
 npm run release:verify -- --dry-run
 ```
 
-| Module | Responsibility |
-| --- | --- |
-| `harness.mjs` | Allowlisted environments, bounded process groups, hashes, evidence |
-| `package.mjs` | Install the exact archive; validate exports and Pi-free runtime |
-| `scenarios.mjs` | Registry compiler/client tools and installed integration tests |
-| `types.mjs` | Strict library consumer; host consumer with pinned upstream diagnostics |
-| `cli-daemon.mjs` | Installed CLI and daemon lifecycle |
-| `mcp.mjs`, `mcp-stdio.worker.mjs` | Real MCP HTTP and stdio boundaries |
-| `providers.mjs`, `webhooks.mjs` | Local HTTP polling and signed webhook delivery |
-| `opencode.mjs` | Actual OpenCode plugin/tool and transport checks |
-| `terminal.mjs` | Terminal Control visible-state capture and owned-session cleanup |
-| `pi.mjs` | Pi managed installation, RPC loading and production audit |
-| `registry-canary.mjs` | Published integrity, fresh consumers and host evidence |
+| Module                            | Responsibility                                                          |
+| --------------------------------- | ----------------------------------------------------------------------- |
+| `harness.mjs`                     | Allowlisted environments, bounded process groups, hashes, evidence      |
+| `package.mjs`                     | Install the exact archive; validate exports and Pi-free runtime         |
+| `scenarios.mjs`                   | Registry compiler/client tools and installed integration tests          |
+| `types.mjs`                       | Strict library consumer; host consumer with pinned upstream diagnostics |
+| `cli-daemon.mjs`                  | Installed CLI and daemon lifecycle                                      |
+| `mcp.mjs`, `mcp-stdio.worker.mjs` | Real MCP HTTP and stdio boundaries                                      |
+| `providers.mjs`, `webhooks.mjs`   | Local HTTP polling and signed webhook delivery                          |
+| `opencode.mjs`                    | Actual OpenCode plugin/tool and transport checks                        |
+| `terminal.mjs`                    | Terminal Control visible-state capture and owned-session cleanup        |
+| `pi.mjs`                          | Pi managed installation, RPC loading and production audit               |
+| `registry-canary.mjs`             | Published integrity, fresh consumers and host evidence                  |
 
 `context` carries the exact artifact path, SHA-256, npm integrity, source commit,
 version, owned workspace and consumer paths. Gates return evidence details or

@@ -1,7 +1,11 @@
-import { COLLECTION_LIMIT, compareCollection, type SourceEvent } from "@sourcefed/core"
-import { searchIssues, type JiraFetch, type JiraIssue } from "./api.ts"
-import { limitEvent, matchedEvent, unmatchedEvent } from "./events.ts"
-import type { JiraQuerySource } from "./schema.ts"
+import {
+  COLLECTION_LIMIT,
+  compareCollection,
+  type SourceEvent,
+} from "@sourcefed/core";
+import { searchIssues, type JiraFetch, type JiraIssue } from "./api.ts";
+import { limitEvent, matchedEvent, unmatchedEvent } from "./events.ts";
+import type { JiraQuerySource } from "./schema.ts";
 
 /** One poll: search the JQL and compare the matching keys with the cursor's. */
 export async function pollJiraQuery(
@@ -10,14 +14,20 @@ export async function pollJiraQuery(
   request: JiraFetch,
   now: () => Date,
 ): Promise<{ cursor: unknown; events: SourceEvent[] }> {
-  const listing = await searchIssues(source.jql, request)
-  const changes = compareCollection(cursorRaw, listing, (issue: JiraIssue) => issue.key, source.includeExisting ?? false)
+  const listing = await searchIssues(source.jql, request);
+  const changes = compareCollection(
+    cursorRaw,
+    listing,
+    (issue: JiraIssue) => issue.key,
+    source.includeExisting ?? false,
+  );
 
-  const at = now().toISOString()
+  const at = now().toISOString();
   const events = [
     ...changes.unmatched.map((key) => unmatchedEvent(source.jql, key, at)),
     ...changes.matched.map((issue) => matchedEvent(source.jql, issue, at)),
-  ]
-  if (changes.reachedLimit) events.push(limitEvent(source.jql, COLLECTION_LIMIT, at))
-  return { cursor: changes.cursor, events }
+  ];
+  if (changes.reachedLimit)
+    events.push(limitEvent(source.jql, COLLECTION_LIMIT, at));
+  return { cursor: changes.cursor, events };
 }

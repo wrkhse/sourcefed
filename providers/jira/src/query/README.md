@@ -18,14 +18,14 @@ flowchart LR
     Compare --> Events["events.ts<br/>item.matched, item.unmatched, error"]
 ```
 
-| Module | Responsibility |
-| --- | --- |
+| Module       | Responsibility                                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------- |
 | `monitor.ts` | `jiraQuerySource`, and `JiraQueryMonitor` defined from it: builds and checks the source, and its input schema. |
-| `poll.ts` | `pollJiraQuery`: one poll, from the search to the events and the next cursor. |
-| `api.ts` | `searchIssues`: every matching issue through Jira's enhanced search. |
-| `events.ts` | The events and their `jira-issue` subject. |
-| `schema.ts` | The source record. |
-| `fixtures/` | Replies shaped on recorded Jira replies, for `query.test.ts`. |
+| `poll.ts`    | `pollJiraQuery`: one poll, from the search to the events and the next cursor.                                  |
+| `api.ts`     | `searchIssues`: every matching issue through Jira's enhanced search.                                           |
+| `events.ts`  | The events and their `jira-issue` subject.                                                                     |
+| `schema.ts`  | The source record.                                                                                             |
+| `fixtures/`  | Replies shaped on recorded Jira replies, for `query.test.ts`.                                                  |
 
 - **The cursor is the set of matching keys** (`PROJ-7`), compared by core's
   `compareCollection`, as for `github-issues`. The first poll primes silently

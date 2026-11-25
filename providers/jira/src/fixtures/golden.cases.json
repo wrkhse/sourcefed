@@ -9,9 +9,7 @@
     "ATLASSIAN_EMAIL": "test@example.com",
     "ATLASSIAN_API_KEY": "test-key"
   },
-  "unset": [
-    "SOURCEFED_JIRA_TERMINAL_STATUS"
-  ],
+  "unset": ["SOURCEFED_JIRA_TERMINAL_STATUS"],
   "cases": [
     {
       "name": "priming",

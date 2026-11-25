@@ -1,10 +1,15 @@
-import type { Monitor, MonitorCreateInput, MonitorSource, SourceInput } from "@sourcefed/core"
-import { GithubIssuesMonitor, GithubMonitor } from "@sourcefed/provider-github"
-import { JiraMonitor, JiraQueryMonitor } from "@sourcefed/provider-jira"
-import { ScheduleMonitor } from "@sourcefed/provider-schedule"
-import { SlackMonitor } from "@sourcefed/provider-slack"
-import { TimerMonitor } from "@sourcefed/provider-timer"
-import { YabMonitor } from "@sourcefed/provider-yab"
+import type {
+  Monitor,
+  MonitorCreateInput,
+  MonitorSource,
+  SourceInput,
+} from "@sourcefed/core";
+import { GithubIssuesMonitor, GithubMonitor } from "@sourcefed/provider-github";
+import { JiraMonitor, JiraQueryMonitor } from "@sourcefed/provider-jira";
+import { ScheduleMonitor } from "@sourcefed/provider-schedule";
+import { SlackMonitor } from "@sourcefed/provider-slack";
+import { TimerMonitor } from "@sourcefed/provider-timer";
+import { YabMonitor } from "@sourcefed/provider-yab";
 
 export const SOURCE_MAP = {
   jira: JiraMonitor,
@@ -15,27 +20,32 @@ export const SOURCE_MAP = {
   yab: YabMonitor,
   schedule: ScheduleMonitor,
   timer: TimerMonitor,
-}
+};
 
-export const SOURCE_TYPES = Object.keys(SOURCE_MAP) as [string, ...string[]]
+export const SOURCE_TYPES = Object.keys(SOURCE_MAP) as [string, ...string[]];
 
 export function sourceDefinition(source: MonitorSource): Monitor<any> {
-  return SOURCE_MAP[source.type as keyof typeof SOURCE_MAP]
+  return SOURCE_MAP[source.type as keyof typeof SOURCE_MAP];
 }
 
 export function isSource(input: SourceInput): input is MonitorSource {
-  return typeof (input as { type?: unknown }).type === "string"
+  return typeof (input as { type?: unknown }).type === "string";
 }
 
-export function sourceForInput(type: MonitorSource["type"], input: MonitorCreateInput): SourceInput {
-  const source = SOURCE_MAP[type as keyof typeof SOURCE_MAP]
-  return source.build(input) as SourceInput
+export function sourceForInput(
+  type: MonitorSource["type"],
+  input: MonitorCreateInput,
+): SourceInput {
+  const source = SOURCE_MAP[type as keyof typeof SOURCE_MAP];
+  return source.build(input) as SourceInput;
 }
 
-export function sourceForWebhookPath(pathname: string): Monitor<any> | undefined {
-  const sources = Object.values(SOURCE_MAP)
+export function sourceForWebhookPath(
+  pathname: string,
+): Monitor<any> | undefined {
+  const sources = Object.values(SOURCE_MAP);
   for (const source of sources) {
-    if (source.webhook?.path === pathname) return source
+    if (source.webhook?.path === pathname) return source;
   }
-  return undefined
+  return undefined;
 }

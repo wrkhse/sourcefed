@@ -10,16 +10,19 @@
  * non-enumerable, so spreading or serialising an error does not copy it, and the guard
  * requires an Error as well: inside one realm instanceof is safe across bundle copies.
  */
-const POLL_SOURCE_ERROR = Symbol.for("sourcefed.pollSourceError")
+const POLL_SOURCE_ERROR = Symbol.for("sourcefed.pollSourceError");
 
 export class PollSourceError extends Error {
   constructor(message: string, options?: ErrorOptions) {
-    super(message, options)
-    this.name = "PollSourceError"
-    Object.defineProperty(this, POLL_SOURCE_ERROR, { value: true })
+    super(message, options);
+    this.name = "PollSourceError";
+    Object.defineProperty(this, POLL_SOURCE_ERROR, { value: true });
   }
 }
 
 export function isPollSourceError(value: unknown): value is PollSourceError {
-  return value instanceof Error && (value as unknown as Record<symbol, unknown>)[POLL_SOURCE_ERROR] === true
+  return (
+    value instanceof Error &&
+    (value as unknown as Record<symbol, unknown>)[POLL_SOURCE_ERROR] === true
+  );
 }

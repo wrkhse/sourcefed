@@ -1,14 +1,14 @@
-import type { EventSubject } from "@sourcefed/core"
+import type { EventSubject } from "@sourcefed/core";
 
 export interface GithubEvent {
-  kind: "review" | "comment" | "ci" | "conflict" | "merged"
-  id?: string
-  repo: string
-  prNumber: number
-  at: string
-  summary: string
-  body?: string
-  actionable: boolean
-  terminal?: boolean
-  subject?: EventSubject
+  kind: "review" | "comment" | "ci" | "conflict" | "merged";
+  id?: string;
+  repo: string;
+  prNumber: number;
+  at: string;
+  summary: string;
+  body?: string;
+  actionable: boolean;
+  terminal?: boolean;
+  subject?: EventSubject;
 }

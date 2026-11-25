@@ -4,7 +4,7 @@
  * enforces the input.
  */
 export type SourceInputSchema = {
-  description: string
-  properties: Record<string, Record<string, unknown>>
-  required: string[]
-}
+  description: string;
+  properties: Record<string, Record<string, unknown>>;
+  required: string[];
+};

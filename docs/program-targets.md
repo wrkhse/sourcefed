@@ -125,17 +125,17 @@ sourcefed monitor ack --target-kind program --target-id atelier --event-id "m-â€
 
 ## Events
 
-| Kind | From | Subject |
-| --- | --- | --- |
-| `item.matched`, `item.unmatched` | `github-issues` | `{ type: "github-issue", key: "owner/repo#48", repo, number, url, title? }` |
-| `issue.comment` | `github-issues` | `{ type: "github-issue", key, repo, number, url, commentId, author }` |
-| `item.matched`, `item.unmatched` | `jira-query` | `{ type: "jira-issue", key: "PROJ-7", url, title? }` |
-| `schedule.fired` | `schedule` | `{ type: "schedule", key: job, job, at, cron, timezone }` |
-| `schedule.missed` | `schedule` | the same, with `missed`, the count of times it stands for |
-| `timer.fired` | `timer` | `{ type: "timer", key: job, job, at, timezone, every? }`, with `late` and `lateSec` for a late one-shot |
-| `timer.missed` | `timer` | the same, with `missed`, the count of periods it stands for |
-| `overflow` | any monitor | `{ type: "monitor", key: monitorID, dropped }` |
-| `error` | `github-issues`, `jira-query` | none; more than 1,000 items match, and matching pauses |
+| Kind                             | From                          | Subject                                                                                                 |
+| -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `item.matched`, `item.unmatched` | `github-issues`               | `{ type: "github-issue", key: "owner/repo#48", repo, number, url, title? }`                             |
+| `issue.comment`                  | `github-issues`               | `{ type: "github-issue", key, repo, number, url, commentId, author }`                                   |
+| `item.matched`, `item.unmatched` | `jira-query`                  | `{ type: "jira-issue", key: "PROJ-7", url, title? }`                                                    |
+| `schedule.fired`                 | `schedule`                    | `{ type: "schedule", key: job, job, at, cron, timezone }`                                               |
+| `schedule.missed`                | `schedule`                    | the same, with `missed`, the count of times it stands for                                               |
+| `timer.fired`                    | `timer`                       | `{ type: "timer", key: job, job, at, timezone, every? }`, with `late` and `lateSec` for a late one-shot |
+| `timer.missed`                   | `timer`                       | the same, with `missed`, the count of periods it stands for                                             |
+| `overflow`                       | any monitor                   | `{ type: "monitor", key: monitorID, dropped }`                                                          |
+| `error`                          | `github-issues`, `jira-query` | none; more than 1,000 items match, and matching pauses                                                  |
 
 Each event's `summary` and `body` are written for people and agents; a program
 reads `kind` and `subject`. `item.unmatched` carries no title.

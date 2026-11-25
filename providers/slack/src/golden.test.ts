@@ -1,8 +1,8 @@
-import { test } from "node:test"
-import { assertGolden, withEnvironment } from "@sourcefed/sdk"
-import { SLACK_GOLDEN } from "./fixtures/golden.ts"
-import { slackSource } from "./monitor.ts"
-import { resetSlackApi } from "./poll"
+import { test } from "node:test";
+import { assertGolden, withEnvironment } from "@sourcefed/sdk";
+import { SLACK_GOLDEN } from "./fixtures/golden.ts";
+import { slackSource } from "./monitor.ts";
+import { resetSlackApi } from "./poll";
 
 /** The port changes no behaviour: the transcript recorded from the pre-SDK provider must replay exactly. */
 test("the slack source replays its recorded transcript", async () => {
@@ -17,9 +17,9 @@ test("the slack source replays its recorded transcript", async () => {
       // ran before this one could leave the token short of credit or its users already cached.
       // The recording ran in a fresh process; a reset starts from the same state, and builds the
       // limiter at the default rate now that the variable is unset.
-      resetSlackApi()
+      resetSlackApi();
 
-      await assertGolden(SLACK_GOLDEN, slackSource)
+      await assertGolden(SLACK_GOLDEN, slackSource);
     },
-  )
-})
+  );
+});
