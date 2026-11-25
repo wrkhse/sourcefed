@@ -3,6 +3,7 @@ use std::fs::{self, File, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,10 @@ const MAX_READ_BYTES: u64 = 262_145;
 const STORE_VERSION: u8 = 1;
 const STORE_FILE: &str = "positions.json";
 const LOCK_FILE: &str = "positions.lock";
+// Bounds the directory entries one open inspects for leftover temp files.
+const MAX_TEMP_SCAN: usize = 500;
+// Bounds the leftover temp files one open removes.
+const MAX_TEMP_REMOVE: usize = 100;
 
 // Numbers temporary files so concurrent writes in one process never collide.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -41,6 +46,8 @@ pub enum StoreError {
     #[error("could not read {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
     /// Writing fails; inspect the path and underlying I/O error.
+    ///
+    /// Removing leftover temporary files never returns this error.
     #[error("could not write {path}: {source}")]
     Write { path: PathBuf, source: io::Error },
     /// The file is invalid JSON, has an unsupported version, or breaks a limit.
@@ -253,14 +260,18 @@ pub struct Store {
 impl Store {
     /// Opens a store in the directory, or starts empty if its file is absent.
     ///
-    /// After acquiring the exclusive lock, removes up to 100 temporary files
-    /// whose names start with the store file name followed by a period and end
-    /// in `.tmp`. A corrupt file is refused without rewriting it. The directory
+    /// After acquiring the exclusive lock, removes up to 100 leftover temporary
+    /// files that the store itself generated, scanning at most 500 directory
+    /// entries. A generated name is the store file name followed by a nonzero
+    /// `u32` process ID, a `u64` counter and `.tmp`; other files are left
+    /// alone. Cleanup
+    /// failures are ignored, so a stray file cannot block opening a healthy
+    /// store. A corrupt file is refused without rewriting it. The directory
     /// stays locked until the store is dropped.
     ///
     /// # Errors
-    /// Returns [`StoreError::Write`] if directory or lock file creation or
-    /// temporary-file cleanup has an I/O failure,
+    /// Returns [`StoreError::Write`] if directory or lock file creation has an
+    /// I/O failure,
     /// [`StoreError::Locked`] if another store holds the directory,
     /// [`StoreError::Read`] if the file cannot be read, or
     /// [`StoreError::Corrupt`] if the file is invalid or exceeds its limits.
@@ -270,7 +281,7 @@ impl Store {
             source,
         })?;
         let lock = lock(dir)?;
-        cleanup_temp_files(dir)?;
+        cleanup_temp_files(dir);
         let path = dir.join(STORE_FILE);
         let state = State::load(&path)?;
 
@@ -302,9 +313,9 @@ impl Store {
     /// Only distinct IDs not already remembered for the key count as new.
     /// Repeated IDs move to the newest end of the key's queue first, then the
     /// new IDs are appended after them, so a refresh never drops a new ID. The
-    /// oldest IDs are dropped as needed to keep the queue bounded. The position is saved
-    /// even when no event is new. The state is written to a temporary file,
-    /// synced, renamed into place, and the directory synced.
+    /// oldest IDs are dropped as needed to keep the queue bounded. The
+    /// position is saved even when no event is new. The state is written to
+    /// a temporary file, synced, renamed into place, and the directory synced.
     ///
     /// # Errors
     /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit
@@ -389,46 +400,84 @@ impl Store {
     }
 }
 
-fn cleanup_temp_files(dir: &Path) -> Result<(), StoreError> {
-    let entries = fs::read_dir(dir).map_err(|source| StoreError::Write {
-        path: dir.to_owned(),
-        source,
-    })?;
+// Best effort: a stray or unreadable entry must never stop a healthy store
+// from opening, so every I/O failure here is ignored. Returns how many raw
+// directory entries were examined, at most `MAX_TEMP_SCAN`.
+fn cleanup_temp_files(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, cleanup_entries)
+}
+
+// Cleans up among the first `MAX_TEMP_SCAN` raw entries and returns how many
+// were examined. Unreadable entries are skipped but still examined.
+fn cleanup_entries(
+    entries: impl Iterator<Item = io::Result<fs::DirEntry>>,
+) -> usize {
+    // The limit applies to raw entries, so unreadable ones count toward it too.
+    let raw: Vec<_> = entries.take(MAX_TEMP_SCAN).collect();
+    let examined = raw.len();
+    let paths = raw
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path());
+
+    cleanup_paths(paths);
+
+    examined
+}
+
+// Removes generated temp files among the first `MAX_TEMP_SCAN` paths, at most
+// `MAX_TEMP_REMOVE` of them, and returns how many were removed.
+fn cleanup_paths(paths: impl Iterator<Item = PathBuf>) -> usize {
     let mut removed = 0_usize;
 
-    for entry in entries {
-        let entry = entry.map_err(|source| StoreError::Write {
-            path: dir.to_owned(),
-            source,
-        })?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
+    for path in paths.take(MAX_TEMP_SCAN) {
+        let generated = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_generated_temp_name);
+        // symlink_metadata keeps a link to a file from counting as a file.
+        let is_file = fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file());
 
-        if name.starts_with("positions.json.") && name.ends_with(".tmp") {
-            let path = entry.path();
-
-            if !entry
-                .file_type()
-                .map_err(|source| StoreError::Write {
-                    path: path.clone(),
-                    source,
-                })?
-                .is_file()
-            {
-                continue;
-            }
-
-            fs::remove_file(&path)
-                .map_err(|source| StoreError::Write { path, source })?;
+        if generated && is_file && fs::remove_file(&path).is_ok() {
             removed = removed.saturating_add(1);
+        }
 
-            if removed == 100 {
-                break;
-            }
+        if removed == MAX_TEMP_REMOVE {
+            break;
         }
     }
 
-    Ok(())
+    removed
+}
+
+// Accepts only the form `Store::temp_path` generates, so a user's file that
+// merely resembles it is left alone.
+fn is_generated_temp_name(name: &str) -> bool {
+    let numbers = name
+        .strip_prefix(STORE_FILE)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".tmp"));
+
+    numbers
+        .and_then(|numbers| numbers.split_once('.'))
+        .is_some_and(|(pid, count)| {
+            let pid = parse_decimal::<u32>(pid);
+
+            pid.is_some_and(|pid| pid > 0) && parse_decimal::<u64>(count).is_some()
+        })
+}
+
+// Accepts only how Rust formats an unsigned integer: digits alone, with no
+// leading zero unless the number is zero, and within the type's range.
+fn parse_decimal<T: FromStr>(text: &str) -> Option<T> {
+    let canonical = text == "0" || !text.starts_with('0');
+    let digits = text.bytes().all(|byte| byte.is_ascii_digit());
+
+    if canonical && digits {
+        text.parse().ok()
+    } else {
+        None
+    }
 }
 
 fn lock(dir: &Path) -> Result<File, StoreError> {
@@ -661,8 +710,8 @@ mod tests {
     #[test]
     fn opening_removes_only_matching_temp_files() {
         let dir = tempfile::tempdir().unwrap();
-        let first = dir.path().join("positions.json.1.tmp");
-        let second = dir.path().join("positions.json.2.tmp");
+        let first = dir.path().join("positions.json.1.1.tmp");
+        let second = dir.path().join("positions.json.1.2.tmp");
         let unrelated = dir.path().join("other.tmp");
         fs::write(&first, b"first").unwrap();
         fs::write(&second, b"second").unwrap();
@@ -673,6 +722,196 @@ mod tests {
         assert_missing(&first);
         assert_missing(&second);
         assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn opening_keeps_user_files_and_directories_with_temp_like_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated = dir.path().join("positions.json.1.2.tmp");
+        let notes = dir.path().join("positions.json.notes.tmp");
+        let one_number = dir.path().join("positions.json.1.tmp");
+        let folder = dir.path().join("positions.json.3.4.tmp");
+        fs::write(&generated, b"stale").unwrap();
+        fs::write(&notes, b"notes").unwrap();
+        fs::write(&one_number, b"one").unwrap();
+        fs::create_dir(&folder).unwrap();
+
+        let _store = Store::open(dir.path()).unwrap();
+
+        assert_missing(&generated);
+        assert_eq!(fs::read(&notes).unwrap(), b"notes");
+        assert_eq!(fs::read(&one_number).unwrap(), b"one");
+        assert!(fs::metadata(&folder).unwrap().is_dir());
+    }
+
+    #[test]
+    fn each_open_removes_at_most_the_temp_file_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let count_temp_files = || {
+            fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| is_generated_temp_name(&name.to_string_lossy()))
+                .count()
+        };
+
+        for index in 0..150 {
+            let name = format!("positions.json.9.{index}.tmp");
+            fs::write(dir.path().join(name), b"stale").unwrap();
+        }
+
+        drop(Store::open(dir.path()).unwrap());
+
+        assert_eq!(count_temp_files(), 50);
+
+        drop(Store::open(dir.path()).unwrap());
+
+        assert_eq!(count_temp_files(), 0);
+    }
+
+    fn scan_paths(dir: &Path, generated: std::ops::Range<usize>) -> Vec<PathBuf> {
+        (0..600)
+            .map(|index| {
+                if generated.contains(&index) {
+                    let path = dir.join(format!("positions.json.7.{index}.tmp"));
+                    fs::write(&path, b"stale").unwrap();
+                    path
+                } else {
+                    dir.join(format!("other-{index}.txt"))
+                }
+            })
+            .collect()
+    }
+
+    fn existing(paths: &[PathBuf]) -> usize {
+        paths.iter().filter(|path| path.exists()).count()
+    }
+
+    #[test]
+    fn cleanup_never_scans_past_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = scan_paths(dir.path(), 500..550);
+
+        assert_eq!(cleanup_paths(paths.clone().into_iter()), 0);
+        assert_eq!(existing(&paths[500..550]), 50);
+    }
+
+    #[test]
+    fn cleanup_removes_generated_files_within_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = scan_paths(dir.path(), 450..500);
+
+        assert_eq!(cleanup_paths(paths.clone().into_iter()), 50);
+        assert_eq!(existing(&paths[450..500]), 0);
+    }
+
+    #[test]
+    fn cleanup_examines_at_most_the_scan_limit_of_entries() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for index in 0..600 {
+            fs::write(dir.path().join(format!("other-{index}.txt")), b"").unwrap();
+        }
+
+        assert_eq!(cleanup_temp_files(dir.path()), MAX_TEMP_SCAN);
+    }
+
+    #[test]
+    fn unreadable_entries_count_toward_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated: Vec<_> = (0..10)
+            .map(|index| {
+                let path = dir.path().join(format!("positions.json.7.{index}.tmp"));
+                fs::write(&path, b"stale").unwrap();
+                path
+            })
+            .collect();
+        let injected = (0..MAX_TEMP_SCAN).map(|_| Err(io::Error::other("injected")));
+        let entries: Vec<io::Result<fs::DirEntry>> =
+            injected.chain(fs::read_dir(dir.path()).unwrap()).collect();
+
+        assert_eq!(cleanup_entries(entries.into_iter()), MAX_TEMP_SCAN);
+        assert_eq!(existing(&generated), 10);
+    }
+
+    #[test]
+    fn opening_a_crowded_directory_removes_at_most_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated: Vec<_> = (0..600)
+            .map(|index| {
+                let path = dir.path().join(format!("positions.json.8.{index}.tmp"));
+                fs::write(&path, b"stale").unwrap();
+                path
+            })
+            .collect();
+
+        let opened = Store::open(dir.path()).map(drop).map_err(|e| e.to_string());
+
+        assert_eq!(opened, Ok(()));
+        assert_eq!(existing(&generated), 600 - MAX_TEMP_REMOVE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_succeeds_when_cleanup_cannot_remove_a_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join("store");
+        let stale = store_dir.join("positions.json.1.2.tmp");
+        fs::create_dir(&store_dir).unwrap();
+        fs::write(store_dir.join(LOCK_FILE), b"").unwrap();
+        fs::write(&stale, b"stale").unwrap();
+        let mode = |bits| fs::Permissions::from_mode(bits);
+        fs::set_permissions(&store_dir, mode(0o500)).unwrap();
+
+        let opened = Store::open(&store_dir).map(drop).map_err(|e| e.to_string());
+        let kept = fs::read(&stale).map_err(|error| error.kind());
+        fs::set_permissions(&store_dir, mode(0o700)).unwrap();
+
+        assert_eq!(opened, Ok(()));
+        assert_eq!(kept, Ok(b"stale".to_vec()));
+    }
+
+    #[test]
+    fn only_generated_temp_names_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let path = store.temp_path();
+        let generated = path.file_name().unwrap().to_str().unwrap();
+
+        assert!(is_generated_temp_name(generated));
+        assert!(is_generated_temp_name("positions.json.123.45.tmp"));
+        assert!(is_generated_temp_name("positions.json.1.0.tmp"));
+        let longest = format!("positions.json.{}.{}.tmp", u32::MAX, u64::MAX);
+        assert!(is_generated_temp_name(&longest));
+
+        let rejected = [
+            "positions.json.notes.tmp",
+            "positions.json.1.x.tmp",
+            "positions.json..2.tmp",
+            "positions.json.1..tmp",
+            "positions.json.1.tmp",
+            "positions.json.1.2.3.tmp",
+            "positions.json.1.2.tmp.tmp",
+            "other.json.1.2.tmp",
+            "positions.lock.1.2.tmp",
+            "positions.json.1.2.temp",
+            "positions.json.1.2",
+            "positions.json.01.2.tmp",
+            "positions.json.1.02.tmp",
+            "positions.json.1.000.tmp",
+            "positions.json.1.123456789012345678901.tmp",
+            "positions.json.4294967296.1.tmp",
+            "positions.json.0.1.tmp",
+            "positions.json.1.18446744073709551616.tmp",
+        ];
+        let accepted: Vec<_> = rejected
+            .into_iter()
+            .filter(|name| is_generated_temp_name(name))
+            .collect();
+
+        assert_eq!(accepted, Vec::<&str>::new());
     }
 
     #[test]
