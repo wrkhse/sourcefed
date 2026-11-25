@@ -172,10 +172,9 @@ impl Inputs {
         input: Input,
     ) -> Result<(), Box<dyn Error>> {
         match input {
+            // An unknown ID removes nothing, so it is left alone.
             Input::Ack(id) => {
-                if engine.ack(std::slice::from_ref(&id))? == 0 {
-                    eprintln!("sourcefed-core: no pending event {}", id.as_str());
-                }
+                engine.ack(std::slice::from_ref(&id))?;
             }
             Input::Stop => self.stopped = true,
         }
@@ -240,7 +239,126 @@ fn parse_input(line: &str) -> Result<Input, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use sourcefed_core::{Event, Position, PositionKey, SourceName};
+
     use super::*;
+
+    const ID: &str = "timer:deploy:2026-01-01T00:00:00Z";
+
+    fn ack(id: &str) -> Input {
+        Input::Ack(EventId::new(id.into()).unwrap())
+    }
+
+    fn inputs() -> (Sender<Input>, Inputs) {
+        let (sender, receiver) = mpsc::channel();
+
+        (
+            sender,
+            Inputs {
+                receiver,
+                stopped: false,
+            },
+        )
+    }
+
+    // Saves one pending event under the key `follow` uses for job deploy.
+    fn pending_engine(dir: &Path) -> PollEngine {
+        let event: Event = serde_json::from_value(serde_json::json!({
+            "id": ID,
+            "kind": "timer.fired",
+            "subject": { "source": "timer", "key": "deploy" },
+            "summary": "timer deploy fired at 2026-01-01T00:00:00Z",
+            "at": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        let key = PositionKey {
+            monitor: MonitorId::new("deploy".into()).unwrap(),
+            source: SourceName::new("timer".into()).unwrap(),
+        };
+        let position = Position::new("2026-01-01T00:00:01Z".into()).unwrap();
+        Store::open(dir)
+            .unwrap()
+            .commit(key, position, &[event])
+            .unwrap();
+
+        engine("deploy".into(), 1, dir).unwrap()
+    }
+
+    fn pending_ids(engine: &PollEngine) -> Vec<&str> {
+        engine
+            .pending()
+            .into_iter()
+            .flatten()
+            .map(|event| event.id().as_str())
+            .collect()
+    }
+
+    #[test]
+    fn apply_acks_queued_events_and_ignores_unknown_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+
+        sender.send(ack("timer:deploy:other")).unwrap();
+        inputs.apply(&mut engine).unwrap();
+
+        assert_eq!(pending_ids(&engine), [ID]);
+
+        sender.send(ack(ID)).unwrap();
+        inputs.apply(&mut engine).unwrap();
+
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn finish_applies_acks_ahead_of_a_stop_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+        engine.handle().stop();
+
+        sender.send(ack(ID)).unwrap();
+        sender.send(Input::Stop).unwrap();
+        let started = Instant::now();
+        inputs.finish(&mut engine).unwrap();
+
+        assert!(started.elapsed() < DRAIN_WAIT);
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+        assert!(inputs.stopped);
+    }
+
+    #[test]
+    fn finish_without_a_stop_request_returns_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (_sender, mut inputs) = inputs();
+
+        let started = Instant::now();
+        inputs.finish(&mut engine).unwrap();
+
+        assert!(started.elapsed() < DRAIN_WAIT);
+        assert_eq!(pending_ids(&engine), [ID]);
+        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn read_input_flags_a_stop_only_for_a_stop_line() {
+        let stop = StopHandle::default();
+        let (sender, receiver) = mpsc::channel();
+
+        read_input(&b"ack first\n"[..], &stop, &sender);
+
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
+
+        read_input(&b"stop\n"[..], &stop, &sender);
+
+        assert!(stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [Input::Stop]);
+    }
 
     #[test]
     fn parse_input_reads_ack_and_stop_lines() {
