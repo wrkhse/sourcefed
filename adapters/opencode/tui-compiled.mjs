@@ -453,7 +453,7 @@ function MonitorCard(props) {
   const statusLabel = !monitor.enabled ? "stopped" : monitor.unresponsive ? "recovering connection" : "healthy";
   const rows = [["Delivery", monitor.delivery], ["Poll interval", `${monitor.pollIntervalSec}s`], ["Created", formatTime(monitor.createdAt)], ["Updated", formatTime(monitor.updatedAt)], ["Last poll", formatTime(monitor.lastPolledAt)], ["Webhook heartbeat", formatTime(monitor.webhookHeartbeatAt)]];
   return (() => {
-    var _el$13 = _$createElement2("box"), _el$14 = _$createElement2("box"), _el$15 = _$createElement2("box"), _el$16 = _$createElement2("text"), _el$17 = _$createElement2("text"), _el$19 = _$createElement2("text"), _el$20 = _$createTextNode2(` `), _el$21 = _$createTextNode2(` `), _el$22 = _$createElement2("text"), _el$23 = _$createTextNode2(` [`), _el$24 = _$createTextNode2(`]`);
+    var _el$13 = _$createElement2("box"), _el$14 = _$createElement2("box"), _el$15 = _$createElement2("box"), _el$16 = _$createElement2("text"), _el$17 = _$createElement2("text"), _el$19 = _$createElement2("text"), _el$20 = _$createTextNode2(` `), _el$21 = _$createTextNode2(` `), _el$22 = _$createElement2("text"), _el$23 = _$createTextNode2(` [`), _el$25 = _$createTextNode2(`]`);
     _$insertNode2(_el$13, _el$14);
     _$setProp2(_el$13, "flexDirection", "column");
     _$setProp2(_el$13, "width", "100%");
@@ -476,44 +476,44 @@ function MonitorCard(props) {
     _$insert2(_el$19, () => monitor.icon, _el$21);
     _$insert2(_el$19, () => monitor.describe, null);
     _$insertNode2(_el$22, _el$23);
-    _$insertNode2(_el$22, _el$24);
+    _$insertNode2(_el$22, _el$25);
     _$setProp2(_el$22, "fg", status);
     _$setProp2(_el$22, "flexGrow", 1);
     _$setProp2(_el$22, "flexShrink", 1);
     _$setProp2(_el$22, "minWidth", 0);
     _$setProp2(_el$22, "truncate", true);
-    _$insert2(_el$22, statusLabel, _el$24);
+    _$insert2(_el$22, statusLabel, _el$25);
     _$insert2(_el$13, _$createComponent2(Show2, {
       get when() {
         return props.selected;
       },
       get children() {
         return rows.map(([label, value]) => (() => {
-          var _el$25 = _$createElement2("box"), _el$26 = _$createElement2("text"), _el$27 = _$createTextNode2(`: `), _el$28 = _$createElement2("text");
-          _$insertNode2(_el$25, _el$26);
-          _$insertNode2(_el$25, _el$28);
-          _$setProp2(_el$25, "flexDirection", "row");
-          _$setProp2(_el$25, "width", "100%");
-          _$setProp2(_el$25, "minWidth", 0);
-          _$setProp2(_el$25, "paddingLeft", 4);
+          var _el$26 = _$createElement2("box"), _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(`: `), _el$30 = _$createElement2("text");
           _$insertNode2(_el$26, _el$27);
-          _$setProp2(_el$26, "flexShrink", 0);
-          _$insert2(_el$26, label, _el$27);
-          _$setProp2(_el$28, "flexGrow", 1);
-          _$setProp2(_el$28, "flexShrink", 1);
-          _$setProp2(_el$28, "minWidth", 0);
-          _$setProp2(_el$28, "truncate", true);
-          _$insert2(_el$28, value);
+          _$insertNode2(_el$26, _el$30);
+          _$setProp2(_el$26, "flexDirection", "row");
+          _$setProp2(_el$26, "width", "100%");
+          _$setProp2(_el$26, "minWidth", 0);
+          _$setProp2(_el$26, "paddingLeft", 4);
+          _$insertNode2(_el$27, _el$28);
+          _$setProp2(_el$27, "flexShrink", 0);
+          _$insert2(_el$27, label, _el$28);
+          _$setProp2(_el$30, "flexGrow", 1);
+          _$setProp2(_el$30, "flexShrink", 1);
+          _$setProp2(_el$30, "minWidth", 0);
+          _$setProp2(_el$30, "truncate", true);
+          _$insert2(_el$30, value);
           _$effect2((_p$) => {
             var _v$7 = palette.textMuted, _v$8 = palette.text;
-            _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$26, "fg", _v$7, _p$.e));
-            _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$28, "fg", _v$8, _p$.t));
+            _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$27, "fg", _v$7, _p$.e));
+            _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$30, "fg", _v$8, _p$.t));
             return _p$;
           }, {
             e: void 0,
             t: void 0
           });
-          return _el$25;
+          return _el$26;
         })());
       }
     }), null);
@@ -547,107 +547,107 @@ function LogsDialog(props) {
   const palette = createMemo2(() => tone(props.ctx.theme));
   const maxListRows = Math.max(6, Math.floor(props.ctx.renderer.height * 0.45));
   return (() => {
-    var _el$29 = _$createElement2("box"), _el$30 = _$createElement2("box"), _el$31 = _$createElement2("text"), _el$32 = _$createTextNode2(`Sourcefed notifications (`), _el$33 = _$createTextNode2(`)`), _el$34 = _$createElement2("box"), _el$35 = _$createElement2("text");
-    _$insertNode2(_el$29, _el$30);
-    _$setProp2(_el$29, "flexDirection", "column");
-    _$setProp2(_el$29, "width", "100%");
-    _$setProp2(_el$29, "paddingX", 2);
-    _$setProp2(_el$29, "paddingY", 1);
-    _$insertNode2(_el$30, _el$31);
-    _$insertNode2(_el$30, _el$34);
-    _$insertNode2(_el$30, _el$35);
-    _$setProp2(_el$30, "flexDirection", "row");
-    _$setProp2(_el$30, "width", "100%");
-    _$setProp2(_el$30, "minWidth", 0);
+    var _el$31 = _$createElement2("box"), _el$32 = _$createElement2("box"), _el$33 = _$createElement2("text"), _el$34 = _$createTextNode2(`Sourcefed notifications (`), _el$35 = _$createTextNode2(`)`), _el$36 = _$createElement2("box"), _el$37 = _$createElement2("text");
     _$insertNode2(_el$31, _el$32);
-    _$insertNode2(_el$31, _el$33);
-    _$setProp2(_el$31, "attributes", 1);
-    _$insert2(_el$31, () => props.logs.length, _el$33);
-    _$setProp2(_el$34, "flexGrow", 1);
-    _$insertNode2(_el$35, _$createTextNode2(`esc`));
-    _$insert2(_el$29, _$createComponent2(Show2, {
+    _$setProp2(_el$31, "flexDirection", "column");
+    _$setProp2(_el$31, "width", "100%");
+    _$setProp2(_el$31, "paddingX", 2);
+    _$setProp2(_el$31, "paddingY", 1);
+    _$insertNode2(_el$32, _el$33);
+    _$insertNode2(_el$32, _el$36);
+    _$insertNode2(_el$32, _el$37);
+    _$setProp2(_el$32, "flexDirection", "row");
+    _$setProp2(_el$32, "width", "100%");
+    _$setProp2(_el$32, "minWidth", 0);
+    _$insertNode2(_el$33, _el$34);
+    _$insertNode2(_el$33, _el$35);
+    _$setProp2(_el$33, "attributes", 1);
+    _$insert2(_el$33, () => props.logs.length, _el$35);
+    _$setProp2(_el$36, "flexGrow", 1);
+    _$insertNode2(_el$37, _$createTextNode2(`esc`));
+    _$insert2(_el$31, _$createComponent2(Show2, {
       get when() {
         return props.logs.length > 0;
       },
       get fallback() {
         return (() => {
-          var _el$39 = _$createElement2("text");
-          _$insertNode2(_el$39, _$createTextNode2(`No notifications sent yet`));
-          _$effect2((_$p) => _$setProp2(_el$39, "fg", palette().textMuted, _$p));
-          return _el$39;
+          var _el$41 = _$createElement2("text");
+          _$insertNode2(_el$41, _$createTextNode2(`No notifications sent yet`));
+          _$effect2((_$p) => _$setProp2(_el$41, "fg", palette().textMuted, _$p));
+          return _el$41;
         })();
       },
       get children() {
-        var _el$37 = _$createElement2("scrollbox"), _el$38 = _$createElement2("box");
-        _$insertNode2(_el$37, _el$38);
-        _$setProp2(_el$37, "maxHeight", maxListRows);
-        _$setProp2(_el$37, "scrollY", true);
-        _$setProp2(_el$37, "stickyScroll", true);
-        _$setProp2(_el$37, "stickyStart", "bottom");
-        _$setProp2(_el$38, "flexDirection", "column");
-        _$setProp2(_el$38, "width", "100%");
-        _$insert2(_el$38, () => props.logs.map((entry) => (() => {
-          var _el$41 = _$createElement2("box"), _el$42 = _$createElement2("box"), _el$43 = _$createElement2("text"), _el$44 = _$createElement2("text"), _el$45 = _$createTextNode2(` `), _el$46 = _$createElement2("text"), _el$47 = _$createTextNode2(` `), _el$48 = _$createTextNode2(` `);
-          _$insertNode2(_el$41, _el$42);
-          _$setProp2(_el$41, "flexDirection", "column");
-          _$setProp2(_el$41, "width", "100%");
-          _$insertNode2(_el$42, _el$43);
-          _$insertNode2(_el$42, _el$44);
-          _$insertNode2(_el$42, _el$46);
-          _$setProp2(_el$42, "flexDirection", "row");
-          _$setProp2(_el$42, "width", "100%");
-          _$setProp2(_el$42, "minWidth", 0);
-          _$insert2(_el$43, () => entry.actionable ? "\u25B6" : "\xB7");
+        var _el$39 = _$createElement2("scrollbox"), _el$40 = _$createElement2("box");
+        _$insertNode2(_el$39, _el$40);
+        _$setProp2(_el$39, "maxHeight", maxListRows);
+        _$setProp2(_el$39, "scrollY", true);
+        _$setProp2(_el$39, "stickyScroll", true);
+        _$setProp2(_el$39, "stickyStart", "bottom");
+        _$setProp2(_el$40, "flexDirection", "column");
+        _$setProp2(_el$40, "width", "100%");
+        _$insert2(_el$40, () => props.logs.map((entry) => (() => {
+          var _el$43 = _$createElement2("box"), _el$44 = _$createElement2("box"), _el$45 = _$createElement2("text"), _el$46 = _$createElement2("text"), _el$47 = _$createTextNode2(` `), _el$48 = _$createElement2("text"), _el$49 = _$createTextNode2(` `), _el$50 = _$createTextNode2(` `);
+          _$insertNode2(_el$43, _el$44);
+          _$setProp2(_el$43, "flexDirection", "column");
+          _$setProp2(_el$43, "width", "100%");
           _$insertNode2(_el$44, _el$45);
-          _$setProp2(_el$44, "flexShrink", 0);
+          _$insertNode2(_el$44, _el$46);
+          _$insertNode2(_el$44, _el$48);
+          _$setProp2(_el$44, "flexDirection", "row");
+          _$setProp2(_el$44, "width", "100%");
           _$setProp2(_el$44, "minWidth", 0);
-          _$insert2(_el$44, () => entry.icon, null);
+          _$insert2(_el$45, () => entry.actionable ? "\u25B6" : "\xB7");
           _$insertNode2(_el$46, _el$47);
-          _$insertNode2(_el$46, _el$48);
-          _$setProp2(_el$46, "flexGrow", 1);
-          _$setProp2(_el$46, "flexShrink", 1);
+          _$setProp2(_el$46, "flexShrink", 0);
           _$setProp2(_el$46, "minWidth", 0);
-          _$setProp2(_el$46, "truncate", true);
-          _$insert2(_el$46, () => new Date(entry.at).toLocaleString(), _el$48);
-          _$insert2(_el$46, () => entry.summary, null);
-          _$insert2(_el$41, _$createComponent2(Show2, {
+          _$insert2(_el$46, () => entry.icon, null);
+          _$insertNode2(_el$48, _el$49);
+          _$insertNode2(_el$48, _el$50);
+          _$setProp2(_el$48, "flexGrow", 1);
+          _$setProp2(_el$48, "flexShrink", 1);
+          _$setProp2(_el$48, "minWidth", 0);
+          _$setProp2(_el$48, "truncate", true);
+          _$insert2(_el$48, () => new Date(entry.at).toLocaleString(), _el$50);
+          _$insert2(_el$48, () => entry.summary, null);
+          _$insert2(_el$43, _$createComponent2(Show2, {
             get when() {
               return entry.body;
             },
             get children() {
-              var _el$49 = _$createElement2("text"), _el$50 = _$createTextNode2(` `);
-              _$insertNode2(_el$49, _el$50);
-              _$insert2(_el$49, () => entry.body, null);
-              _$effect2((_$p) => _$setProp2(_el$49, "fg", palette().textMuted, _$p));
-              return _el$49;
+              var _el$51 = _$createElement2("text"), _el$52 = _$createTextNode2(`  `);
+              _$insertNode2(_el$51, _el$52);
+              _$insert2(_el$51, () => entry.body, null);
+              _$effect2((_$p) => _$setProp2(_el$51, "fg", palette().textMuted, _$p));
+              return _el$51;
             }
           }), null);
           _$effect2((_p$) => {
             var _v$1 = entry.actionable ? palette().warning : palette().textMuted, _v$10 = palette().text, _v$11 = palette().text;
-            _v$1 !== _p$.e && (_p$.e = _$setProp2(_el$43, "fg", _v$1, _p$.e));
-            _v$10 !== _p$.t && (_p$.t = _$setProp2(_el$44, "fg", _v$10, _p$.t));
-            _v$11 !== _p$.a && (_p$.a = _$setProp2(_el$46, "fg", _v$11, _p$.a));
+            _v$1 !== _p$.e && (_p$.e = _$setProp2(_el$45, "fg", _v$1, _p$.e));
+            _v$10 !== _p$.t && (_p$.t = _$setProp2(_el$46, "fg", _v$10, _p$.t));
+            _v$11 !== _p$.a && (_p$.a = _$setProp2(_el$48, "fg", _v$11, _p$.a));
             return _p$;
           }, {
             e: void 0,
             t: void 0,
             a: void 0
           });
-          return _el$41;
+          return _el$43;
         })()));
-        return _el$37;
+        return _el$39;
       }
     }), null);
     _$effect2((_p$) => {
       var _v$9 = palette().text, _v$0 = palette().textMuted;
-      _v$9 !== _p$.e && (_p$.e = _$setProp2(_el$31, "fg", _v$9, _p$.e));
-      _v$0 !== _p$.t && (_p$.t = _$setProp2(_el$35, "fg", _v$0, _p$.t));
+      _v$9 !== _p$.e && (_p$.e = _$setProp2(_el$33, "fg", _v$9, _p$.e));
+      _v$0 !== _p$.t && (_p$.t = _$setProp2(_el$37, "fg", _v$0, _p$.t));
       return _p$;
     }, {
       e: void 0,
       t: void 0
     });
-    return _el$29;
+    return _el$31;
   })();
 }
 
