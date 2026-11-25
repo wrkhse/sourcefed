@@ -371,12 +371,16 @@ fn parse_input(line: &str) -> Result<Input, String> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::TrySendError;
+    use std::time::Duration;
 
     use sourcefed_core::{Event, Position, PositionKey, SourceName};
 
     use super::*;
 
     const ID: &str = "timer:deploy:2026-01-01T00:00:00Z";
+    // Ample for a few hundred inputs, yet a stuck drain or send fails the
+    // test rather than hanging it.
+    const WAIT: Duration = Duration::from_secs(3);
 
     fn ack(id: &str) -> Input {
         Input::Ack(EventId::new(id.into()).unwrap())
@@ -425,6 +429,25 @@ mod tests {
             .unwrap();
 
         engine("deploy".into(), 1, dir).unwrap()
+    }
+
+    // Runs `finish` on its own thread and waits at most `WAIT` for it.
+    fn finish_within(
+        mut inputs: Inputs,
+        mut engine: PollEngine,
+    ) -> (Inputs, PollEngine) {
+        let (done, finished) = mpsc::channel();
+
+        thread::spawn(move || {
+            let result = inputs.finish(&mut engine).map_err(|e| e.to_string());
+            done.send((result, inputs, engine)).unwrap();
+        });
+
+        let (result, inputs, engine) = finished.recv_timeout(WAIT).unwrap();
+
+        assert_eq!(result, Ok(()));
+
+        (inputs, engine)
     }
 
     fn pending_ids(engine: &PollEngine) -> Vec<&str> {
@@ -478,13 +501,13 @@ mod tests {
     #[test]
     fn finish_applies_acks_ahead_of_a_stop_without_waiting() {
         let dir = tempfile::tempdir().unwrap();
-        let mut engine = pending_engine(dir.path());
-        let (sender, mut inputs) = inputs();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
         engine.handle().stop();
 
         sender.send(ack(ID)).unwrap();
         sender.send(Input::Stop).unwrap();
-        inputs.finish(&mut engine).unwrap();
+        let (inputs, engine) = finish_within(inputs, engine);
 
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
         assert!(inputs.stopped);
@@ -493,10 +516,10 @@ mod tests {
     #[test]
     fn finish_without_a_stop_request_returns_without_waiting() {
         let dir = tempfile::tempdir().unwrap();
-        let mut engine = pending_engine(dir.path());
-        let (_sender, mut inputs) = inputs();
+        let engine = pending_engine(dir.path());
+        let (_sender, inputs) = inputs();
 
-        inputs.finish(&mut engine).unwrap();
+        let (inputs, engine) = finish_within(inputs, engine);
 
         assert_eq!(pending_ids(&engine), [ID]);
         assert!(!inputs.stopped);
@@ -514,20 +537,23 @@ mod tests {
         let (sender, mut inputs) = inputs();
         let lines: String = ids.iter().flat_map(|id| ["ack ", id, "\n"]).collect();
         let state = Arc::clone(&inputs.reader);
+        let (done, read) = mpsc::channel();
 
-        let reader = thread::spawn(move || {
+        thread::spawn(move || {
             read_input(lines.as_bytes(), &StopHandle::default(), &state, &sender);
+            done.send(()).unwrap();
         });
 
         // Applying all but a queue's worth lets the reader finish and leaves
         // the queue full for `finish`.
         for _ in 0..MAX_INPUTS_PER_POLL {
-            let input = inputs.receiver.recv().unwrap();
+            let input = inputs.receiver.recv_timeout(WAIT).unwrap();
             inputs.handle(&mut engine, input).unwrap();
         }
 
-        reader.join().unwrap();
-        inputs.finish(&mut engine).unwrap();
+        assert_eq!(read.recv_timeout(WAIT), Ok(()));
+
+        let (inputs, engine) = finish_within(inputs, engine);
 
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
@@ -537,8 +563,8 @@ mod tests {
     #[test]
     fn finish_waits_for_the_input_a_halted_reader_was_sending() {
         let dir = tempfile::tempdir().unwrap();
-        let mut engine = pending_engine(dir.path());
-        let (sender, mut inputs) = inputs();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
 
         for index in 0..MAX_QUEUED_INPUTS {
             let other = format!("timer:deploy:other-{index}");
@@ -547,11 +573,15 @@ mod tests {
 
         // The queue is full, so this send blocks until `finish` makes room.
         assert!(inputs.reader.begin_send());
-        let reader = thread::spawn(move || sender.send(ack(ID)));
+        let (done, sent) = mpsc::channel();
 
-        inputs.finish(&mut engine).unwrap();
+        thread::spawn(move || {
+            done.send(sender.send(ack(ID))).unwrap();
+        });
 
-        assert_eq!(reader.join().unwrap(), Ok(()));
+        let (inputs, engine) = finish_within(inputs, engine);
+
+        assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
     }
