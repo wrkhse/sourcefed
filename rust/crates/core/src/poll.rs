@@ -166,6 +166,7 @@ pub enum EngineError {
     Store(#[from] StoreError),
 }
 
+#[derive(Clone, Copy)]
 enum Schedule {
     Due(Timestamp),
     Stopped,
@@ -173,10 +174,10 @@ enum Schedule {
 }
 
 impl Schedule {
-    fn after_clock_error(error: ClockError) -> Self {
+    fn after_clock_error(self, error: ClockError) -> Self {
         let (schedule, action) = match error {
             ClockError::Past => (Self::Stopped, "polling stopped"),
-            ClockError::Future => (Self::Due(Timestamp::MAX), "polling deferred"),
+            ClockError::Future => (self, "polling deferred"),
         };
         tracing::warn!(reason = %error, "{action}");
 
@@ -204,8 +205,10 @@ impl PollEngine {
     /// Creates an engine whose first poll is due at the current clock reading.
     ///
     /// The retry base is the poll interval, limited by the default cap.
-    /// An out-of-range clock reading stops or defers the engine as described
-    /// in [`PollEngine::run`].
+    /// An out-of-range past reading stops the engine. An out-of-range future
+    /// reading makes the first poll due at the earliest timestamp, so it runs
+    /// at the first representable reading. Both log a warning as described in
+    /// [`PollEngine::run`].
     ///
     /// # Errors
     /// Returns [`ModelError::Invalid`] if the source's name differs from
@@ -226,9 +229,10 @@ impl PollEngine {
         let cap = Duration::from_secs(DEFAULT_BACKOFF_CAP_SECS);
         let base = Duration::from_secs(config.poll_interval.as_secs()).min(cap);
         let backoff = Backoff::new(base, cap)?;
-        let schedule = clock
-            .now()
-            .map_or_else(Schedule::after_clock_error, Schedule::Due);
+        let schedule = clock.now().map_or_else(
+            |error| Schedule::Due(Timestamp::MIN).after_clock_error(error),
+            Schedule::Due,
+        );
         let key = PositionKey {
             monitor: config.id,
             source: config.source,
@@ -294,9 +298,12 @@ impl PollEngine {
     /// after sleeping. If the due time has not arrived, the iteration counts
     /// toward the iteration budget but not the poll budget.
     ///
-    /// An out-of-range past clock reading stops the engine with a
-    /// `polling stopped` warning. An out-of-range future reading defers polling
-    /// to [`Timestamp::MAX`] with a `polling deferred` warning. Neither
+    /// An out-of-range past clock reading stops the engine and logs a
+    /// `polling stopped` warning with the reason `past clock out of range`.
+    /// An out-of-range future reading logs a `polling deferred` warning with
+    /// the reason `future clock out of range`, keeps the due time, waits at
+    /// most ten seconds, and ends the run without polling. A later run with a
+    /// representable reading polls once that due time arrives. Neither
     /// reading counts as due.
     ///
     /// Source failures schedule a retry with backoff and do not return an error.
@@ -360,9 +367,9 @@ impl PollEngine {
     }
 
     fn read_clock(&mut self) -> Result<Timestamp, ClockError> {
-        self.clock
-            .now()
-            .inspect_err(|&error| self.schedule = Schedule::after_clock_error(error))
+        self.clock.now().inspect_err(|&error| {
+            self.schedule = self.schedule.after_clock_error(error);
+        })
     }
 
     fn poll(&mut self, now: Timestamp) -> Result<(), StoreError> {
@@ -608,19 +615,32 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_range_future_reading_waits_without_polling() {
-        let mut f = Fixture::new(5, vec![Ok(outcome(Next::Done))]);
-        f.clock
-            .readings
-            .lock()
-            .unwrap()
-            .push_back(Err(ClockError::Future));
+    fn a_future_reading_keeps_the_due_time_and_polls_once_after_recovery() {
+        for (next, state) in [
+            (Next::Done, EngineState::Ended),
+            (Next::Due(at(3600)), EngineState::Running),
+        ] {
+            let mut f = Fixture::new(5, vec![Ok(outcome(next))]);
+            f.clock
+                .readings
+                .lock()
+                .unwrap()
+                .push_back(Err(ClockError::Future));
 
-        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
-        assert_eq!(f.sleeps(), [Duration::from_secs(10)]);
-        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
-        assert_eq!(f.sleeps(), [Duration::from_secs(10); 32]);
-        assert_eq!(f.requests(), []);
+            assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
+            assert!(matches!(f.engine.schedule, Schedule::Due(due) if due == at(0)));
+            assert_eq!(f.requests(), []);
+
+            assert_eq!(f.engine.run(1).unwrap(), state);
+            assert_eq!(f.sleeps(), [Duration::from_secs(10)]);
+            assert_eq!(
+                f.requests(),
+                [PollRequest {
+                    now: at(10),
+                    position: None,
+                }]
+            );
+        }
     }
 
     #[test]
