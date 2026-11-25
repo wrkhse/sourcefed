@@ -72,9 +72,14 @@ impl From<EventId> for String {
 /// What happened, serialized by its dotted wire name such as `timer.fired`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EventKind {
-    /// A timer reached its due time.
+    /// A timer reached one due instant; the event's time is that instant.
     #[serde(rename = "timer.fired")]
     TimerFired,
+    /// More timer firings fell due at once than one poll reports. One event
+    /// stands for all of them: its time is the first missed instant and its
+    /// summary gives the count and the last instant.
+    #[serde(rename = "timer.missed")]
+    TimerMissed,
 }
 
 impl EventKind {
@@ -83,6 +88,7 @@ impl EventKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TimerFired => "timer.fired",
+            Self::TimerMissed => "timer.missed",
         }
     }
 }
@@ -329,12 +335,16 @@ mod tests {
 
     #[test]
     fn event_kind_uses_its_wire_name() {
-        let kind = EventKind::TimerFired;
-        let json = r#""timer.fired""#;
+        for (kind, name) in [
+            (EventKind::TimerFired, "timer.fired"),
+            (EventKind::TimerMissed, "timer.missed"),
+        ] {
+            let json = format!("\"{name}\"");
 
-        assert_eq!(kind.as_str(), "timer.fired");
-        assert_eq!(serde_json::to_string(&kind).unwrap(), json);
-        assert_eq!(serde_json::from_str::<EventKind>(json).unwrap(), kind);
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
+            assert_eq!(serde_json::from_str::<EventKind>(&json).unwrap(), kind);
+        }
     }
 
     #[test]
