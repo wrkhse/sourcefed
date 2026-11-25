@@ -3,6 +3,7 @@ use std::fs::{self, File, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -25,8 +26,6 @@ const LOCK_FILE: &str = "positions.lock";
 const MAX_TEMP_SCAN: usize = 500;
 // Bounds the leftover temp files one open removes.
 const MAX_TEMP_REMOVE: usize = 100;
-// Digits in `u64::MAX`, the longest number `Store::temp_path` writes.
-const MAX_DECIMAL_DIGITS: usize = 20;
 
 // Numbers temporary files so concurrent writes in one process never collide.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -263,8 +262,9 @@ impl Store {
     ///
     /// After acquiring the exclusive lock, removes up to 100 leftover temporary
     /// files that the store itself generated, scanning at most 500 directory
-    /// entries. A generated name is the store file name followed by two
-    /// decimal numbers and `.tmp`; other files are left alone. Cleanup
+    /// entries. A generated name is the store file name followed by a nonzero
+    /// `u32` process ID, a `u64` counter and `.tmp`; other files are left
+    /// alone. Cleanup
     /// failures are ignored, so a stray file cannot block opening a healthy
     /// store. A corrupt file is refused without rewriting it. The directory
     /// stays locked until the store is dropped.
@@ -404,10 +404,14 @@ impl Store {
 // from opening, so every I/O failure here is ignored. Returns how many raw
 // directory entries were examined, at most `MAX_TEMP_SCAN`.
 fn cleanup_temp_files(dir: &Path) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
+    fs::read_dir(dir).map_or(0, cleanup_entries)
+}
 
+// Cleans up among the first `MAX_TEMP_SCAN` raw entries and returns how many
+// were examined. Unreadable entries are skipped but still examined.
+fn cleanup_entries(
+    entries: impl Iterator<Item = io::Result<fs::DirEntry>>,
+) -> usize {
     // The limit applies to raw entries, so unreadable ones count toward it too.
     let raw: Vec<_> = entries.take(MAX_TEMP_SCAN).collect();
     let examined = raw.len();
@@ -456,16 +460,24 @@ fn is_generated_temp_name(name: &str) -> bool {
 
     numbers
         .and_then(|numbers| numbers.split_once('.'))
-        .is_some_and(|(pid, count)| is_decimal(pid) && is_decimal(count))
+        .is_some_and(|(pid, count)| {
+            let pid = parse_decimal::<u32>(pid);
+
+            pid.is_some_and(|pid| pid > 0) && parse_decimal::<u64>(count).is_some()
+        })
 }
 
-// Accepts only how Rust formats an unsigned integer: no leading zero unless
-// the number is zero, and no more digits than `u64::MAX` has.
-fn is_decimal(text: &str) -> bool {
-    let sized = (1..=MAX_DECIMAL_DIGITS).contains(&text.len());
+// Accepts only how Rust formats an unsigned integer: digits alone, with no
+// leading zero unless the number is zero, and within the type's range.
+fn parse_decimal<T: FromStr>(text: &str) -> Option<T> {
     let canonical = text == "0" || !text.starts_with('0');
+    let digits = text.bytes().all(|byte| byte.is_ascii_digit());
 
-    sized && canonical && text.bytes().all(|byte| byte.is_ascii_digit())
+    if canonical && digits {
+        text.parse().ok()
+    } else {
+        None
+    }
 }
 
 fn lock(dir: &Path) -> Result<File, StoreError> {
@@ -804,6 +816,41 @@ mod tests {
         assert_eq!(cleanup_temp_files(dir.path()), MAX_TEMP_SCAN);
     }
 
+    #[test]
+    fn unreadable_entries_count_toward_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated: Vec<_> = (0..10)
+            .map(|index| {
+                let path = dir.path().join(format!("positions.json.7.{index}.tmp"));
+                fs::write(&path, b"stale").unwrap();
+                path
+            })
+            .collect();
+        let injected = (0..MAX_TEMP_SCAN).map(|_| Err(io::Error::other("injected")));
+        let entries: Vec<io::Result<fs::DirEntry>> =
+            injected.chain(fs::read_dir(dir.path()).unwrap()).collect();
+
+        assert_eq!(cleanup_entries(entries.into_iter()), MAX_TEMP_SCAN);
+        assert_eq!(existing(&generated), 10);
+    }
+
+    #[test]
+    fn opening_a_crowded_directory_removes_at_most_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated: Vec<_> = (0..600)
+            .map(|index| {
+                let path = dir.path().join(format!("positions.json.8.{index}.tmp"));
+                fs::write(&path, b"stale").unwrap();
+                path
+            })
+            .collect();
+
+        let opened = Store::open(dir.path()).map(drop).map_err(|e| e.to_string());
+
+        assert_eq!(opened, Ok(()));
+        assert_eq!(existing(&generated), 600 - MAX_TEMP_REMOVE);
+    }
+
     #[cfg(unix)]
     #[test]
     fn opening_succeeds_when_cleanup_cannot_remove_a_temp_file() {
@@ -835,7 +882,7 @@ mod tests {
 
         assert!(is_generated_temp_name(generated));
         assert!(is_generated_temp_name("positions.json.123.45.tmp"));
-        assert!(is_generated_temp_name("positions.json.0.0.tmp"));
+        assert!(is_generated_temp_name("positions.json.1.0.tmp"));
         let longest = format!("positions.json.{}.{}.tmp", u32::MAX, u64::MAX);
         assert!(is_generated_temp_name(&longest));
 
@@ -855,6 +902,9 @@ mod tests {
             "positions.json.1.02.tmp",
             "positions.json.1.000.tmp",
             "positions.json.1.123456789012345678901.tmp",
+            "positions.json.4294967296.1.tmp",
+            "positions.json.0.1.tmp",
+            "positions.json.1.18446744073709551616.tmp",
         ];
         let accepted: Vec<_> = rejected
             .into_iter()
