@@ -14,6 +14,8 @@ pub const MAX_POSITIONS: usize = 256;
 /// Maximum number of remembered event IDs.
 pub const MAX_SEEN_IDS: usize = 1000;
 
+// Read one byte past the accepted size to detect an oversized file.
+const MAX_READ_BYTES: u64 = 262_145;
 const STORE_VERSION: u8 = 1;
 
 /// Identifies a position by monitor and source.
@@ -78,17 +80,9 @@ impl State {
             }
             Err(source) => return Err(read_error(source)),
         };
-        let read_limit = u64::try_from(MAX_STORE_BYTES + 1)
-            .map_err(io::Error::other)
-            .map_err(read_error)?;
 
-        if file.metadata().map_err(read_error)?.len() >= read_limit {
-            return Err(corrupt("file exceeds byte limit"));
-        }
-
-        // Bound the read even if the file grows after the metadata check.
         let mut bytes = Vec::new();
-        file.take(read_limit)
+        file.take(MAX_READ_BYTES)
             .read_to_end(&mut bytes)
             .map_err(read_error)?;
 
@@ -330,6 +324,40 @@ mod tests {
         );
     }
 
+    fn state_at_byte_limit() -> (State, PositionKey, Position) {
+        let mut state = State::empty();
+        let suffix = "x".repeat(MAX_ID_LEN - 4);
+        state.seen = (0..MAX_SEEN_IDS)
+            .map(|index| EventId::new(format!("{index:04}{suffix}")).unwrap())
+            .collect();
+
+        let key = key(1);
+        state
+            .positions
+            .insert(key.clone(), Position::new("x".into()).unwrap());
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let overhead = bytes.len().checked_sub(1).unwrap();
+        let position_len = MAX_STORE_BYTES.checked_sub(overhead).unwrap();
+        let position = Position::new("x".repeat(position_len)).unwrap();
+        state.positions.insert(key.clone(), position.clone());
+
+        (state, key, position)
+    }
+
+    fn state_with_counts(positions: usize, seen: usize) -> State {
+        let position = Position::new("cursor".into()).unwrap();
+
+        State {
+            version: STORE_VERSION,
+            positions: (0..positions)
+                .map(|index| (key(index), position.clone()))
+                .collect(),
+            seen: (0..seen)
+                .map(|index| EventId::new(format!("event-{index}")).unwrap())
+                .collect(),
+        }
+    }
+
     #[test]
     fn positions_and_seen_ids_survive_reopen_without_duplicate_ids() {
         let dir = tempfile::tempdir().unwrap();
@@ -384,6 +412,89 @@ mod tests {
     }
 
     #[test]
+    fn state_at_the_byte_limit_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("positions.json");
+        let (state, key, position) = state_at_byte_limit();
+        let bytes = serde_json::to_vec(&state).unwrap();
+
+        assert_eq!(bytes.len(), MAX_STORE_BYTES);
+        fs::write(&path, bytes).unwrap();
+
+        let store = Store::open(dir.path()).unwrap();
+        let id = state.seen.front().unwrap();
+
+        assert_eq!(
+            (store.position(&key), store.is_seen(id)),
+            (Some(&position), true)
+        );
+    }
+
+    #[test]
+    fn max_positions_and_seen_ids_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("positions.json");
+        let state = state_with_counts(MAX_POSITIONS, MAX_SEEN_IDS);
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let store = Store::open(dir.path()).unwrap();
+        let position = Position::new("cursor".into()).unwrap();
+
+        assert_eq!(store.position(&key(0)), Some(&position));
+    }
+
+    #[test]
+    fn invalid_state_files_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrong_version = State {
+            version: 0,
+            ..State::empty()
+        };
+        let id = EventId::new("duplicate".into()).unwrap();
+        let duplicate_seen_ids = State {
+            seen: VecDeque::from([id.clone(), id]),
+            ..State::empty()
+        };
+
+        for (state, reason) in [
+            (wrong_version, "unsupported version"),
+            (
+                state_with_counts(MAX_POSITIONS + 1, 0),
+                "too many positions",
+            ),
+            (state_with_counts(0, MAX_SEEN_IDS + 1), "too many seen ids"),
+            (duplicate_seen_ids, "duplicate seen id"),
+        ] {
+            let store_dir = dir.path().join(reason);
+            let path = store_dir.join("positions.json");
+            fs::create_dir(&store_dir).unwrap();
+            fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+            assert_corrupt(&store_dir, &path, reason);
+        }
+    }
+
+    #[test]
+    fn non_not_found_open_errors_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, b"").unwrap();
+        let path = file.join("positions.json");
+
+        let error = State::load(&path).unwrap_err();
+        let StoreError::Read {
+            path: actual_path,
+            source,
+        } = error
+        else {
+            panic!("expected read error, got {error:?}");
+        };
+
+        assert_eq!(actual_path, path);
+        assert_eq!(source.kind(), io::ErrorKind::NotADirectory);
+    }
+
+    #[test]
     fn position_overflow_does_not_change_state_or_write_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
@@ -420,6 +531,23 @@ mod tests {
             serde_json::from_slice::<State>(&bytes).unwrap(),
             store.state
         );
+    }
+
+    #[test]
+    fn persist_at_the_byte_limit_writes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let (state, key, position) = state_at_byte_limit();
+
+        assert_eq!(
+            store.persist(&state).map_err(|error| error.to_string()),
+            Ok(())
+        );
+        assert_eq!(fs::read(&store.path).unwrap().len(), MAX_STORE_BYTES);
+
+        let reopened = Store::open(dir.path()).unwrap();
+
+        assert_eq!(reopened.position(&key), Some(&position));
     }
 
     #[test]
