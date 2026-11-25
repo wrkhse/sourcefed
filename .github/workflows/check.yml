@@ -104,10 +104,9 @@ jobs:
           pathspecs=(
             '*.ts' '*.tsx' '*.mjs' '*.mts' '*.js' '*.json'
             '*.md' '*.yml' '*.yaml' '*.toml'
-            # The build rewrites these two bundles, so formatting them would leave
+            # The build rewrites this bundle, so formatting it would leave
             # the tree dirty after check.
             ':(exclude)adapters/opencode/tui-compiled.mjs'
-            ':(exclude)adapters/opencode/tui-compiled.d.mts'
           )
           mapfile -d '' -t files < <(git ls-files -z -- "${pathspecs[@]}")
           tidy check --skip-unknown "${files[@]}"
