@@ -150,19 +150,25 @@ impl State {
         events: &[Event],
     ) -> Result<usize, StoreError> {
         let known = self.seen.get(key);
-        let mut fresh = BTreeSet::new();
+        let mut distinct = BTreeSet::new();
+        let mut repeats = Vec::new();
+        let mut fresh = Vec::new();
 
-        // Count new IDs before changing the queue; repeated IDs refresh their
-        // place without counting as new deliveries.
-        let ids: Vec<&EventId> = events
-            .iter()
-            .map(Event::id)
-            .filter(|id| fresh.insert(*id))
-            .collect();
-        let new_count = ids
-            .iter()
-            .filter(|id| !known.is_some_and(|seen| seen.contains(id)))
-            .count();
+        // Split the batch against the IDs remembered before it, so refreshing
+        // a repeat can never evict an ID this batch adds.
+        for id in events.iter().map(Event::id) {
+            if !distinct.insert(id) {
+                continue;
+            }
+
+            if known.is_some_and(|seen| seen.contains(id)) {
+                repeats.push(id);
+            } else {
+                fresh.push(id);
+            }
+        }
+
+        let new_count = fresh.len();
 
         if new_count > MAX_SEEN_IDS {
             return Err(StoreError::TooMany {
@@ -170,17 +176,22 @@ impl State {
             });
         }
 
-        if ids.is_empty() {
+        if distinct.is_empty() {
             return Ok(0);
         }
 
         let seen = self.seen.entry(key.clone()).or_default();
 
-        for id in ids {
+        // A repeat is already in the queue, so moving it never grows it.
+        for id in repeats {
             if let Some(index) = seen.iter().position(|known| known == id) {
                 seen.remove(index);
             }
 
+            seen.push_back(id.clone());
+        }
+
+        for id in fresh {
             if seen.len() == MAX_SEEN_IDS {
                 seen.pop_front();
             }
@@ -288,9 +299,10 @@ impl Store {
 
     /// Saves the position and event IDs, returning the count of new IDs.
     ///
-    /// Only distinct IDs not already remembered for the key count as new. A
-    /// repeated ID moves to the newest end of the key's queue. The oldest IDs
-    /// are dropped as needed to keep the queue bounded. The position is saved
+    /// Only distinct IDs not already remembered for the key count as new.
+    /// Repeated IDs move to the newest end of the key's queue first, then the
+    /// new IDs are appended after them, so a refresh never drops a new ID. The
+    /// oldest IDs are dropped as needed to keep the queue bounded. The position is saved
     /// even when no event is new. The state is written to a temporary file,
     /// synced, renamed into place, and the directory synced.
     ///
@@ -690,6 +702,52 @@ mod tests {
         let before = store.state.clone();
         let bytes = fs::read(&store.path).unwrap();
         let batch = events(0..MAX_SEEN_IDS + 1);
+
+        let error = store.commit(key(1), cursor(), &batch).unwrap_err();
+        let StoreError::TooMany { limit } = error else {
+            panic!("expected too many seen ids, got {error:?}");
+        };
+
+        assert_eq!(limit, MAX_SEEN_IDS);
+        assert_eq!(store.state, before);
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
+    fn a_full_batch_with_a_repeat_keeps_every_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let earlier = events(0..1);
+        let fresh = events(1..MAX_SEEN_IDS + 1);
+        let batch: Vec<_> = fresh.iter().chain(&earlier).cloned().collect();
+
+        assert_eq!(store.commit(key(1), cursor(), &earlier).unwrap(), 1);
+        assert_eq!(
+            store.commit(key(1), cursor(), &batch).unwrap(),
+            MAX_SEEN_IDS
+        );
+
+        // The refreshed repeat is older than every new ID, so a full batch of
+        // new IDs pushes it out rather than one of them.
+        let expected: VecDeque<_> =
+            fresh.iter().map(|event| event.id().clone()).collect();
+
+        assert_eq!(store.state.seen[&key(1)], expected);
+    }
+
+    #[test]
+    fn an_oversized_batch_with_a_repeat_is_refused_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let earlier = events(0..1);
+        assert_eq!(store.commit(key(1), cursor(), &earlier).unwrap(), 1);
+        let before = store.state.clone();
+        let bytes = fs::read(&store.path).unwrap();
+        let batch: Vec<_> = events(1..MAX_SEEN_IDS + 2)
+            .into_iter()
+            .chain(earlier)
+            .collect();
 
         let error = store.commit(key(1), cursor(), &batch).unwrap_err();
         let StoreError::TooMany { limit } = error else {
