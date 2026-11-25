@@ -157,9 +157,10 @@ fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
     mpsc::sync_channel(MAX_QUEUED_INPUTS)
 }
 
-// What the stdin reader is doing, shared with the polls. The reader sends
-// only after moving from reading to sending, so once the run halts it, at
-// most the one input it is already sending still arrives.
+// What the stdin reader is doing, shared with the polls. The reader claims
+// each line it reads by moving from reading to sending, before parsing it,
+// and sends only a claimed line. Once the run halts it, at most the one line
+// it already claimed still arrives; a line read after the halt is dropped.
 #[derive(Debug, Default)]
 struct ReaderState(AtomicU8);
 
@@ -301,18 +302,28 @@ fn read_input(
             }
         }
 
+        // Claimed before parsing, so a halt that comes after this point
+        // still waits for the line; a halt that came first drops it.
+        if !state.begin_send() {
+            return;
+        }
+
         let text = std::str::from_utf8(&line).map_err(|error| error.to_string());
         let input = match text.and_then(parse_input) {
             Ok(input) => input,
             Err(error) => {
                 eprintln!("sourcefed-core: {error}");
 
+                if !state.end_send() {
+                    return;
+                }
+
                 continue;
             }
         };
         let stopping = input == Input::Stop;
 
-        if !state.begin_send() || sender.send(input).is_err() {
+        if sender.send(input).is_err() {
             return;
         }
 
@@ -371,7 +382,7 @@ fn parse_input(line: &str) -> Result<Input, String> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::TrySendError;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sourcefed_core::{Event, Position, PositionKey, SourceName};
 
@@ -448,6 +459,22 @@ mod tests {
         assert_eq!(result, Ok(()));
 
         (inputs, engine)
+    }
+
+    // Waits at most `WAIT` for the reader to claim a line, yielding between
+    // checks.
+    fn claimed_within(state: &ReaderState) -> bool {
+        let started = Instant::now();
+
+        while state.0.load(Ordering::SeqCst) != ReaderState::SENDING {
+            if started.elapsed() >= WAIT {
+                return false;
+            }
+
+            thread::yield_now();
+        }
+
+        true
     }
 
     fn pending_ids(engine: &PollEngine) -> Vec<&str> {
@@ -582,6 +609,60 @@ mod tests {
         let (inputs, engine) = finish_within(inputs, engine);
 
         assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn finish_applies_an_ack_the_reader_claimed_before_the_halt() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
+
+        for index in 0..MAX_QUEUED_INPUTS {
+            let other = format!("timer:deploy:other-{index}");
+            sender.send(ack(&other)).unwrap();
+        }
+
+        let state = Arc::clone(&inputs.reader);
+        let line = format!("ack {ID}\n");
+        let (done, read) = mpsc::channel();
+
+        thread::spawn(move || {
+            read_input(line.as_bytes(), &StopHandle::default(), &state, &sender);
+            done.send(()).unwrap();
+        });
+
+        // The reader claims the line, then blocks on the full queue, so the
+        // halt in `finish` comes after the claim and before the send.
+        assert!(claimed_within(&inputs.reader));
+
+        let (inputs, engine) = finish_within(inputs, engine);
+
+        assert_eq!(read.recv_timeout(WAIT), Ok(()));
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn an_unparseable_line_releases_the_readers_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
+        let lines = format!("bogus\nack {ID}\n");
+
+        read_input(
+            lines.as_bytes(),
+            &StopHandle::default(),
+            &inputs.reader,
+            &sender,
+        );
+        drop(sender);
+
+        // The reader read to the end and released its claim, so `finish`
+        // has nothing to wait for and applies the ack after the bad line.
+        let (inputs, engine) = finish_within(inputs, engine);
+
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
     }
