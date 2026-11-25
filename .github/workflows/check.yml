@@ -102,7 +102,7 @@ jobs:
         run: |
           set -uo pipefail
           pathspecs=(
-            '*.ts' '*.tsx' '*.mjs' '*.mts' '*.js' '*.json'
+            '*.ts' '*.tsx' '*.mjs' '*.mts' '*.js' '*.cjs' '*.jsx' '*.json'
             '*.md' '*.yml' '*.yaml' '*.toml'
             # The build rewrites this bundle, so formatting it would leave
             # the tree dirty after check.

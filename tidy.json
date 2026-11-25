@@ -1,3 +1,4 @@
+// changelogen writes CHANGELOG.md, so the Format job leaves it out.
 {
   "$schema": "https://tidy.lukeed.com/2.0.0/schema.json",
   "indent": 2,
