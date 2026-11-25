@@ -21,8 +21,7 @@ pub use event::{Event, EventId, EventKind, EventSubject};
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use poll::{
     Backoff, Clock, DEFAULT_BACKOFF_CAP_SECS, EngineError, EngineState,
-    MAX_PENDING_EVENTS, MAX_WAIT_SECS, PendingEvents, PollEngine, StopHandle,
-    SystemClock,
+    MAX_PENDING_EVENTS, MAX_WAIT_SECS, PollEngine, StopHandle, SystemClock,
 };
 pub use position::Position;
 pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};

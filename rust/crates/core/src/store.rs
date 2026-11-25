@@ -16,6 +16,8 @@ pub const MAX_STORE_BYTES: usize = 262_144;
 pub const MAX_POSITIONS: usize = 256;
 /// Maximum number of remembered event IDs for each position key.
 pub const MAX_SEEN_IDS: usize = 1000;
+/// Maximum number of events waiting for delivery.
+pub const MAX_PENDING_EVENTS: usize = 1000;
 
 // Read one byte past the accepted size to detect an oversized file.
 const MAX_READ_BYTES: u64 = 262_145;
@@ -59,9 +61,7 @@ pub enum StoreError {
     /// Another store holds the directory; close it before opening again.
     #[error("store {path} is locked by another writer")]
     Locked { path: PathBuf },
-    /// A count limit is reached: a new key would exceed the position limit, or
-    /// one commit holds more new IDs than the seen ID limit. Reduce the
-    /// positions or split the batch.
+    /// A commit would exceed the position, seen ID, or pending event limit.
     #[error("state exceeds {limit} items")]
     TooMany { limit: usize },
     /// The byte limit is exceeded; reduce the size of the state to save.
@@ -76,6 +76,8 @@ struct State {
     positions: BTreeMap<PositionKey, Position>,
     #[serde(with = "key_entries")]
     seen: BTreeMap<PositionKey, VecDeque<EventId>>,
+    #[serde(default)]
+    pending: VecDeque<Event>,
 }
 
 impl State {
@@ -84,6 +86,7 @@ impl State {
             version: STORE_VERSION,
             positions: BTreeMap::new(),
             seen: BTreeMap::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -135,6 +138,9 @@ impl State {
         if self.positions.len() > MAX_POSITIONS {
             return Some("too many positions");
         }
+        if self.pending.len() > MAX_PENDING_EVENTS {
+            return Some("too many pending events");
+        }
 
         for ids in self.seen.values() {
             if ids.len() > MAX_SEEN_IDS {
@@ -160,10 +166,18 @@ impl State {
         let mut distinct = BTreeSet::new();
         let mut repeats = Vec::new();
         let mut fresh = Vec::new();
+        let pending_budget = (
+            MAX_PENDING_EVENTS.saturating_sub(self.pending.len()),
+            MAX_PENDING_EVENTS,
+        );
+        let seen_budget = (MAX_SEEN_IDS, MAX_SEEN_IDS);
+        let (room, limit) = pending_budget.min(seen_budget);
 
         // Split the batch against the IDs remembered before it, so refreshing
         // a repeat can never evict an ID this batch adds.
-        for id in events.iter().map(Event::id) {
+        for event in events {
+            let id = event.id();
+
             if !distinct.insert(id) {
                 continue;
             }
@@ -171,22 +185,19 @@ impl State {
             if known.is_some_and(|seen| seen.contains(id)) {
                 repeats.push(id);
             } else {
-                fresh.push(id);
+                if fresh.len() == room {
+                    return Err(StoreError::TooMany { limit });
+                }
+
+                fresh.push(event);
             }
-        }
-
-        let new_count = fresh.len();
-
-        if new_count > MAX_SEEN_IDS {
-            return Err(StoreError::TooMany {
-                limit: MAX_SEEN_IDS,
-            });
         }
 
         if distinct.is_empty() {
             return Ok(0);
         }
 
+        let new_count = fresh.len();
         let seen = self.seen.entry(key.clone()).or_default();
 
         // A repeat is already in the queue, so moving it never grows it.
@@ -198,12 +209,13 @@ impl State {
             seen.push_back(id.clone());
         }
 
-        for id in fresh {
+        for event in fresh {
             if seen.len() == MAX_SEEN_IDS {
                 seen.pop_front();
             }
 
-            seen.push_back(id.clone());
+            seen.push_back(event.id().clone());
+            self.pending.push_back(event.clone());
         }
 
         Ok(new_count)
@@ -241,13 +253,13 @@ mod key_entries {
     }
 }
 
-/// Stores positions and seen IDs in a versioned JSON object.
+/// Stores positions, seen IDs and pending events in a versioned JSON object.
 ///
 /// The object has a version, a sequence of position key and position pairs,
-/// and a sequence of position key and seen event ID pairs. Each key remembers
-/// its own IDs in a bounded queue. A repeated ID moves to the newest end; at
-/// the ID limit, the oldest ID is dropped. Only one store at a time may hold a
-/// directory.
+/// a sequence of position key and seen event ID pairs, and a queue of events
+/// waiting for delivery. Each key remembers its own IDs in a bounded queue.
+/// A repeated ID moves to the newest end; at the ID limit, the oldest ID is
+/// dropped. Only one store at a time may hold a directory.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -264,8 +276,7 @@ impl Store {
     /// files that the store itself generated, scanning at most 500 directory
     /// entries. A generated name is the store file name followed by a nonzero
     /// `u32` process ID, a `u64` counter and `.tmp`; other files are left
-    /// alone. Cleanup
-    /// failures are ignored, so a stray file cannot block opening a healthy
+    /// alone. Cleanup failures are ignored, so a stray file cannot block opening a healthy
     /// store. A corrupt file is refused without rewriting it. The directory
     /// stays locked until the store is dropped.
     ///
@@ -308,21 +319,47 @@ impl Store {
         self.state.seen.get(key).is_some_and(|ids| ids.contains(id))
     }
 
-    /// Saves the position and event IDs, returning the count of new IDs.
+    /// Returns the saved events waiting for delivery, oldest first.
+    #[must_use]
+    pub const fn pending(&self) -> &VecDeque<Event> {
+        &self.state.pending
+    }
+
+    /// Drains the pending queue, persists it empty, and returns events oldest first.
     ///
-    /// Only distinct IDs not already remembered for the key count as new.
+    /// # Errors
+    /// Returns [`StoreError::TooLarge`] if the serialized state exceeds the byte
+    /// limit, or [`StoreError::Write`] if serialization, writing, syncing or
+    /// renaming fails. The in-memory queue is unchanged on error. A directory
+    /// sync error can occur after the saved file has been replaced.
+    pub fn take_pending(&mut self) -> Result<Vec<Event>, StoreError> {
+        let mut state = self.state.clone();
+        let pending = std::mem::take(&mut state.pending);
+        self.persist(&state)?;
+
+        self.state = state;
+
+        Ok(pending.into())
+    }
+
+    /// Saves the position, seen IDs and fresh events together in one file.
+    ///
+    /// Returns the count of distinct IDs not already remembered for the key.
     /// Repeated IDs move to the newest end of the key's queue first, then the
     /// new IDs are appended after them, so a refresh never drops a new ID. The
-    /// oldest IDs are dropped as needed to keep the queue bounded. The
-    /// position is saved even when no event is new. The state is written to
-    /// a temporary file, synced, renamed into place, and the directory synced.
+    /// oldest IDs are dropped as needed to keep the seen queue bounded. New
+    /// events are appended to the durable pending queue in input order. The position
+    /// is saved even when no event is new. The state is written to a temporary
+    /// file, synced, renamed into place, and the directory synced.
     ///
     /// # Errors
     /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit
-    /// or the batch holds more new IDs than the seen ID limit,
+    /// or the batch exceeds the seen ID or pending event limit. These errors
+    /// leave the state and file unchanged. Returns
     /// [`StoreError::TooLarge`] if the serialized state exceeds the byte limit,
     /// or [`StoreError::Write`] if serialization, writing, syncing or renaming
-    /// fails. On error, memory and the saved file are unchanged.
+    /// fails. An error leaves memory unchanged. Only a directory sync error
+    /// can occur after the saved file has been replaced.
     pub fn commit(
         &mut self,
         key: PositionKey,
@@ -603,6 +640,7 @@ mod tests {
             version: STORE_VERSION,
             positions: (0..positions).map(|index| (key(index), cursor())).collect(),
             seen: BTreeMap::from([(key(0), ids)]),
+            pending: VecDeque::new(),
         }
     }
 
@@ -646,6 +684,63 @@ mod tests {
     }
 
     #[test]
+    fn pending_appends_each_fresh_event_once_and_persists_the_drain() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = key(1);
+        let mut store = Store::open(dir.path()).unwrap();
+        let first = event("first".into());
+        let second = event("second".into());
+        let batch = [first.clone(), first.clone(), second.clone()];
+        let expected = VecDeque::from([first.clone(), second.clone()]);
+
+        assert_eq!(store.commit(key.clone(), cursor(), &batch).unwrap(), 2);
+        assert_eq!(store.pending(), &expected);
+        assert_eq!(
+            store
+                .commit(key.clone(), cursor(), std::slice::from_ref(&first))
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.pending(), &expected);
+        assert_eq!(store.take_pending().unwrap(), [first.clone(), second]);
+        assert_eq!(store.pending(), &VecDeque::new());
+        drop(store);
+
+        let reopened = Store::open(dir.path()).unwrap();
+
+        assert_eq!(reopened.pending(), &VecDeque::new());
+        assert_eq!(
+            (reopened.position(&key), reopened.is_seen(&key, first.id())),
+            (Some(&cursor()), true)
+        );
+    }
+
+    #[test]
+    fn pending_overflow_leaves_state_and_file_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let initial = events(0..MAX_PENDING_EVENTS);
+        let new = events(MAX_PENDING_EVENTS..MAX_PENDING_EVENTS + 1);
+        assert_eq!(
+            store.commit(key(1), cursor(), &initial).unwrap(),
+            MAX_PENDING_EVENTS
+        );
+        let before = store.state.clone();
+        let bytes = fs::read(&store.path).unwrap();
+        let next = Position::new("next".into()).unwrap();
+
+        let error = store.commit(key(1), next, &new).unwrap_err();
+        let StoreError::TooMany { limit } = error else {
+            panic!("expected too many pending events, got {error:?}");
+        };
+
+        assert_eq!(limit, MAX_PENDING_EVENTS);
+        assert_eq!(store.state, before);
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
     fn a_second_open_of_the_same_directory_is_locked() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -673,6 +768,7 @@ mod tests {
             store.commit(key(1), cursor(), &batch).unwrap(),
             MAX_SEEN_IDS
         );
+        assert_eq!(store.take_pending().unwrap(), batch);
         assert_eq!(store.commit(key(1), cursor(), &newest).unwrap(), 1);
         assert_eq!(
             (
@@ -694,6 +790,7 @@ mod tests {
 
         assert_eq!(store.commit(key(1), cursor(), &batch).unwrap(), 3);
         assert_eq!(store.commit(key(1), cursor(), &repeat).unwrap(), 0);
+        assert_eq!(store.take_pending().unwrap(), batch);
         assert_eq!(
             store.commit(key(1), cursor(), &newest).unwrap(),
             MAX_SEEN_IDS - 2
@@ -962,6 +1059,7 @@ mod tests {
         let batch: Vec<_> = fresh.iter().chain(&earlier).cloned().collect();
 
         assert_eq!(store.commit(key(1), cursor(), &earlier).unwrap(), 1);
+        assert_eq!(store.take_pending().unwrap(), earlier);
         assert_eq!(
             store.commit(key(1), cursor(), &batch).unwrap(),
             MAX_SEEN_IDS
@@ -1038,15 +1136,19 @@ mod tests {
     }
 
     #[test]
-    fn max_positions_and_seen_ids_are_accepted() {
+    fn max_positions_seen_ids_and_pending_events_are_accepted() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("positions.json");
-        let state = state_with_counts(MAX_POSITIONS, MAX_SEEN_IDS);
+        let state = State {
+            pending: events(0..MAX_PENDING_EVENTS).into(),
+            ..state_with_counts(MAX_POSITIONS, MAX_SEEN_IDS)
+        };
         fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
 
         let store = Store::open(dir.path()).unwrap();
 
         assert_eq!(store.position(&key(0)), Some(&cursor()));
+        assert_eq!(store.pending(), &state.pending);
     }
 
     #[test]
@@ -1061,6 +1163,10 @@ mod tests {
             seen: BTreeMap::from([(key(0), VecDeque::from([id.clone(), id]))]),
             ..State::empty()
         };
+        let too_many_pending = State {
+            pending: events(0..MAX_PENDING_EVENTS + 1).into(),
+            ..State::empty()
+        };
 
         for (state, reason) in [
             (wrong_version, "unsupported version"),
@@ -1070,6 +1176,7 @@ mod tests {
             ),
             (state_with_counts(0, MAX_SEEN_IDS + 1), "too many seen ids"),
             (duplicate_seen_ids, "duplicate seen id"),
+            (too_many_pending, "too many pending events"),
         ] {
             let store_dir = dir.path().join(reason);
             let path = store_dir.join("positions.json");

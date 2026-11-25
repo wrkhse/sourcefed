@@ -1,10 +1,11 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use jiff::Timestamp;
 
+pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
     Event, ModelError, MonitorConfig, Next, PollOutcome, PollRequest, PositionKey,
     Source, Store, StoreError,
@@ -12,10 +13,11 @@ use crate::{
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
 pub const MAX_WAIT_SECS: u64 = 10;
-/// Maximum number of events waiting for delivery.
-pub const MAX_PENDING_EVENTS: usize = 1000;
 /// Maximum default retry delay in seconds.
 pub const DEFAULT_BACKOFF_CAP_SECS: u64 = 300;
+
+const ITERATIONS_PER_POLL: u64 =
+    DEFAULT_BACKOFF_CAP_SECS.div_ceil(MAX_WAIT_SECS) + 1;
 
 /// Supplies time and sleep to the poll engine without an async runtime.
 pub trait Clock: Send + Sync {
@@ -26,21 +28,21 @@ pub trait Clock: Send + Sync {
 }
 
 /// Reads wall-clock time and sleeps on the calling thread.
+///
+/// Returns [`Timestamp::MIN`] if the wall clock is outside Jiff's range.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "match explicitly on the out-of-range wall-clock reading"
+    )]
     fn now(&self) -> Timestamp {
-        let system_now = SystemTime::now();
-        let Ok(now) = Timestamp::try_from(system_now) else {
-            return if system_now < SystemTime::UNIX_EPOCH {
-                Timestamp::MIN
-            } else {
-                Timestamp::MAX
-            };
-        };
-
-        now
+        match Timestamp::try_from(SystemTime::now()) {
+            Ok(now) => now,
+            Err(_) => Timestamp::MIN,
+        }
     }
 
     fn sleep(&self, duration: Duration) {
@@ -102,7 +104,7 @@ impl Backoff {
 /// Whether the engine can still poll.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineState {
-    /// The engine has another poll due.
+    /// The engine has a poll scheduled, which may be in the future.
     Running,
     /// The engine observed a stop request.
     Stopped,
@@ -127,35 +129,6 @@ impl StopHandle {
     }
 }
 
-/// Events waiting for delivery, oldest first, with a count of dropped events.
-#[derive(Debug, Default, Eq, PartialEq)]
-pub struct PendingEvents {
-    events: VecDeque<Event>,
-    dropped: usize,
-}
-
-impl PendingEvents {
-    /// Appends events, dropping and counting the oldest whenever the queue is full.
-    pub fn push(&mut self, events: Vec<Event>) {
-        for event in events {
-            if self.events.len() == MAX_PENDING_EVENTS {
-                self.events.pop_front();
-                self.dropped = self.dropped.saturating_add(1);
-            }
-
-            self.events.push_back(event);
-        }
-    }
-
-    /// Drains the events in queue order and resets the count of dropped events.
-    #[must_use]
-    pub fn take(&mut self) -> (Vec<Event>, usize) {
-        let pending = std::mem::take(self);
-
-        (pending.events.into(), pending.dropped)
-    }
-}
-
 /// A failure to commit a poll outcome to the store.
 ///
 /// Source failures schedule a retry with backoff and are not returned here.
@@ -172,10 +145,11 @@ enum Schedule {
     Ended,
 }
 
-/// Polls one source at a time and queues distinct new events after a successful commit.
+/// Polls one source at a time and saves fresh events with the source position.
 ///
-/// A successful outcome sets the next due time or ends the engine. A source failure
-/// schedules a retry with backoff; it is not returned as an error.
+/// Pending events live in the store. A successful outcome sets the next due
+/// time or ends the engine. A source failure schedules a retry with backoff;
+/// it is not returned as an error.
 pub struct PollEngine {
     config: MonitorConfig,
     source: Arc<dyn Source>,
@@ -184,7 +158,6 @@ pub struct PollEngine {
     schedule: Schedule,
     backoff: Backoff,
     stop: StopHandle,
-    pending: PendingEvents,
 }
 
 impl PollEngine {
@@ -220,7 +193,6 @@ impl PollEngine {
             schedule,
             backoff,
             stop: StopHandle::default(),
-            pending: PendingEvents::default(),
         })
     }
 
@@ -240,24 +212,48 @@ impl PollEngine {
         }
     }
 
-    /// Returns the queue of committed events waiting for delivery.
+    /// Returns the store's durable queue of events waiting for delivery, oldest first.
     #[must_use]
-    pub const fn pending(&self) -> &PendingEvents {
-        &self.pending
+    pub const fn pending(&self) -> &VecDeque<Event> {
+        self.store.pending()
     }
 
-    /// Advances the engine by at most `max_polls` iterations.
+    /// Drains the store's pending queue, persists it empty, and returns its events.
     ///
-    /// Each iteration waits at most once, for at most ten seconds, and polls only
-    /// when due. A wait that ends before the due time consumes an iteration without
-    /// polling. The engine checks for a stop before and after sleeping.
+    /// # Errors
+    /// Returns [`StoreError::TooLarge`] if the serialized state exceeds the byte
+    /// limit, or [`StoreError::Write`] if serialization, writing, syncing or
+    /// renaming fails. The in-memory queue is unchanged on error. A directory
+    /// sync error can occur after the saved file has been replaced.
+    pub fn take_pending(&mut self) -> Result<Vec<Event>, StoreError> {
+        self.store.take_pending()
+    }
+
+    /// Consumes the engine and returns its store.
+    #[must_use]
+    pub fn into_store(self) -> Store {
+        self.store
+    }
+
+    /// Advances the engine by at most `max_polls` source polls and a bounded
+    /// number of wait iterations.
+    ///
+    /// The iteration budget is `max_polls` times the number of ten-second
+    /// waits in the default backoff cap (rounded up), plus one per poll.
+    /// Each iteration waits at most once and checks for a stop before and
+    /// after sleeping. If the due time has not arrived, the iteration counts
+    /// toward the iteration budget but not the poll budget.
     ///
     /// Source failures schedule a retry with backoff and do not return an error.
     ///
     /// # Errors
     /// Returns a store error if committing an outcome fails.
     pub fn run(&mut self, max_polls: u32) -> Result<EngineState, EngineError> {
-        for _ in 0..max_polls {
+        let max_iterations =
+            u64::from(max_polls).saturating_mul(ITERATIONS_PER_POLL);
+        let mut polls = 0_u32;
+
+        for _ in 0..max_iterations {
             let Schedule::Due(due) = self.schedule else {
                 break;
             };
@@ -281,8 +277,15 @@ impl PollEngine {
                 break;
             }
 
-            if now >= due {
-                self.poll(now)?;
+            if now < due {
+                continue;
+            }
+
+            self.poll(now)?;
+            polls = polls.saturating_add(1);
+
+            if polls == max_polls {
+                break;
             }
         }
 
@@ -319,22 +322,9 @@ impl PollEngine {
         key: PositionKey,
         outcome: &PollOutcome,
     ) -> Result<(), StoreError> {
-        let mut distinct = BTreeSet::new();
-        let fresh: Vec<_> = outcome
-            .events()
-            .iter()
-            .filter(|event| {
-                !self.store.is_seen(&key, event.id()) && distinct.insert(event.id())
-            })
-            .cloned()
-            .collect();
+        self.store
+            .commit(key, outcome.position().clone(), outcome.events())?;
 
-        let count =
-            self.store
-                .commit(key, outcome.position().clone(), outcome.events())?;
-        debug_assert_eq!(count, fresh.len());
-
-        self.pending.push(fresh);
         self.backoff.succeed();
         self.schedule = match outcome.next() {
             Next::Due(due) => Schedule::Due(due),
@@ -348,6 +338,7 @@ impl PollEngine {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::time::Instant;
 
     use super::*;
     use crate::source::MAX_EVENTS_PER_POLL;
@@ -402,7 +393,7 @@ mod tests {
 
     struct Fixture {
         engine: PollEngine,
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         clock: Arc<FakeClock>,
         source: Arc<FakeSource>,
     }
@@ -429,7 +420,7 @@ mod tests {
 
             Self {
                 engine,
-                _dir: dir,
+                dir,
                 clock,
                 source,
             }
@@ -481,6 +472,25 @@ mod tests {
     }
 
     #[test]
+    fn system_clock_reads_the_current_time() {
+        let before = Timestamp::now();
+        let now = SystemClock.now();
+        let after = Timestamp::now();
+
+        assert!(before <= now);
+        assert!(now <= after);
+    }
+
+    #[test]
+    fn system_clock_sleeps_at_least_the_requested_duration() {
+        let duration = Duration::from_millis(2);
+        let start = Instant::now();
+        SystemClock.sleep(duration);
+
+        assert!(start.elapsed() >= duration);
+    }
+
+    #[test]
     fn first_poll_runs_immediately() {
         let mut f = Fixture::new(5, vec![Ok(outcome(Next::Due(at(5))))]);
 
@@ -499,6 +509,24 @@ mod tests {
     }
 
     #[test]
+    fn a_one_poll_budget_stops_even_when_the_next_poll_is_due() {
+        let mut f = Fixture::new(
+            5,
+            vec![Ok(outcome(Next::Due(at(0)))), Ok(outcome(Next::Done))],
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+        assert_eq!(f.sleeps(), []);
+    }
+
+    #[test]
     fn on_time_poll_waits_the_full_interval_in_bounded_sleeps() {
         let mut f = Fixture::new(
             25,
@@ -508,8 +536,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(f.engine.run(3).unwrap(), EngineState::Running);
-        assert_eq!(f.requests().len(), 1);
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
         assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
         assert_eq!(f.sleeps(), [10, 10, 5].map(Duration::from_secs));
         assert_eq!(
@@ -524,6 +551,25 @@ mod tests {
                     position: Some(cursor()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_distant_due_time_exhausts_the_iteration_budget_without_polling() {
+        let mut f = Fixture::new(
+            5,
+            vec![Ok(outcome(Next::Due(at(3600)))), Ok(outcome(Next::Done))],
+        );
+        f.engine.run(1).unwrap();
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Running);
+        assert_eq!(f.sleeps(), [Duration::from_secs(10); 31]);
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: None,
+            }]
         );
     }
 
@@ -619,7 +665,7 @@ mod tests {
             }
         );
         assert_eq!(f.engine.state(), EngineState::Running);
-        assert_eq!(f.engine.pending(), &PendingEvents::default());
+        assert_eq!(f.engine.pending(), &VecDeque::new());
         assert_eq!(
             (
                 f.engine.store.position(&key()),
@@ -657,22 +703,62 @@ mod tests {
         );
 
         assert_eq!(f.engine.run(2).unwrap(), EngineState::Ended);
-        assert_eq!(f.engine.pending.take(), (vec![first, third, second], 0));
+        let expected = VecDeque::from([first, third, second]);
+
+        assert_eq!(f.engine.pending(), &expected);
+        assert_eq!(f.engine.take_pending().unwrap(), Vec::from(expected));
+        assert_eq!(f.engine.take_pending().unwrap(), []);
     }
 
     #[test]
-    fn a_full_pending_queue_drops_the_oldest_and_take_resets_it() {
-        let events: Vec<_> = (0..MAX_PENDING_EVENTS + 2)
+    fn pending_overflow_leaves_the_schedule_and_store_unchanged() {
+        let initial: Vec<_> = (0..MAX_PENDING_EVENTS)
             .map(|index| event(&format!("event-{index}")))
             .collect();
-        let expected = events.iter().skip(2).cloned().collect();
-        let mut pending = PendingEvents::default();
+        let fresh = event("overflow");
+        let next = Position::new("next".into()).unwrap();
+        let overflow = PollOutcome::new(vec![fresh.clone()], next, Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(overflow.unwrap())]);
+        assert_eq!(
+            f.engine.store.commit(key(), cursor(), &initial).unwrap(),
+            MAX_PENDING_EVENTS
+        );
+        f.engine.backoff.fail();
+        let backoff = f.engine.backoff;
 
-        pending.push(events[..MAX_PENDING_EVENTS].to_vec());
-        pending.push(events[MAX_PENDING_EVENTS..].to_vec());
+        let error = f.engine.run(1).unwrap_err();
+        let EngineError::Store(StoreError::TooMany { limit }) = error else {
+            panic!("expected too many pending events, got {error:?}");
+        };
 
-        assert_eq!(pending.take(), (expected, 2));
-        assert_eq!(pending.take(), (Vec::new(), 0));
+        assert_eq!(limit, MAX_PENDING_EVENTS);
+        assert_eq!(f.engine.state(), EngineState::Running);
+        assert!(matches!(f.engine.schedule, Schedule::Due(due) if due == at(0)));
+        assert_eq!(f.engine.backoff, backoff);
+        assert_eq!(f.engine.pending(), &VecDeque::from(initial));
+        assert_eq!(
+            (
+                f.engine.store.position(&key()),
+                f.engine.store.is_seen(&key(), fresh.id()),
+            ),
+            (Some(&cursor()), false)
+        );
+    }
+
+    #[test]
+    fn a_finished_engines_position_and_pending_events_survive_reopen() {
+        let events = vec![event("first"), event("second")];
+        let outcome = PollOutcome::new(events.clone(), cursor(), Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(outcome.unwrap())]);
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let store = f.engine.into_store();
+        drop(store);
+
+        let reopened = Store::open(f.dir.path()).unwrap();
+
+        assert_eq!(reopened.position(&key()), Some(&cursor()));
+        assert_eq!(reopened.pending(), &VecDeque::from(events));
     }
 
     #[test]
