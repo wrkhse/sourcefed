@@ -405,7 +405,13 @@ fn cleanup_temp_files(dir: &Path) {
         return;
     };
 
-    cleanup_paths(entries.filter_map(Result::ok).map(|entry| entry.path()));
+    // The limit applies to raw entries, so unreadable ones count toward it too.
+    let paths = entries
+        .take(MAX_TEMP_SCAN)
+        .filter_map(Result::ok)
+        .map(|entry| entry.path());
+
+    cleanup_paths(paths);
 }
 
 // Removes generated temp files among the first `MAX_TEMP_SCAN` paths, at most
@@ -699,15 +705,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let generated = dir.path().join("positions.json.1.2.tmp");
         let notes = dir.path().join("positions.json.notes.tmp");
+        let one_number = dir.path().join("positions.json.1.tmp");
         let folder = dir.path().join("positions.json.3.4.tmp");
         fs::write(&generated, b"stale").unwrap();
         fs::write(&notes, b"notes").unwrap();
+        fs::write(&one_number, b"one").unwrap();
         fs::create_dir(&folder).unwrap();
 
         let _store = Store::open(dir.path()).unwrap();
 
         assert_missing(&generated);
         assert_eq!(fs::read(&notes).unwrap(), b"notes");
+        assert_eq!(fs::read(&one_number).unwrap(), b"one");
         assert!(fs::metadata(&folder).unwrap().is_dir());
     }
 
@@ -757,10 +766,10 @@ mod tests {
     #[test]
     fn cleanup_never_scans_past_the_scan_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = scan_paths(dir.path(), 550..600);
+        let paths = scan_paths(dir.path(), 500..550);
 
         assert_eq!(cleanup_paths(paths.clone().into_iter()), 0);
-        assert_eq!(existing(&paths[550..]), 50);
+        assert_eq!(existing(&paths[500..550]), 50);
     }
 
     #[test]
