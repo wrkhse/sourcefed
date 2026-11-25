@@ -1,5 +1,6 @@
 //! Runs the built binary against a real state directory and the system clock.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -67,12 +68,17 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     assert!(stopping.elapsed() < Duration::from_secs(3));
     assert!(!rest.contains(&id));
 
+    let seen: HashSet<String> = rest.into_iter().chain([id.clone()]).collect();
+
+    // The saved position resumes the timer, so the second run prints firings
+    // the first never saw, and never the one it acknowledged.
     let mut second = follow(3);
     drop(second.stdin.take());
     let mut stdout = BufReader::new(second.stdout.take().unwrap());
     let printed = remaining_ids(&mut stdout);
+    let fresh = printed.iter().filter(|printed| !seen.contains(*printed));
 
     assert!(second.wait().unwrap().success());
     assert!(!printed.contains(&id));
-    assert_ne!(printed, Vec::<String>::new());
+    assert_ne!(fresh.count(), 0);
 }

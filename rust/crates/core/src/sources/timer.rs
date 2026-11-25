@@ -9,6 +9,7 @@ use crate::{
 };
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
+const MAX_INTERVAL_SECS: u64 = 3600;
 
 /// Fires a named job every interval, saving the next due instant as its
 /// [`Position`].
@@ -33,19 +34,27 @@ pub struct TimerSource {
 }
 
 impl TimerSource {
-    /// Builds a timer for `job` that fires every `every_secs` seconds. The job
-    /// becomes the event subject's key and the middle of each event ID.
+    /// Builds a timer for `job` that fires every `every_secs` seconds, from 1
+    /// to 3600. The job becomes the event subject's key and the middle of each
+    /// event ID.
     ///
     /// # Errors
     ///
-    /// Returns an error if the interval is zero, or the job is empty,
-    /// contains a colon or a control character, or is too long for an
-    /// event ID.
+    /// Returns an error if the interval is zero or over 3600 seconds, or the
+    /// job is empty, contains a colon or a control character, or is too long
+    /// for an event ID.
     pub fn new(job: String, every_secs: u64) -> Result<Self, ModelError> {
         if every_secs == 0 {
             return Err(ModelError::Invalid {
                 field: "timer interval",
                 reason: "must be positive",
+            });
+        }
+
+        if every_secs > MAX_INTERVAL_SECS {
+            return Err(ModelError::Invalid {
+                field: "timer interval",
+                reason: "must be at most 3600 seconds",
             });
         }
 
@@ -327,6 +336,20 @@ mod tests {
             Err(ModelError::TooLong {
                 field: "event id",
                 limit: crate::MAX_ID_LEN,
+            })
+        );
+    }
+
+    #[test]
+    fn new_accepts_an_hour_and_rejects_a_longer_interval() {
+        let outcome = poll(&timer(3600), None, at(0));
+
+        assert_eq!(outcome.next(), Next::Due(at(3600)));
+        assert_eq!(
+            TimerSource::new("deploy".into(), 3601),
+            Err(ModelError::Invalid {
+                field: "timer interval",
+                reason: "must be at most 3600 seconds",
             })
         );
     }

@@ -7,9 +7,10 @@
 //! refuses fresh events until pending events are acknowledged.
 //!
 //! The crate ships one source, [`TimerSource`], which fires a named job every
-//! interval. The `sourcefed` CLI's `follow` command runs a source through the
-//! poll engine, prints each normalized event as one NDJSON line, and reads ack
-//! and stop lines on stdin.
+//! interval. The `sourcefed-core` binary's `follow` command runs a source
+//! through the poll engine, prints each normalized event as one NDJSON line,
+//! and reads ack and stop lines on stdin. Each poll reads a bounded number of
+//! input lines, and a line over 512 bytes is discarded with a diagnostic.
 //!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.

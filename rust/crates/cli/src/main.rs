@@ -18,6 +18,9 @@ use sourcefed_core::{
 
 // One input line holds a command and an event ID of at most 256 bytes.
 const MAX_INPUT_LINE: u64 = 512;
+// At most this many inputs apply between two polls, so a fast writer on stdin
+// cannot hold polling back; the rest wait for the next poll.
+const MAX_INPUTS_PER_POLL: usize = 64;
 // How long the last inputs may take to arrive once a stop is requested.
 const DRAIN_WAIT: Duration = Duration::from_secs(1);
 
@@ -30,7 +33,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Follows a timer and prints each event as one JSON line.
+    /// Follows a timer and prints each event as one JSON line. Each poll
+    /// reads a bounded number of ack and stop lines from stdin; a line over
+    /// 512 bytes is discarded with a diagnostic.
     Follow(Follow),
 }
 
@@ -54,6 +59,13 @@ struct Follow {
 enum Input {
     Ack(EventId),
     Stop,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Line {
+    Read,
+    TooLong,
+    End,
 }
 
 fn main() -> ExitCode {
@@ -142,7 +154,11 @@ struct Inputs {
 
 impl Inputs {
     fn apply(&mut self, engine: &mut PollEngine) -> Result<(), Box<dyn Error>> {
-        while let Ok(input) = self.receiver.try_recv() {
+        for _ in 0..MAX_INPUTS_PER_POLL {
+            let Ok(input) = self.receiver.try_recv() else {
+                break;
+            };
+
             self.handle(engine, input)?;
         }
 
@@ -184,14 +200,19 @@ impl Inputs {
 }
 
 fn read_input(mut reader: impl BufRead, stop: &StopHandle, sender: &Sender<Input>) {
-    let mut line = String::new();
+    let mut line = Vec::new();
 
     loop {
-        line.clear();
+        match read_line(&mut reader, &mut line) {
+            Ok(Line::End) => return,
+            Ok(Line::Read) => {}
+            Ok(Line::TooLong) => {
+                eprintln!(
+                    "sourcefed-core: input line exceeds {MAX_INPUT_LINE} bytes"
+                );
 
-        match reader.by_ref().take(MAX_INPUT_LINE).read_line(&mut line) {
-            Ok(0) => return,
-            Ok(_) => {}
+                continue;
+            }
             Err(error) => {
                 eprintln!("sourcefed-core: stdin: {error}");
 
@@ -199,7 +220,8 @@ fn read_input(mut reader: impl BufRead, stop: &StopHandle, sender: &Sender<Input
             }
         }
 
-        let input = match parse_input(&line) {
+        let text = std::str::from_utf8(&line).map_err(|error| error.to_string());
+        let input = match text.and_then(parse_input) {
             Ok(input) => input,
             Err(error) => {
                 eprintln!("sourcefed-core: {error}");
@@ -217,6 +239,30 @@ fn read_input(mut reader: impl BufRead, stop: &StopHandle, sender: &Sender<Input
             stop.stop();
         }
     }
+}
+
+// Reads one line of at most `MAX_INPUT_LINE` bytes before its newline into
+// `line`. A longer line is discarded through its newline, so none of it is
+// read as a command.
+fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Line> {
+    line.clear();
+
+    let limit = MAX_INPUT_LINE.saturating_add(1);
+
+    if reader.by_ref().take(limit).read_until(b'\n', line)? == 0 {
+        return Ok(Line::End);
+    }
+
+    let ended = line.last() == Some(&b'\n');
+    let within = u64::try_from(line.len()).is_ok_and(|len| len <= MAX_INPUT_LINE);
+
+    if ended || within {
+        return Ok(Line::Read);
+    }
+
+    reader.skip_until(b'\n')?;
+
+    Ok(Line::TooLong)
 }
 
 fn parse_input(line: &str) -> Result<Input, String> {
@@ -314,6 +360,27 @@ mod tests {
     }
 
     #[test]
+    fn apply_handles_at_most_the_bound_in_one_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+
+        for index in 0..MAX_INPUTS_PER_POLL {
+            let other = format!("timer:deploy:other-{index}");
+            sender.send(ack(&other)).unwrap();
+        }
+
+        sender.send(ack(ID)).unwrap();
+        inputs.apply(&mut engine).unwrap();
+
+        assert_eq!(pending_ids(&engine), [ID]);
+
+        inputs.apply(&mut engine).unwrap();
+
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+    }
+
+    #[test]
     fn finish_applies_acks_ahead_of_a_stop_without_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = pending_engine(dir.path());
@@ -358,6 +425,41 @@ mod tests {
 
         assert!(stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [Input::Stop]);
+    }
+
+    #[test]
+    fn read_input_discards_an_over_long_line_through_its_newline() {
+        let stop = StopHandle::default();
+        let (sender, receiver) = mpsc::channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        // Cut at the limit, the tail of this ack line would read as a stop.
+        let pad = "x".repeat(limit.saturating_sub("ack ".len()));
+        let lines = format!("ack {pad}stop\nack first\n");
+
+        read_input(lines.as_bytes(), &stop, &sender);
+
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
+    }
+
+    #[test]
+    fn read_input_accepts_a_line_of_exactly_the_limit() {
+        let stop = StopHandle::default();
+        let (sender, receiver) = mpsc::channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let over = limit.saturating_add(1);
+
+        read_input(format!("{:<over$}\n", "stop").as_bytes(), &stop, &sender);
+
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+
+        read_input(format!("{:<limit$}\n", "stop").as_bytes(), &stop, &sender);
+        read_input(format!("{:<limit$}", "stop").as_bytes(), &stop, &sender);
+
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [Input::Stop, Input::Stop]
+        );
     }
 
     #[test]
