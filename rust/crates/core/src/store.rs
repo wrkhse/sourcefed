@@ -150,38 +150,56 @@ impl State {
         events: &[Event],
     ) -> Result<usize, StoreError> {
         let known = self.seen.get(key);
-        let mut fresh = BTreeSet::new();
+        let mut distinct = BTreeSet::new();
+        let mut repeats = Vec::new();
+        let mut fresh = Vec::new();
 
-        // A repeated ID is a duplicate, not a new delivery, so it keeps its
-        // original place in the queue and is evicted in first-seen order.
-        let new_ids: Vec<&EventId> = events
-            .iter()
-            .map(Event::id)
-            .filter(|id| !known.is_some_and(|ids| ids.contains(id)))
-            .filter(|id| fresh.insert(*id))
-            .collect();
+        // Split the batch against the IDs remembered before it, so refreshing
+        // a repeat can never evict an ID this batch adds.
+        for id in events.iter().map(Event::id) {
+            if !distinct.insert(id) {
+                continue;
+            }
 
-        if new_ids.len() > MAX_SEEN_IDS {
+            if known.is_some_and(|seen| seen.contains(id)) {
+                repeats.push(id);
+            } else {
+                fresh.push(id);
+            }
+        }
+
+        let new_count = fresh.len();
+
+        if new_count > MAX_SEEN_IDS {
             return Err(StoreError::TooMany {
                 limit: MAX_SEEN_IDS,
             });
         }
 
-        if new_ids.is_empty() {
+        if distinct.is_empty() {
             return Ok(0);
         }
 
         let seen = self.seen.entry(key.clone()).or_default();
 
-        for id in &new_ids {
+        // A repeat is already in the queue, so moving it never grows it.
+        for id in repeats {
+            if let Some(index) = seen.iter().position(|known| known == id) {
+                seen.remove(index);
+            }
+
+            seen.push_back(id.clone());
+        }
+
+        for id in fresh {
             if seen.len() == MAX_SEEN_IDS {
                 seen.pop_front();
             }
 
-            seen.push_back((*id).clone());
+            seen.push_back(id.clone());
         }
 
-        Ok(new_ids.len())
+        Ok(new_count)
     }
 }
 
@@ -220,8 +238,9 @@ mod key_entries {
 ///
 /// The object has a version, a sequence of position key and position pairs,
 /// and a sequence of position key and seen event ID pairs. Each key remembers
-/// its own IDs; at the ID limit, that key's oldest ID is dropped. Only one
-/// store at a time may hold a directory.
+/// its own IDs in a bounded queue. A repeated ID moves to the newest end; at
+/// the ID limit, the oldest ID is dropped. Only one store at a time may hold a
+/// directory.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -234,11 +253,14 @@ pub struct Store {
 impl Store {
     /// Opens a store in the directory, or starts empty if its file is absent.
     ///
-    /// A corrupt file is refused without rewriting it. The directory stays
-    /// locked until the store is dropped.
+    /// After acquiring the exclusive lock, removes up to 100 temporary files
+    /// whose names start with the store file name followed by a period and end
+    /// in `.tmp`. A corrupt file is refused without rewriting it. The directory
+    /// stays locked until the store is dropped.
     ///
     /// # Errors
-    /// Returns [`StoreError::Write`] if directory or lock file creation fails,
+    /// Returns [`StoreError::Write`] if directory or lock file creation or
+    /// temporary-file cleanup has an I/O failure,
     /// [`StoreError::Locked`] if another store holds the directory,
     /// [`StoreError::Read`] if the file cannot be read, or
     /// [`StoreError::Corrupt`] if the file is invalid or exceeds its limits.
@@ -248,6 +270,7 @@ impl Store {
             source,
         })?;
         let lock = lock(dir)?;
+        cleanup_temp_files(dir)?;
         let path = dir.join(STORE_FILE);
         let state = State::load(&path)?;
 
@@ -276,10 +299,12 @@ impl Store {
 
     /// Saves the position and event IDs, returning the count of new IDs.
     ///
-    /// Only IDs not remembered for the key when encountered count as new. The
-    /// key's oldest IDs are dropped as needed to keep its set bounded. The
-    /// position is saved even when no event is new. The state is written to a
-    /// temporary file, synced, renamed into place, and the directory synced.
+    /// Only distinct IDs not already remembered for the key count as new.
+    /// Repeated IDs move to the newest end of the key's queue first, then the
+    /// new IDs are appended after them, so a refresh never drops a new ID. The
+    /// oldest IDs are dropped as needed to keep the queue bounded. The position is saved
+    /// even when no event is new. The state is written to a temporary file,
+    /// synced, renamed into place, and the directory synced.
     ///
     /// # Errors
     /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit
@@ -362,6 +387,48 @@ impl Store {
 
         self.dir.join(name)
     }
+}
+
+fn cleanup_temp_files(dir: &Path) -> Result<(), StoreError> {
+    let entries = fs::read_dir(dir).map_err(|source| StoreError::Write {
+        path: dir.to_owned(),
+        source,
+    })?;
+    let mut removed = 0_usize;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| StoreError::Write {
+            path: dir.to_owned(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        if name.starts_with("positions.json.") && name.ends_with(".tmp") {
+            let path = entry.path();
+
+            if !entry
+                .file_type()
+                .map_err(|source| StoreError::Write {
+                    path: path.clone(),
+                    source,
+                })?
+                .is_file()
+            {
+                continue;
+            }
+
+            fs::remove_file(&path)
+                .map_err(|source| StoreError::Write { path, source })?;
+            removed = removed.saturating_add(1);
+
+            if removed == 100 {
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn lock(dir: &Path) -> Result<File, StoreError> {
@@ -569,26 +636,43 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_id_is_not_refreshed() {
+    fn a_repeated_id_is_refreshed() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
-        let batch = events(0..MAX_SEEN_IDS);
-        let repeat = [batch[0].clone()];
-        let newest = events(MAX_SEEN_IDS..MAX_SEEN_IDS + 1);
+        let batch = events(0..3);
+        let repeat = [batch[0].clone(), batch[0].clone()];
+        let newest = events(3..MAX_SEEN_IDS + 1);
 
-        assert_eq!(
-            store.commit(key(1), cursor(), &batch).unwrap(),
-            MAX_SEEN_IDS
-        );
+        assert_eq!(store.commit(key(1), cursor(), &batch).unwrap(), 3);
         assert_eq!(store.commit(key(1), cursor(), &repeat).unwrap(), 0);
-        assert_eq!(store.commit(key(1), cursor(), &newest).unwrap(), 1);
+        assert_eq!(
+            store.commit(key(1), cursor(), &newest).unwrap(),
+            MAX_SEEN_IDS - 2
+        );
         assert_eq!(
             (
                 store.is_seen(&key(1), batch[0].id()),
                 store.is_seen(&key(1), batch[1].id()),
             ),
-            (false, true)
+            (true, false)
         );
+    }
+
+    #[test]
+    fn opening_removes_only_matching_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("positions.json.1.tmp");
+        let second = dir.path().join("positions.json.2.tmp");
+        let unrelated = dir.path().join("other.tmp");
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+
+        let _store = Store::open(dir.path()).unwrap();
+
+        assert_missing(&first);
+        assert_missing(&second);
+        assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
     }
 
     #[test]
@@ -618,6 +702,52 @@ mod tests {
         let before = store.state.clone();
         let bytes = fs::read(&store.path).unwrap();
         let batch = events(0..MAX_SEEN_IDS + 1);
+
+        let error = store.commit(key(1), cursor(), &batch).unwrap_err();
+        let StoreError::TooMany { limit } = error else {
+            panic!("expected too many seen ids, got {error:?}");
+        };
+
+        assert_eq!(limit, MAX_SEEN_IDS);
+        assert_eq!(store.state, before);
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_no_temp_files(dir.path());
+    }
+
+    #[test]
+    fn a_full_batch_with_a_repeat_keeps_every_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let earlier = events(0..1);
+        let fresh = events(1..MAX_SEEN_IDS + 1);
+        let batch: Vec<_> = fresh.iter().chain(&earlier).cloned().collect();
+
+        assert_eq!(store.commit(key(1), cursor(), &earlier).unwrap(), 1);
+        assert_eq!(
+            store.commit(key(1), cursor(), &batch).unwrap(),
+            MAX_SEEN_IDS
+        );
+
+        // The refreshed repeat is older than every new ID, so a full batch of
+        // new IDs pushes it out rather than one of them.
+        let expected: VecDeque<_> =
+            fresh.iter().map(|event| event.id().clone()).collect();
+
+        assert_eq!(store.state.seen[&key(1)], expected);
+    }
+
+    #[test]
+    fn an_oversized_batch_with_a_repeat_is_refused_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let earlier = events(0..1);
+        assert_eq!(store.commit(key(1), cursor(), &earlier).unwrap(), 1);
+        let before = store.state.clone();
+        let bytes = fs::read(&store.path).unwrap();
+        let batch: Vec<_> = events(1..MAX_SEEN_IDS + 2)
+            .into_iter()
+            .chain(earlier)
+            .collect();
 
         let error = store.commit(key(1), cursor(), &batch).unwrap_err();
         let StoreError::TooMany { limit } = error else {
