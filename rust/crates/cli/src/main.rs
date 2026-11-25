@@ -6,7 +6,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ const MAX_INPUT_LINE: u64 = 512;
 // At most this many inputs apply between two polls, so a fast writer on stdin
 // cannot hold polling back; the rest wait for the next poll.
 const MAX_INPUTS_PER_POLL: usize = 64;
+// At most this many inputs wait between the stdin reader and the polls; once
+// full, the reader blocks rather than growing memory.
+const MAX_QUEUED_INPUTS: usize = 128;
 // How long the last inputs may take to arrive once a stop is requested.
 const DRAIN_WAIT: Duration = Duration::from_secs(1);
 
@@ -83,7 +86,7 @@ fn main() -> ExitCode {
 
 fn follow(args: Follow) -> Result<(), Box<dyn Error>> {
     let mut engine = engine(args.job, args.every, &args.state_dir)?;
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = input_channel();
     let stop = engine.handle();
     thread::spawn(move || read_input(io::stdin().lock(), &stop, &sender));
 
@@ -147,6 +150,10 @@ fn print_new(
     Ok(())
 }
 
+fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
+    mpsc::sync_channel(MAX_QUEUED_INPUTS)
+}
+
 struct Inputs {
     receiver: Receiver<Input>,
     stopped: bool,
@@ -154,7 +161,16 @@ struct Inputs {
 
 impl Inputs {
     fn apply(&mut self, engine: &mut PollEngine) -> Result<(), Box<dyn Error>> {
-        for _ in 0..MAX_INPUTS_PER_POLL {
+        self.take(engine, MAX_INPUTS_PER_POLL)
+    }
+
+    // Applies up to `limit` inputs already queued, without waiting for more.
+    fn take(
+        &mut self,
+        engine: &mut PollEngine,
+        limit: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        for _ in 0..limit {
             let Ok(input) = self.receiver.try_recv() else {
                 break;
             };
@@ -166,7 +182,11 @@ impl Inputs {
     }
 
     fn finish(&mut self, engine: &mut PollEngine) -> Result<(), Box<dyn Error>> {
-        self.apply(engine)?;
+        // Every queued ack is applied, whether a stop or the poll limit ended
+        // the run, so none is left unread and replayed after a restart. The
+        // queue holds at most `MAX_QUEUED_INPUTS`, plus one from a blocked
+        // reader.
+        self.take(engine, MAX_QUEUED_INPUTS.saturating_add(1))?;
 
         // A stop request is sent before it is flagged, so the acks ahead of
         // it are already queued; wait for them to arrive.
@@ -199,7 +219,11 @@ impl Inputs {
     }
 }
 
-fn read_input(mut reader: impl BufRead, stop: &StopHandle, sender: &Sender<Input>) {
+fn read_input(
+    mut reader: impl BufRead,
+    stop: &StopHandle,
+    sender: &SyncSender<Input>,
+) {
     let mut line = Vec::new();
 
     loop {
@@ -285,6 +309,7 @@ fn parse_input(line: &str) -> Result<Input, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::TrySendError;
     use std::time::Instant;
 
     use sourcefed_core::{Event, Position, PositionKey, SourceName};
@@ -297,8 +322,8 @@ mod tests {
         Input::Ack(EventId::new(id.into()).unwrap())
     }
 
-    fn inputs() -> (Sender<Input>, Inputs) {
-        let (sender, receiver) = mpsc::channel();
+    fn inputs() -> (SyncSender<Input>, Inputs) {
+        let (sender, receiver) = input_channel();
 
         (
             sender,
@@ -412,9 +437,43 @@ mod tests {
     }
 
     #[test]
+    fn finish_applies_every_queued_input_when_the_poll_limit_ends_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+
+        for index in 0..MAX_INPUTS_PER_POLL {
+            let other = format!("timer:deploy:other-{index}");
+            sender.send(ack(&other)).unwrap();
+        }
+
+        sender.send(ack(ID)).unwrap();
+        let started = Instant::now();
+        inputs.finish(&mut engine).unwrap();
+
+        assert!(started.elapsed() < DRAIN_WAIT);
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn input_channel_holds_at_most_the_queue_bound() {
+        let (sender, _receiver) = input_channel();
+
+        for _ in 0..MAX_QUEUED_INPUTS {
+            sender.try_send(Input::Stop).unwrap();
+        }
+
+        assert_eq!(
+            sender.try_send(Input::Stop),
+            Err(TrySendError::Full(Input::Stop))
+        );
+    }
+
+    #[test]
     fn read_input_flags_a_stop_only_for_a_stop_line() {
         let stop = StopHandle::default();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = input_channel();
 
         read_input(&b"ack first\n"[..], &stop, &sender);
 
@@ -430,7 +489,7 @@ mod tests {
     #[test]
     fn read_input_discards_an_over_long_line_through_its_newline() {
         let stop = StopHandle::default();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = input_channel();
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         // Cut at the limit, the tail of this ack line would read as a stop.
         let pad = "x".repeat(limit.saturating_sub("ack ".len()));
@@ -445,7 +504,7 @@ mod tests {
     #[test]
     fn read_input_accepts_a_line_of_exactly_the_limit() {
         let stop = StopHandle::default();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = input_channel();
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         let over = limit.saturating_add(1);
 
@@ -488,7 +547,7 @@ mod tests {
     #[test]
     fn read_input_sends_inputs_in_order_and_flags_a_stop() {
         let stop = StopHandle::default();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = input_channel();
         let lines = "ack first\nbogus\nstop\nack later\n";
 
         read_input(lines.as_bytes(), &stop, &sender);
