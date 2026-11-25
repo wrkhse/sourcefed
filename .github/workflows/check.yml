@@ -107,8 +107,17 @@ jobs:
             # The build rewrites this bundle, so formatting it would leave
             # the tree dirty after check.
             ':(exclude)adapters/opencode/tui-compiled.mjs'
+            # Release tooling rewrites the changelog.
+            ':(exclude)CHANGELOG.md'
           )
-          mapfile -d '' -t files < <(git ls-files -z -- "${pathspecs[@]}")
+          file_list="$RUNNER_TEMP/tidy-files"
+          git ls-files -z -- "${pathspecs[@]}" > "$file_list" \
+            || { echo "::error::could not list tracked files"; exit 2; }
+          mapfile -d '' -t files < "$file_list"
+          if (( ${#files[@]} == 0 )); then
+            echo "::error::no tracked files matched the tidy check pathspecs"
+            exit 2
+          fi
           tidy check --skip-unknown "${files[@]}"
           status=$?
           case "$status" in

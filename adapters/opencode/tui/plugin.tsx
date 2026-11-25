@@ -451,7 +451,7 @@ function LogsDialog(props: { ctx: Plugin.Context; logs: LogEntryView[] }) {
                   </text>
                 </box>
                 <Show when={entry.body}>
-                  <text fg={palette().textMuted}> {entry.body}</text>
+                  <text fg={palette().textMuted}>{"  "}{entry.body}</text>
                 </Show>
               </box>
             ))}

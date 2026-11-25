@@ -19,6 +19,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { goldenSource } from "./golden-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const [casesPath, ref] = process.argv.slice(2);
@@ -114,7 +115,7 @@ try {
   const constant =
     input.provider.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_GOLDEN";
   const header = `/** What the pre-SDK ${input.provider} provider did at ${recordedFrom}, recorded so the SDK port must reproduce it exactly. */`;
-  const text = `import type { GoldenFixture } from "@sourcefed/sdk"\n\n${header}\nexport const ${constant}: GoldenFixture = ${JSON.stringify(fixture, null, 2)}\n`;
+  const text = goldenSource(fixture, constant, header);
   writeFileSync(path.resolve(root, input.fixture), text);
   console.log(
     `${createHash("sha256").update(text).digest("hex")}  ${input.fixture}`,
