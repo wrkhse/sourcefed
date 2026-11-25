@@ -63,7 +63,7 @@ pub enum StoreError {
     /// Another store holds the directory; close it before opening again.
     #[error("store {path} is locked by another writer")]
     Locked { path: PathBuf },
-    /// A commit would exceed the position, seen ID, or pending event limit.
+    /// A commit exceeds a limit or cannot evict enough non-pending seen IDs.
     #[error("state exceeds {limit} items")]
     TooMany { limit: usize },
     /// The byte limit is exceeded; reduce the size of the state to save.
@@ -232,12 +232,27 @@ impl State {
 
         let new_count = fresh.len();
         let pending = self.pending.entry(key.clone()).or_default();
+        let evictions = seen
+            .len()
+            .saturating_add(new_count)
+            .saturating_sub(MAX_SEEN_IDS);
+
+        if evictions != 0 {
+            let pending_ids: BTreeSet<_> = pending.iter().map(Event::id).collect();
+
+            for _ in 0..evictions {
+                let index = seen
+                    .iter()
+                    .position(|id| !pending_ids.contains(id))
+                    .ok_or(StoreError::TooMany {
+                        limit: MAX_SEEN_IDS,
+                    })?;
+
+                seen.remove(index);
+            }
+        }
 
         for event in fresh {
-            if seen.len() == MAX_SEEN_IDS {
-                seen.pop_front();
-            }
-
             seen.push_back(event.id().clone());
             pending.push_back(event.clone());
         }
@@ -282,9 +297,10 @@ mod key_entries {
 /// Version 2 stores three sequences of pairs keyed by position key: positions,
 /// seen ID queues, and pending event queues. Each key has its own bounded
 /// queues. A repeated ID moves to the newest end of the seen queue; at the ID
-/// limit, the oldest ID is dropped. Acknowledging pending events removes them
-/// from the key's queue without forgetting their IDs. Only one store at a time
-/// may hold a directory.
+/// limit, the oldest ID with no pending event is dropped. If there are not
+/// enough such IDs, the commit is refused. Acknowledging pending events removes
+/// them from the key's queue without forgetting their IDs.
+/// Only one store at a time may hold a directory.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -393,17 +409,18 @@ impl Store {
     /// Returns the count of distinct IDs not already remembered for the key.
     /// Repeated IDs move to the newest end of the key's queue first, then the
     /// new IDs are appended after them, so a refresh never drops a new ID. The
-    /// oldest IDs are dropped as needed to keep the seen queue bounded. New
-    /// events are appended to the key's durable pending queue in input order.
-    /// A full queue refuses fresh events until pending events are acknowledged.
+    /// oldest IDs with no pending events are dropped as needed to keep the
+    /// seen queue bounded; IDs of pending events are never evicted. New events
+    /// are appended to the key's durable pending queue in input order.
+    /// A full pending queue refuses fresh events until events are acknowledged.
     /// The position is saved even when no event is new. The state is written
     /// to a temporary file, synced and renamed into place. Memory is updated
     /// immediately after the rename; on Unix, the directory is then synced.
     ///
     /// # Errors
     /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit
-    /// or the fresh events exceed the key's seen ID or available pending
-    /// capacity.
+    /// or the fresh events exceed the key's pending capacity or seen ID limit,
+    /// or too few seen IDs can be evicted without losing pending IDs.
     /// These errors leave the state and file unchanged. Returns
     /// [`StoreError::TooLarge`] if the serialized state exceeds the byte limit,
     /// or [`StoreError::Write`] if serialization, writing, syncing or renaming
@@ -805,6 +822,45 @@ mod tests {
         assert_eq!(reopened.pending(&key), Some(&VecDeque::new()));
         assert_eq!(reopened.commit(key.clone(), next, &new).unwrap(), 1);
         assert_eq!(reopened.pending(&key), Some(&VecDeque::from(new)));
+    }
+
+    #[test]
+    fn eviction_keeps_pending_ids_seen_after_a_partial_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let key = key(1);
+        let initial = events(0..MAX_SEEN_IDS);
+        let oldest = &initial[0];
+        let repeat = initial.last().unwrap();
+        let fresh = event("fresh".into());
+
+        assert_eq!(
+            store.commit(key.clone(), cursor(), &initial).unwrap(),
+            MAX_SEEN_IDS
+        );
+        assert_eq!(store.ack_pending(&key, &ids(&initial[1..3])).unwrap(), 2);
+
+        let overlap = [repeat.clone(), fresh.clone()];
+
+        assert_eq!(store.commit(key.clone(), cursor(), &overlap).unwrap(), 1);
+        assert_eq!(
+            (
+                store.is_seen(&key, oldest.id()),
+                store.is_seen(&key, initial[1].id()),
+                store.is_seen(&key, initial[2].id()),
+            ),
+            (true, false, true)
+        );
+        assert_eq!(
+            store
+                .commit(key.clone(), cursor(), std::slice::from_ref(oldest))
+                .unwrap(),
+            0
+        );
+        let expected = initial[..1].iter().chain(&initial[3..]).cloned();
+        let expected: VecDeque<_> = expected.chain([fresh]).collect();
+
+        assert_eq!(store.pending(&key), Some(&expected));
     }
 
     #[test]

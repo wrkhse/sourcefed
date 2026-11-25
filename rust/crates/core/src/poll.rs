@@ -29,14 +29,14 @@ pub trait Clock: Send + Sync {
 
 /// Reads wall-clock time and sleeps on the calling thread.
 ///
-/// Converts the wall clock with a checked conversion and returns
-/// [`Timestamp::MIN`] if the clock is outside Jiff's range.
+/// Falls back to [`Timestamp::MAX`] for an unrepresentable wall-clock reading,
+/// so a far-future clock reaches any scheduled due time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> Timestamp {
-        Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::MIN)
+        Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::MAX)
     }
 
     fn sleep(&self, duration: Duration) {
@@ -129,8 +129,9 @@ impl StopHandle {
 /// Source failures schedule a retry with backoff and are not returned here.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    /// The outcome cannot be committed, including when the store refuses
-    /// an oversized batch with [`StoreError::TooMany`].
+    /// The outcome cannot be committed. The store returns
+    /// [`StoreError::TooMany`] when a pending queue is full or too few seen
+    /// IDs can be evicted.
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -226,7 +227,8 @@ impl PollEngine {
     /// ignored, and the store atomically saves any removal.
     ///
     /// # Errors
-    /// Returns a [`StoreError`] if the acknowledgement cannot be saved.
+    /// Returns [`StoreError::Write`] or [`StoreError::TooLarge`] if the
+    /// acknowledgement cannot be saved.
     pub fn ack(&mut self, ids: &[EventId]) -> Result<usize, StoreError> {
         self.store.ack_pending(&self.key, ids)
     }
@@ -251,8 +253,9 @@ impl PollEngine {
     /// # Errors
     /// Returns [`EngineError::Store`] if committing an outcome fails,
     /// including [`StoreError::TooMany`] when a batch exceeds the key's
-    /// available pending capacity or the fresh ID limit. A full pending queue
-    /// refuses fresh events until pending events are acknowledged.
+    /// available pending capacity or the fresh ID limit, or when too few
+    /// seen IDs can be evicted without losing pending IDs. A full pending
+    /// queue refuses fresh events until pending events are acknowledged.
     pub fn run(&mut self, max_polls: u32) -> Result<EngineState, EngineError> {
         let max_iterations =
             u64::from(max_polls).saturating_mul(ITERATIONS_PER_POLL);
@@ -484,7 +487,7 @@ mod tests {
     #[test]
     fn system_clock_does_not_use_the_fallback_in_normal_runs() {
         // The out-of-range fallback is unreachable with a normal wall clock.
-        assert_ne!(SystemClock.now(), Timestamp::MIN);
+        assert_ne!(SystemClock.now(), Timestamp::MAX);
     }
 
     #[test]
@@ -658,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_outcome_is_rejected_without_changing_the_engine_or_store() {
+    fn a_full_durable_queue_makes_the_engine_refuse_a_commit_with_too_many() {
         let initial: Vec<_> = (0..MAX_PENDING_EVENTS)
             .map(|index| event(&format!("event-{index}")))
             .collect();
