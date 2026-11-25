@@ -2,8 +2,9 @@
 //! Each poll resumes from a [`Position`], returns a bounded batch of [`Event`]s
 //! and names its next step as a [`Next`]. For each [`PositionKey`], the store
 //! saves the position, remembered event IDs, and bounded pending event queue
-//! together. Each key has its own bounded pending queue. Pending events are
-//! read-only; the store and poll engine expose no removal method.
+//! together. Consumers acknowledge delivered events by key and ID without
+//! changing the position or forgetting those IDs. A full pending queue
+//! refuses fresh events until pending events are acknowledged.
 
 /// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;

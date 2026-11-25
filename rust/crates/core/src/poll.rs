@@ -7,8 +7,8 @@ use jiff::Timestamp;
 
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
-    Event, ModelError, MonitorConfig, Next, PollOutcome, PollRequest, PositionKey,
-    Source, Store, StoreError,
+    Event, EventId, ModelError, MonitorConfig, Next, PollOutcome, PollRequest,
+    PositionKey, Source, Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -144,7 +144,7 @@ enum Schedule {
 /// Polls one source at a time and saves fresh events with the source position.
 ///
 /// The store owns a bounded pending queue for this engine's position key.
-/// The engine exposes it read-only and has no drain method.
+/// The engine exposes a read-only view and removes delivered events by ID.
 /// A successful commit sets the next due time or ends the engine. A source
 /// failure schedules a retry with backoff; it is not returned as an error.
 pub struct PollEngine {
@@ -221,6 +221,16 @@ impl PollEngine {
         self.store.pending(&self.key)
     }
 
+    /// Acknowledges IDs through the store using this engine's position key.
+    /// Returns the number of events removed from its queue. Unknown IDs are
+    /// ignored, and the store atomically saves any removal.
+    ///
+    /// # Errors
+    /// Returns a [`StoreError`] if the acknowledgement cannot be saved.
+    pub fn ack(&mut self, ids: &[EventId]) -> Result<usize, StoreError> {
+        self.store.ack_pending(&self.key, ids)
+    }
+
     /// Consumes the engine and returns its store.
     #[must_use]
     pub fn into_store(self) -> Store {
@@ -241,7 +251,8 @@ impl PollEngine {
     /// # Errors
     /// Returns [`EngineError::Store`] if committing an outcome fails,
     /// including [`StoreError::TooMany`] when a batch exceeds the key's
-    /// available pending capacity or the fresh ID limit.
+    /// available pending capacity or the fresh ID limit. A full pending queue
+    /// refuses fresh events until pending events are acknowledged.
     pub fn run(&mut self, max_polls: u32) -> Result<EngineState, EngineError> {
         let max_iterations =
             u64::from(max_polls).saturating_mul(ITERATIONS_PER_POLL);
@@ -332,8 +343,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        EventId, EventKind, EventSubject, MonitorId, PollError, PollInterval,
-        Position, SourceName,
+        EventKind, EventSubject, MonitorId, PollError, PollInterval, Position,
+        SourceName,
     };
 
     #[derive(Default)]
@@ -468,6 +479,12 @@ mod tests {
 
         assert!(before <= now);
         assert!(now <= after);
+    }
+
+    #[test]
+    fn system_clock_does_not_use_the_fallback_in_normal_runs() {
+        // The out-of-range fallback is unreachable with a normal wall clock.
+        assert_ne!(SystemClock.now(), Timestamp::MIN);
     }
 
     #[test]
@@ -712,6 +729,44 @@ mod tests {
         let expected = VecDeque::from([first, third, second]);
 
         assert_eq!(f.engine.pending(), Some(&expected));
+    }
+
+    #[test]
+    fn ack_removes_only_matching_events_from_the_engines_key() {
+        let first = event("first");
+        let shared = event("shared");
+        let last = event("last");
+        let batch = vec![first.clone(), shared.clone(), last.clone()];
+        let outcome = PollOutcome::new(batch, cursor(), Next::Done).unwrap();
+        let mut f = Fixture::new(5, vec![Ok(outcome)]);
+        let other = PositionKey {
+            monitor: MonitorId::new("other".into()).unwrap(),
+            source: timer(),
+        };
+        let unknown = EventId::new("unknown".into()).unwrap();
+        let duplicate_ids = [shared.id().clone(), shared.id().clone()];
+
+        assert_eq!(f.engine.ack(&duplicate_ids).unwrap(), 0);
+        assert_eq!(f.engine.pending(), None);
+        assert_eq!(
+            f.engine
+                .store
+                .commit(other.clone(), cursor(), std::slice::from_ref(&shared))
+                .unwrap(),
+            1
+        );
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.ack(&[]).unwrap(), 0);
+        assert_eq!(f.engine.ack(&[unknown]).unwrap(), 0);
+        assert_eq!(f.engine.ack(&duplicate_ids).unwrap(), 1);
+        assert_eq!(f.engine.ack(std::slice::from_ref(shared.id())).unwrap(), 0);
+        assert_eq!(f.engine.pending(), Some(&VecDeque::from([first, last])));
+        assert_eq!(f.engine.store.position(&key()), Some(&cursor()));
+        assert!(f.engine.store.is_seen(&key(), shared.id()));
+        assert_eq!(
+            f.engine.store.pending(&other),
+            Some(&VecDeque::from([shared]))
+        );
     }
 
     #[test]
