@@ -1,4 +1,4 @@
 export type MonitorTarget = {
-  kind: string
-  id: string
-}
+  kind: string;
+  id: string;
+};

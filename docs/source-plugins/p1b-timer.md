@@ -112,33 +112,36 @@ Files: `packages/core/src/monitors/schema.ts`,
 `packages/core/src/monitors/webhook/monitor.ts`, `packages/daemon/src/daemon.ts`.
 
 ```ts
-const store = new InMemoryMonitorStore()
+const store = new InMemoryMonitorStore();
 
 const daemon = new SourcefedDaemon({
   store,
   eventQueue: new InMemoryMonitorEventQueue(),
-})
+});
 
 await daemon.createMonitor(target, {
   name: "pr",
   sourceType: "github",
   repo: "acme/web",
   prNumber: 42,
-})
+});
 
 // A signed pull_request delivery for the merge, while no session listens.
-await daemon.webhook(merged)
+await daemon.webhook(merged);
 
-await daemon.listMonitors(target)
+await daemon.listMonitors(target);
 // { ok: true, monitors: [] }; the record has endedAt and the merge waits
 
-const late: QueuedMonitorEvent[] = []
-daemon.subscribe(target, (events) => late.push(...events))
+const late: QueuedMonitorEvent[] = [];
+daemon.subscribe(target, (events) => late.push(...events));
 // late holds the merge event
 
-await daemon.acknowledgeEvents(target, late.map((queued) => queued.id))
+await daemon.acknowledgeEvents(
+  target,
+  late.map((queued) => queued.id),
+);
 
-const { monitors } = await store.load()
+const { monitors } = await store.load();
 // monitors is []: the record is gone
 ```
 
@@ -166,7 +169,9 @@ reuses only an enabled monitor, so an ended one never blocks a new one. A
 terminal result in core's `PollMonitor` or `WebhookMonitor` calls `end`.
 
 ```ts
-export type MonitorEndListener = (monitor: MonitorRecord) => void | Promise<void>
+export type MonitorEndListener = (
+  monitor: MonitorRecord,
+) => void | Promise<void>;
 
 export class MonitorService {
   end(id: string): Promise<void>;
@@ -228,16 +233,20 @@ instant; `pollTimer` returns the cursor, events and whether the monitor ends,
 with a firing on time when within `ON_TIME_MS`.
 
 ```ts
-type Refusal = { error: string }
+type Refusal = { error: string };
 
-type TimerPoll = { cursor: TimerCursor; events: SourceEvent[]; terminal: boolean }
+type TimerPoll = {
+  cursor: TimerCursor;
+  events: SourceEvent[];
+  terminal: boolean;
+};
 
 export function buildTimer(
   raw: TimerCreateInput,
   now: Date,
 ): TimerSource | Refusal;
 
-export const ON_TIME_MS = 2 * 60_000
+export const ON_TIME_MS = 2 * 60_000;
 
 export function pollTimer(
   source: TimerSource,

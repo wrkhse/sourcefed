@@ -1,48 +1,57 @@
-import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core"
-import type { Http } from "@sourcefed/sdk"
-import { GithubRateLimiter, githubRequestsPerMinute, type GithubApi } from "./github-limiter.ts"
+import { PollSourceError, type SourcePollDeferred } from "@sourcefed/core";
+import type { Http } from "@sourcefed/sdk";
+import {
+  GithubRateLimiter,
+  githubRequestsPerMinute,
+  type GithubApi,
+} from "./github-limiter.ts";
 
-const API = "https://api.github.com"
-const GRAPHQL = `${API}/graphql`
-const TIMEOUT_MS = 30_000
+const API = "https://api.github.com";
+const GRAPHQL = `${API}/graphql`;
+const TIMEOUT_MS = 30_000;
 // GitHub asks for at least a minute when a limited answer names no time; the limiter
 // backs off further for repeated ones.
-const DEFAULT_WAIT_SEC = 60
+const DEFAULT_WAIT_SEC = 60;
 
-export const DEFERRED: SourcePollDeferred = { deferred: true }
+export const DEFERRED: SourcePollDeferred = { deferred: true };
 
 export function githubToken(): string | undefined {
-  return process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
+  return process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
 }
 
 /** Largest issue-comment body accepted here, in characters. */
-export const MAX_COMMENT_BODY = 65_536
+export const MAX_COMMENT_BODY = 65_536;
 
 /** The minimal request shape a caller supplies when posting a comment. */
-export type GithubRequest = (url: string, init?: RequestInit) => Promise<Response>
+export type GithubRequest = (
+  url: string,
+  init?: RequestInit,
+) => Promise<Response>;
 
 /** The fields a caller needs once a comment has been posted. */
-export type IssueCommentResult = { id: number; html_url: string }
+export type IssueCommentResult = { id: number; html_url: string };
 
 /** A request held back because its API waits out a rate limit on this token. */
 export class GithubWaiting extends Error {
   constructor(readonly api: GithubApi) {
-    super(`GitHub ${api} is waiting out a rate limit`)
+    super(`GitHub ${api} is waiting out a rate limit`);
   }
 }
 
-let limiter = defaultLimiter()
+let limiter = defaultLimiter();
 
 /** Forget every token's budget and wait, so a test starts from scratch. */
-export function resetGithubApi(next: GithubRateLimiter = defaultLimiter()): void {
-  limiter = next
+export function resetGithubApi(
+  next: GithubRateLimiter = defaultLimiter(),
+): void {
+  limiter = next;
 }
 
 function defaultLimiter(): GithubRateLimiter {
   return new GithubRateLimiter({
     requestsPerMinute: githubRequestsPerMinute(),
     log: (line) => console.warn(line),
-  })
+  });
 }
 
 /**
@@ -52,7 +61,7 @@ function defaultLimiter(): GithubRateLimiter {
  */
 export class GithubClient {
   // The APIs whose first request `acquire` paid for.
-  private readonly prepaid: Set<GithubApi>
+  private readonly prepaid: Set<GithubApi>;
 
   private constructor(
     private readonly token: string,
@@ -61,24 +70,37 @@ export class GithubClient {
     private readonly http: Http,
     private readonly now: () => Date,
   ) {
-    this.prepaid = new Set(apis)
+    this.prepaid = new Set(apis);
   }
 
   /** A client for one poll of `monitorId`, or undefined while the poll must wait its turn. */
-  static open(token: string, monitorId: string, apis: readonly GithubApi[], first: boolean, http: Http, now: () => Date): GithubClient | undefined {
-    if (!limiter.acquire(now().getTime(), token, monitorId, apis, first)) return undefined
-    return new GithubClient(token, monitorId, apis, http, now)
+  static open(
+    token: string,
+    monitorId: string,
+    apis: readonly GithubApi[],
+    first: boolean,
+    http: Http,
+    now: () => Date,
+  ): GithubClient | undefined {
+    if (!limiter.acquire(now().getTime(), token, monitorId, apis, first))
+      return undefined;
+    return new GithubClient(token, monitorId, apis, http, now);
   }
 
   /** A REST resource's JSON; any answer but a success or a rate limit throws with its status. */
   async json(path: string): Promise<unknown> {
-    const url = `${API}${path}`
-    return githubBody(await this.request(url), url)
+    const url = `${API}${path}`;
+    return githubBody(await this.request(url), url);
   }
 
   /** A REST answer as GitHub gave it, unless it is a rate limit. */
-  async request(url: string, headers: Record<string, string> = {}): Promise<Response> {
-    return this.send("rest", url, { headers: { accept: "application/vnd.github+json", ...headers } })
+  async request(
+    url: string,
+    headers: Record<string, string> = {},
+  ): Promise<Response> {
+    return this.send("rest", url, {
+      headers: { accept: "application/vnd.github+json", ...headers },
+    });
   }
 
   /**
@@ -86,28 +108,57 @@ export class GithubClient {
    * data (a nested field the token may not read) are logged once and the data is used. A
    * rate limit waits.
    */
-  async graphql(query: string, variables: Record<string, unknown>): Promise<any> {
+  async graphql(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<any> {
     const response = await this.send("graphql", GRAPHQL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ query, variables }),
-    })
-    const body = (await response.json().catch(() => undefined)) as { data?: unknown; errors?: Array<{ type?: string; message?: string }> } | undefined
-    const errors = Array.isArray(body?.errors) ? body.errors : []
+    });
+    const body = (await response.json().catch(() => undefined)) as
+      | { data?: unknown; errors?: Array<{ type?: string; message?: string }> }
+      | undefined;
+    const errors = Array.isArray(body?.errors) ? body.errors : [];
     if (errors.some((error) => error?.type === "RATE_LIMITED")) {
-      this.waitOut("graphql", waitSeconds(response.headers, this.now().getTime(), () => limiter.backoff(this.now().getTime(), this.token, "graphql")))
+      this.waitOut(
+        "graphql",
+        waitSeconds(response.headers, this.now().getTime(), () =>
+          limiter.backoff(this.now().getTime(), this.token, "graphql"),
+        ),
+      );
     }
-    if (!response.ok) throw new PollSourceError(`GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`)
-    if (errors.length > 0 && (body?.data === null || body?.data === undefined)) throw new PollSourceError(`GitHub GraphQL: ${errorText(errors)}`)
-    if (errors.length > 0) warnOnce(`[sourcefed] GitHub GraphQL answered with errors beside its data: ${errorText(errors)}`)
+    if (!response.ok)
+      throw new PollSourceError(
+        `GitHub GraphQL ${response.status}${errors.length ? `: ${errorText(errors)}` : ""}`,
+      );
+    if (errors.length > 0 && (body?.data === null || body?.data === undefined))
+      throw new PollSourceError(`GitHub GraphQL: ${errorText(errors)}`);
+    if (errors.length > 0)
+      warnOnce(
+        `[sourcefed] GitHub GraphQL answered with errors beside its data: ${errorText(errors)}`,
+      );
 
-    return body?.data
+    return body?.data;
   }
 
-  private async send(api: GithubApi, url: string, init: { method?: string; headers: Record<string, string>; body?: string }): Promise<Response> {
-    if (!limiter.charge(this.now().getTime(), this.token, api, this.prepaid.delete(api))) throw new GithubWaiting(api)
+  private async send(
+    api: GithubApi,
+    url: string,
+    init: { method?: string; headers: Record<string, string>; body?: string },
+  ): Promise<Response> {
+    if (
+      !limiter.charge(
+        this.now().getTime(),
+        this.token,
+        api,
+        this.prepaid.delete(api),
+      )
+    )
+      throw new GithubWaiting(api);
 
-    let response: Response
+    let response: Response;
     try {
       response = await this.http.fetch(url, {
         ...init,
@@ -118,58 +169,96 @@ export class GithubClient {
           ...init.headers,
         },
         signal: AbortSignal.timeout(TIMEOUT_MS),
-      })
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new PollSourceError(`GitHub ${api} request failed: ${message}`, { cause: error })
+      const message = error instanceof Error ? error.message : String(error);
+      throw new PollSourceError(`GitHub ${api} request failed: ${message}`, {
+        cause: error,
+      });
     }
     if (response.status === 403 || response.status === 429) {
-      const detail = await response.clone().text().catch(() => "")
-      const waitSec = rateLimitWait(response, detail, this.now().getTime(), () => limiter.backoff(this.now().getTime(), this.token, api))
-      if (waitSec !== undefined) this.waitOut(api, waitSec)
+      const detail = await response
+        .clone()
+        .text()
+        .catch(() => "");
+      const waitSec = rateLimitWait(
+        response,
+        detail,
+        this.now().getTime(),
+        () => limiter.backoff(this.now().getTime(), this.token, api),
+      );
+      if (waitSec !== undefined) this.waitOut(api, waitSec);
     }
-    return response
+    return response;
   }
 
   private waitOut(api: GithubApi, waitSec: number): never {
-    limiter.pause(this.now().getTime(), this.token, api, waitSec, this.monitorId)
-    throw new GithubWaiting(api)
+    limiter.pause(
+      this.now().getTime(),
+      this.token,
+      api,
+      waitSec,
+      this.monitorId,
+    );
+    throw new GithubWaiting(api);
   }
 }
 
 /** Runs one poll's reads, deferring the poll when a rate limit stops them part-way. */
-export async function deferOnWait<T>(read: () => Promise<T>): Promise<T | SourcePollDeferred> {
+export async function deferOnWait<T>(
+  read: () => Promise<T>,
+): Promise<T | SourcePollDeferred> {
   try {
-    return await read()
+    return await read();
   } catch (error) {
-    if (error instanceof GithubWaiting) return DEFERRED
-    throw error
+    if (error instanceof GithubWaiting) return DEFERRED;
+    throw error;
   }
 }
 
 /** A successful answer's JSON; anything else throws with its status and the start of its body. */
-export async function githubBody(response: Response, url: string): Promise<any> {
-  const path = url.replace(API, "")
+export async function githubBody(
+  response: Response,
+  url: string,
+): Promise<any> {
+  const path = url.replace(API, "");
   if (response.ok) {
     try {
-      return await response.json()
+      return await response.json();
     } catch (error) {
-      throw new PollSourceError(`GitHub gave a body that is not JSON for ${path}`, { cause: error })
+      throw new PollSourceError(
+        `GitHub gave a body that is not JSON for ${path}`,
+        { cause: error },
+      );
     }
   }
 
-  const detail = await response.text().catch(() => "")
-  throw new PollSourceError(`GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`)
+  const detail = await response.text().catch(() => "");
+  throw new PollSourceError(
+    `GitHub ${response.status} for ${path}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+  );
 }
 
 /** Posts one comment on a GitHub issue with a token the caller holds; the token is never logged. */
-export async function postIssueComment(send: GithubRequest, token: string, repo: string, issueNumber: number, body: string): Promise<IssueCommentResult> {
-  if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("postIssueComment requires repo as owner/name")
-  if (!Number.isInteger(issueNumber) || issueNumber <= 0) throw new Error("postIssueComment requires a positive integer issueNumber")
-  if (typeof body !== "string" || !body.trim()) throw new Error("postIssueComment requires a non-empty body")
-  if (body.length > MAX_COMMENT_BODY) throw new Error(`postIssueComment body exceeds ${MAX_COMMENT_BODY} characters`)
+export async function postIssueComment(
+  send: GithubRequest,
+  token: string,
+  repo: string,
+  issueNumber: number,
+  body: string,
+): Promise<IssueCommentResult> {
+  if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo))
+    throw new Error("postIssueComment requires repo as owner/name");
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0)
+    throw new Error("postIssueComment requires a positive integer issueNumber");
+  if (typeof body !== "string" || !body.trim())
+    throw new Error("postIssueComment requires a non-empty body");
+  if (body.length > MAX_COMMENT_BODY)
+    throw new Error(
+      `postIssueComment body exceeds ${MAX_COMMENT_BODY} characters`,
+    );
 
-  const url = `${API}/repos/${repo}/issues/${issueNumber}/comments`
+  const url = `${API}/repos/${repo}/issues/${issueNumber}/comments`;
   const response = await send(url, {
     method: "POST",
     headers: {
@@ -181,9 +270,9 @@ export async function postIssueComment(send: GithubRequest, token: string, repo:
     },
     body: JSON.stringify({ body }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
-  const data = await githubBody(response, url)
-  return { id: Number(data.id), html_url: String(data.html_url ?? "") }
+  });
+  const data = await githubBody(response, url);
+  return { id: Number(data.id), html_url: String(data.html_url ?? "") };
 }
 
 /**
@@ -197,40 +286,55 @@ export function rateLimitWait(
   now: number,
   untimed: () => number = () => DEFAULT_WAIT_SEC,
 ): number | undefined {
-  const exhausted = response.headers.get("x-ratelimit-remaining") === "0"
-  const limited = response.status === 429 || exhausted || /rate limit|abuse detection/i.test(detail)
-  if (!limited) return undefined
-  return waitSeconds(response.headers, now, untimed)
+  const exhausted = response.headers.get("x-ratelimit-remaining") === "0";
+  const limited =
+    response.status === 429 ||
+    exhausted ||
+    /rate limit|abuse detection/i.test(detail);
+  if (!limited) return undefined;
+  return waitSeconds(response.headers, now, untimed);
 }
 
 // Retry-After when given ("0" still waits a second), else the quota's reset when none is
 // left and it is still ahead, else `untimed`. GitHub sends Retry-After in seconds; an
 // HTTP-date form is deliberately not parsed and falls through. A reset at or before now
 // (this clock runs ahead of GitHub's) backs off instead of looping one-second waits.
-function waitSeconds(headers: Headers, now: number, untimed: () => number): number {
-  const retryAfter = headers.get("retry-after")?.trim() ?? ""
-  const seconds = Number(retryAfter)
-  if (retryAfter !== "" && Number.isFinite(seconds) && seconds >= 0) return Math.max(1, Math.ceil(seconds))
+function waitSeconds(
+  headers: Headers,
+  now: number,
+  untimed: () => number,
+): number {
+  const retryAfter = headers.get("retry-after")?.trim() ?? "";
+  const seconds = Number(retryAfter);
+  if (retryAfter !== "" && Number.isFinite(seconds) && seconds >= 0)
+    return Math.max(1, Math.ceil(seconds));
 
-  const reset = Number(headers.get("x-ratelimit-reset") ?? "")
-  if (headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset) && reset * 1000 > now) {
-    return Math.max(1, Math.ceil(reset - now / 1000))
+  const reset = Number(headers.get("x-ratelimit-reset") ?? "");
+  if (
+    headers.get("x-ratelimit-remaining") === "0" &&
+    Number.isFinite(reset) &&
+    reset * 1000 > now
+  ) {
+    return Math.max(1, Math.ceil(reset - now / 1000));
   }
-  return untimed()
+  return untimed();
 }
 
 // Each distinct line once a process; bounded so a stream of different errors keeps
 // little memory.
-const MAX_WARNED = 100
-const warned = new Set<string>()
+const MAX_WARNED = 100;
+const warned = new Set<string>();
 
 function warnOnce(line: string): void {
-  if (warned.has(line)) return
-  if (warned.size >= MAX_WARNED) warned.clear()
-  warned.add(line)
-  console.warn(line)
+  if (warned.has(line)) return;
+  if (warned.size >= MAX_WARNED) warned.clear();
+  warned.add(line);
+  console.warn(line);
 }
 
 function errorText(errors: Array<{ message?: string }>): string {
-  return errors.map((error) => error?.message ?? "unknown error").join("; ").slice(0, 200)
+  return errors
+    .map((error) => error?.message ?? "unknown error")
+    .join("; ")
+    .slice(0, 200);
 }

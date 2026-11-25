@@ -1,5 +1,5 @@
-import * as v from "valibot"
-import { MonitorSourceSchema } from "../sources/schema.ts"
+import * as v from "valibot";
+import { MonitorSourceSchema } from "../sources/schema.ts";
 
 export const MonitorRecordSchema = v.object({
   id: v.string(),
@@ -18,8 +18,8 @@ export const MonitorRecordSchema = v.object({
   // Set when the source said the monitor is finished: the record stays, not polled, until
   // its queued events are delivered, so an ending nobody heard is not lost.
   endedAt: v.optional(v.string()),
-})
+});
 
 export const MonitorRegistrySchema = v.object({
   monitors: v.array(MonitorRecordSchema),
-})
+});

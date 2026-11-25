@@ -78,7 +78,7 @@ name a `webhook.receive` that polls at once or emits events for a verified
 delivery. This clock names its own next due instant:
 
 ```ts
-import { z } from "zod"
+import { z } from "zod";
 
 export default defineSource({
   name: "clock",
@@ -86,31 +86,31 @@ export default defineSource({
   state: z.object({ due: z.number() }),
 
   poll: ({ input, state, now, emit }) => {
-    const period = input.minutes * 60_000
-    const due = state?.due ?? now().getTime() + period
+    const period = input.minutes * 60_000;
+    const due = state?.due ?? now().getTime() + period;
 
     if (now().getTime() < due) {
-      return { state: { due }, next: new Date(due) }
+      return { state: { due }, next: new Date(due) };
     }
 
-    const at = new Date(due).toISOString()
+    const at = new Date(due).toISOString();
 
-    emit({ kind: "clock.fired", id: at, summary: `Clock fired at ${at}` })
+    emit({ kind: "clock.fired", id: at, summary: `Clock fired at ${at}` });
 
-    return { state: { due: due + period }, next: new Date(due + period) }
+    return { state: { due: due + period }, next: new Date(due + period) };
   },
-})
+});
 ```
 
-| Name | Meaning |
-| --- | --- |
-| `input` | The monitor's create fields, validated by the `input` schema |
-| `state` | What the last poll returned; `undefined` on the first poll |
-| `now()` | The daemon's clock |
-| `emit(event)` | Queues an event with `kind`, `id` and `summary` |
-| `fetch`, `mcp`, `monitorId` | The host's HTTP, its MCP servers, monitor id |
-| return | `{ state }`, plus `next` to poll at that instant, or `done: true` |
-| `every` | Optional, on the definition: seconds between polls |
+| Name                        | Meaning                                                           |
+| --------------------------- | ----------------------------------------------------------------- |
+| `input`                     | The monitor's create fields, validated by the `input` schema      |
+| `state`                     | What the last poll returned; `undefined` on the first poll        |
+| `now()`                     | The daemon's clock                                                |
+| `emit(event)`               | Queues an event with `kind`, `id` and `summary`                   |
+| `fetch`, `mcp`, `monitorId` | The host's HTTP, its MCP servers, monitor id                      |
+| return                      | `{ state }`, plus `next` to poll at that instant, or `done: true` |
+| `every`                     | Optional, on the definition: seconds between polls                |
 
 An event's `id` is its identity: the daemon delivers one id per monitor, so a
 poll that repeats after a restart does not repeat an event. Two monitors with

@@ -1,5 +1,5 @@
-import os from "node:os"
-import path from "node:path"
+import os from "node:os";
+import path from "node:path";
 
 const DAEMON_ENVIRONMENT = [
   "PATH",
@@ -28,12 +28,19 @@ const DAEMON_ENVIRONMENT = [
   "SOURCEFED_ENABLE_WEBHOOKS",
   "SOURCEFED_WEBHOOK_HOST",
   "SOURCEFED_WEBHOOK_PORT",
-] as const
+] as const;
 
 export function daemonEnvironment(host?: string): Record<string, string> {
   const environment = Object.fromEntries(
-    DAEMON_ENVIRONMENT.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]),
-  )
-  if (host) environment.SOURCEFED_STATE_DIR ??= path.join(process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state"), "sourcefed", host)
-  return environment
+    DAEMON_ENVIRONMENT.flatMap((name) =>
+      process.env[name] === undefined ? [] : [[name, process.env[name]!]],
+    ),
+  );
+  if (host)
+    environment.SOURCEFED_STATE_DIR ??= path.join(
+      process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state"),
+      "sourcefed",
+      host,
+    );
+  return environment;
 }

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { runComment } from "./commands/comment/index.ts"
-import { runDaemon } from "./commands/daemon.ts"
-import { runMcp } from "./commands/mcp.ts"
-import { runMonitor } from "./commands/monitor/index.ts"
-import { runSetup } from "./commands/setup.ts"
-import { runSkillsCommand } from "./skills"
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { runComment } from "./commands/comment/index.ts";
+import { runDaemon } from "./commands/daemon.ts";
+import { runMcp } from "./commands/mcp.ts";
+import { runMonitor } from "./commands/monitor/index.ts";
+import { runSetup } from "./commands/setup.ts";
+import { runSkillsCommand } from "./skills";
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   comment: runComment,
@@ -16,31 +16,40 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   monitor: runMonitor,
   skills: runSkillsCommand,
   setup: runSetup,
-}
+};
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const [command, ...args] = argv
-  const run = command ? COMMANDS[command] : undefined
+  const [command, ...args] = argv;
+  const run = command ? COMMANDS[command] : undefined;
   if (!run) {
-    printUsage()
-    process.exitCode = 1
-    return
+    printUsage();
+    process.exitCode = 1;
+    return;
   }
-  await run(args)
+  await run(args);
 }
 
 function printUsage(): void {
-  console.error("sourcefed comment issue --repo OWNER/NAME --issue-number N --body TEXT")
-  console.error("sourcefed daemon [--port PORT] [--host HOST]")
-  console.error("sourcefed mcp --stdio|--http [--port PORT]")
-  console.error("sourcefed monitor create|list|status|stop|start|remove|events|follow|ack|logs|sources [options]")
-  console.error("sourcefed skills [list|get <name>|path [name]]")
-  console.error("sourcefed setup [opencode|pi|chauffeur [--name chauffeur-next|chauffeur]]")
+  console.error(
+    "sourcefed comment issue --repo OWNER/NAME --issue-number N --body TEXT",
+  );
+  console.error("sourcefed daemon [--port PORT] [--host HOST]");
+  console.error("sourcefed mcp --stdio|--http [--port PORT]");
+  console.error(
+    "sourcefed monitor create|list|status|stop|start|remove|events|follow|ack|logs|sources [options]",
+  );
+  console.error("sourcefed skills [list|get <name>|path [name]]");
+  console.error(
+    "sourcefed setup [opencode|pi|chauffeur [--name chauffeur-next|chauffeur]]",
+  );
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error))
-    process.exitCode = 1
-  })
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

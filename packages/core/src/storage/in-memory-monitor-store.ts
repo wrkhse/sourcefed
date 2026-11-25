@@ -1,18 +1,18 @@
-import type { MonitorStore } from "../types/monitor-store.ts"
-import type { MonitorRegistry } from "../monitors/types/monitor-registry.ts"
+import type { MonitorStore } from "../types/monitor-store.ts";
+import type { MonitorRegistry } from "../monitors/types/monitor-registry.ts";
 
 export class InMemoryMonitorStore implements MonitorStore {
-  private registry: MonitorRegistry
+  private registry: MonitorRegistry;
 
   constructor(initial: MonitorRegistry = { monitors: [] }) {
-    this.registry = structuredClone(initial)
+    this.registry = structuredClone(initial);
   }
 
   async load(): Promise<MonitorRegistry> {
-    return structuredClone(this.registry)
+    return structuredClone(this.registry);
   }
 
   async save(registry: MonitorRegistry): Promise<void> {
-    this.registry = structuredClone(registry)
+    this.registry = structuredClone(registry);
   }
 }

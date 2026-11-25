@@ -1,5 +1,5 @@
 export type GithubSourceRecord = {
-  type: "github"
-  repo: string
-  prNumber: number
-}
+  type: "github";
+  repo: string;
+  prNumber: number;
+};

@@ -1,118 +1,188 @@
-import assert from "node:assert/strict"
-import { afterEach, describe, mock, test } from "node:test"
-import { InMemoryMonitorEventQueue, InMemoryMonitorStore, type MonitorTarget, type QueuedMonitorEvent } from "@sourcefed/core"
-import { SourcefedDaemon } from "./daemon.ts"
-import { dispatchDaemonRequest } from "./dispatch.ts"
-import type { DaemonCreateInput } from "./types"
+import assert from "node:assert/strict";
+import { afterEach, describe, mock, test } from "node:test";
+import {
+  InMemoryMonitorEventQueue,
+  InMemoryMonitorStore,
+  type MonitorTarget,
+  type QueuedMonitorEvent,
+} from "@sourcefed/core";
+import { SourcefedDaemon } from "./daemon.ts";
+import { dispatchDaemonRequest } from "./dispatch.ts";
+import type { DaemonCreateInput } from "./types";
 
-const target: MonitorTarget = { kind: "test", id: "session-1" }
+const target: MonitorTarget = { kind: "test", id: "session-1" };
 
 function createDaemon(): SourcefedDaemon {
   return new SourcefedDaemon({
     store: new InMemoryMonitorStore(),
     eventQueue: new InMemoryMonitorEventQueue(),
-  })
+  });
 }
 
 describe("SourcefedDaemon", () => {
   test("creates, lists, and stops monitors owned by a target", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    assert.equal(created.ok, true)
-    if (!created.ok) return
-    assert.equal(created.created, true)
-    assert.deepEqual(created.monitor?.source, { type: "jira", issueKey: "ADEPT-43742" })
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    assert.equal(created.created, true);
+    assert.deepEqual(created.monitor?.source, {
+      type: "jira",
+      issueKey: "ADEPT-43742",
+    });
 
-    const listed = await daemon.listMonitors(target)
-    assert.equal(listed.ok ? listed.monitors?.length : undefined, 1)
+    const listed = await daemon.listMonitors(target);
+    assert.equal(listed.ok ? listed.monitors?.length : undefined, 1);
 
-    const foreign = await daemon.getMonitor({ kind: "other", id: "session-2" }, created.monitor!.id)
-    assert.deepEqual(foreign, { ok: false, error: `monitor ${created.monitor!.id} was not found for this target` })
+    const foreign = await daemon.getMonitor(
+      { kind: "other", id: "session-2" },
+      created.monitor!.id,
+    );
+    assert.deepEqual(foreign, {
+      ok: false,
+      error: `monitor ${created.monitor!.id} was not found for this target`,
+    });
 
-    const stopped = await daemon.stopMonitor(target, created.monitor!.id)
-    assert.equal(stopped.ok && stopped.monitor?.enabled, false)
-    await daemon.stop()
-  })
+    const stopped = await daemon.stopMonitor(target, created.monitor!.id);
+    assert.equal(stopped.ok && stopped.monitor?.enabled, false);
+    await daemon.stop();
+  });
 
   test("lists each target of a kind that has an enabled monitor, once", async () => {
-    const daemon = createDaemon()
-    const other: MonitorTarget = { kind: "test", id: "session-2" }
-    await daemon.createMonitor(target, { name: "ADEPT-1", sourceType: "jira", issueKey: "ADEPT-1" })
-    await daemon.createMonitor(target, { name: "ADEPT-2", sourceType: "jira", issueKey: "ADEPT-2" })
-    const stopped = await daemon.createMonitor(other, { name: "ADEPT-3", sourceType: "jira", issueKey: "ADEPT-3" })
-    await daemon.createMonitor({ kind: "cli", id: "host" }, { name: "ADEPT-4", sourceType: "jira", issueKey: "ADEPT-4" })
-    if (!stopped.ok || !stopped.monitor) throw new Error("monitor creation failed")
-    await daemon.stopMonitor(other, stopped.monitor.id)
+    const daemon = createDaemon();
+    const other: MonitorTarget = { kind: "test", id: "session-2" };
+    await daemon.createMonitor(target, {
+      name: "ADEPT-1",
+      sourceType: "jira",
+      issueKey: "ADEPT-1",
+    });
+    await daemon.createMonitor(target, {
+      name: "ADEPT-2",
+      sourceType: "jira",
+      issueKey: "ADEPT-2",
+    });
+    const stopped = await daemon.createMonitor(other, {
+      name: "ADEPT-3",
+      sourceType: "jira",
+      issueKey: "ADEPT-3",
+    });
+    await daemon.createMonitor(
+      { kind: "cli", id: "host" },
+      { name: "ADEPT-4", sourceType: "jira", issueKey: "ADEPT-4" },
+    );
+    if (!stopped.ok || !stopped.monitor)
+      throw new Error("monitor creation failed");
+    await daemon.stopMonitor(other, stopped.monitor.id);
 
-    assert.deepEqual(await daemon.listTargets("test"), [target])
-    await daemon.stop()
-  })
+    assert.deepEqual(await daemon.listTargets("test"), [target]);
+    await daemon.stop();
+  });
 
   test("a schedule checks every 15 seconds unless asked otherwise", async () => {
-    const daemon = createDaemon()
-    const input = { name: "nightly", sourceType: "schedule", cron: "0 2 * * *", job: "nightly-audit", timezone: "Asia/Kolkata" }
+    const daemon = createDaemon();
+    const input = {
+      name: "nightly",
+      sourceType: "schedule",
+      cron: "0 2 * * *",
+      job: "nightly-audit",
+      timezone: "Asia/Kolkata",
+    };
 
-    const created = await daemon.createMonitor(target, input)
-    const slower = await daemon.createMonitor(target, { ...input, job: "weekly", pollIntervalSec: 60 })
+    const created = await daemon.createMonitor(target, input);
+    const slower = await daemon.createMonitor(target, {
+      ...input,
+      job: "weekly",
+      pollIntervalSec: 60,
+    });
 
-    assert.equal(created.ok && created.monitor?.pollIntervalSec, 15)
-    assert.equal(slower.ok && slower.monitor?.pollIntervalSec, 60)
-    await daemon.stop()
-  })
+    assert.equal(created.ok && created.monitor?.pollIntervalSec, 15);
+    assert.equal(slower.ok && slower.monitor?.pollIntervalSec, 60);
+    await daemon.stop();
+  });
 
   describe("a timer's identity", () => {
-    const noon = Date.parse("2026-11-19T12:00:00Z")
-    const one = Date.parse("2026-11-19T13:00:00Z")
-    const input = { name: "check", sourceType: "timer", job: "check", in: "20m", timezone: "UTC" }
+    const noon = Date.parse("2026-11-19T12:00:00Z");
+    const one = Date.parse("2026-11-19T13:00:00Z");
+    const input = {
+      name: "check",
+      sourceType: "timer",
+      job: "check",
+      in: "20m",
+      timezone: "UTC",
+    };
 
     afterEach(() => {
-      mock.timers.reset()
-    })
+      mock.timers.reset();
+    });
 
     test("the same in, an hour apart, is two monitors", async () => {
-      const daemon = createDaemon()
+      const daemon = createDaemon();
 
-      mock.timers.enable({ apis: ["Date"], now: noon })
-      const first = await daemon.createMonitor(target, input)
-      mock.timers.setTime(one)
-      const later = await daemon.createMonitor(target, input)
+      mock.timers.enable({ apis: ["Date"], now: noon });
+      const first = await daemon.createMonitor(target, input);
+      mock.timers.setTime(one);
+      const later = await daemon.createMonitor(target, input);
 
-      assert.equal(first.ok && first.created, true)
-      assert.equal(later.ok && later.created, true)
-      assert.notEqual(first.ok && first.monitor?.id, later.ok && later.monitor?.id)
-      await daemon.stop()
-    })
+      assert.equal(first.ok && first.created, true);
+      assert.equal(later.ok && later.created, true);
+      assert.notEqual(
+        first.ok && first.monitor?.id,
+        later.ok && later.monitor?.id,
+      );
+      await daemon.stop();
+    });
 
     test("the same in, at the same time, reuses the monitor", async () => {
-      const daemon = createDaemon()
+      const daemon = createDaemon();
 
-      mock.timers.enable({ apis: ["Date"], now: noon })
-      const first = await daemon.createMonitor(target, input)
-      const again = await daemon.createMonitor(target, input)
+      mock.timers.enable({ apis: ["Date"], now: noon });
+      const first = await daemon.createMonitor(target, input);
+      const again = await daemon.createMonitor(target, input);
 
-      assert.equal(again.ok && again.created, false)
-      assert.equal(again.ok && again.monitor?.id, first.ok && first.monitor?.id)
-      await daemon.stop()
-    })
-  })
+      assert.equal(again.ok && again.created, false);
+      assert.equal(
+        again.ok && again.monitor?.id,
+        first.ok && first.monitor?.id,
+      );
+      await daemon.stop();
+    });
+  });
 
   test("rejects unknown source types", async () => {
-    const daemon = createDaemon()
-    const result = await daemon.createMonitor(target, { name: "nope", sourceType: "telepathy" })
-    assert.deepEqual(result, { ok: false, error: "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule|timer" })
-    await daemon.stop()
-  })
+    const daemon = createDaemon();
+    const result = await daemon.createMonitor(target, {
+      name: "nope",
+      sourceType: "telepathy",
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      error:
+        "unknown source type telepathy; expected jira|jira-query|github|github-issues|slack|yab|schedule|timer",
+    });
+    await daemon.stop();
+  });
 
   test("delivers queued events to subscribers until acknowledged", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    if (!created.ok || !created.monitor) throw new Error("monitor creation failed")
-    const monitor = created.monitor
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    if (!created.ok || !created.monitor)
+      throw new Error("monitor creation failed");
+    const monitor = created.monitor;
 
-    const received: QueuedMonitorEvent[] = []
-    const unsubscribe = daemon.subscribe(target, (events) => received.push(...events))
-    const record = await daemon.service.get(monitor.id)
-    if (!record) throw new Error("monitor record not found")
+    const received: QueuedMonitorEvent[] = [];
+    const unsubscribe = daemon.subscribe(target, (events) =>
+      received.push(...events),
+    );
+    const record = await daemon.service.get(monitor.id);
+    if (!record) throw new Error("monitor record not found");
 
     await daemon.runtime.context.sink.deliver({
       monitor: record,
@@ -124,79 +194,114 @@ describe("SourcefedDaemon", () => {
         summary: "Jira ADEPT-43742 comment",
         actionable: true,
       },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    assert.equal(received.length, 1)
-    assert.equal(received[0].event.summary, "Jira ADEPT-43742 comment")
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(received.length, 1);
+    assert.equal(received[0].event.summary, "Jira ADEPT-43742 comment");
 
-    const acked = await daemon.acknowledgeEvents(target, [received[0].id])
-    assert.equal(acked.ok, true)
-    assert.equal((await daemon.readEvents(target)).length, 0)
+    const acked = await daemon.acknowledgeEvents(target, [received[0].id]);
+    assert.equal(acked.ok, true);
+    assert.equal((await daemon.readEvents(target)).length, 0);
 
-    unsubscribe()
-    await daemon.stop()
-  })
+    unsubscribe();
+    await daemon.stop();
+  });
 
   test("skips and drops events for a disabled monitor when delivering", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    if (!created.ok || !created.monitor) throw new Error("monitor creation failed")
-    const record = await daemon.service.get(created.monitor.id)
-    if (!record) throw new Error("monitor record not found")
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    if (!created.ok || !created.monitor)
+      throw new Error("monitor creation failed");
+    const record = await daemon.service.get(created.monitor.id);
+    if (!record) throw new Error("monitor record not found");
 
     // Queue an event, then disable the monitor without purging — simulating events
     // already queued before the monitor was stopped.
     await daemon.runtime.context.sink.deliver({
       monitor: record,
-      event: { source: record.source, kind: "comment", id: "comment:1", at: "2026-08-04T12:00:00.000Z", summary: "backfill", actionable: true },
-    })
-    await daemon.service.stop(record.id)
+      event: {
+        source: record.source,
+        kind: "comment",
+        id: "comment:1",
+        at: "2026-08-04T12:00:00.000Z",
+        summary: "backfill",
+        actionable: true,
+      },
+    });
+    await daemon.service.stop(record.id);
 
     // A subscriber must not receive the disabled monitor's events; deliver drops them.
-    const received: string[] = []
-    daemon.subscribe(target, (events) => received.push(...events.map((event) => event.id)))
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    assert.deepEqual(received, [])
-    assert.equal((await daemon.readEvents(target)).length, 0)
-    await daemon.stop()
-  })
+    const received: string[] = [];
+    daemon.subscribe(target, (events) =>
+      received.push(...events.map((event) => event.id)),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(received, []);
+    assert.equal((await daemon.readEvents(target)).length, 0);
+    await daemon.stop();
+  });
 
   test("drops a stopped monitor's queued events instead of replaying them", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    if (!created.ok || !created.monitor) throw new Error("monitor creation failed")
-    const record = await daemon.service.get(created.monitor.id)
-    if (!record) throw new Error("monitor record not found")
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    if (!created.ok || !created.monitor)
+      throw new Error("monitor creation failed");
+    const record = await daemon.service.get(created.monitor.id);
+    if (!record) throw new Error("monitor record not found");
 
     // Queue an event with no subscriber attached, so it stays in the queue.
     await daemon.runtime.context.sink.deliver({
       monitor: record,
-      event: { source: record.source, kind: "comment", id: "comment:1", at: "2026-08-04T12:00:00.000Z", summary: "backfill", actionable: true },
-    })
-    assert.equal((await daemon.readEvents(target)).length, 1)
+      event: {
+        source: record.source,
+        kind: "comment",
+        id: "comment:1",
+        at: "2026-08-04T12:00:00.000Z",
+        summary: "backfill",
+        actionable: true,
+      },
+    });
+    assert.equal((await daemon.readEvents(target)).length, 1);
 
     // Stopping the monitor purges its queued events.
-    const stopped = await daemon.stopMonitor(target, created.monitor.id)
-    assert.equal(stopped.ok, true)
-    assert.equal((await daemon.readEvents(target)).length, 0)
+    const stopped = await daemon.stopMonitor(target, created.monitor.id);
+    assert.equal(stopped.ok, true);
+    assert.equal((await daemon.readEvents(target)).length, 0);
 
     // A subscriber that connects afterwards receives nothing from the stopped monitor.
-    const received: string[] = []
-    daemon.subscribe(target, (events) => received.push(...events.map((event) => event.id)))
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    assert.deepEqual(received, [])
-    await daemon.stop()
-  })
+    const received: string[] = [];
+    daemon.subscribe(target, (events) =>
+      received.push(...events.map((event) => event.id)),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(received, []);
+    await daemon.stop();
+  });
 
   test("does not redeliver in-flight events before acknowledgement", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    if (!created.ok || !created.monitor) throw new Error("monitor creation failed")
-    const record = await daemon.service.get(created.monitor.id)
-    if (!record) throw new Error("monitor record not found")
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    if (!created.ok || !created.monitor)
+      throw new Error("monitor creation failed");
+    const record = await daemon.service.get(created.monitor.id);
+    if (!record) throw new Error("monitor record not found");
 
-    const received: string[] = []
-    daemon.subscribe(target, (events) => received.push(...events.map((event) => event.id)))
+    const received: string[] = [];
+    daemon.subscribe(target, (events) =>
+      received.push(...events.map((event) => event.id)),
+    );
 
     for (const id of ["comment:1", "comment:2"]) {
       await daemon.runtime.context.sink.deliver({
@@ -209,23 +314,35 @@ describe("SourcefedDaemon", () => {
           summary: `comment ${id}`,
           actionable: true,
         },
-      })
+      });
     }
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.deepEqual(received, [`${record.id}:comment:1`, `${record.id}:comment:2`])
-    await daemon.stop()
-  })
+    assert.deepEqual(received, [
+      `${record.id}:comment:1`,
+      `${record.id}:comment:2`,
+    ]);
+    await daemon.stop();
+  });
 
   test("delivers an event once when three clients subscribe to the same target", async () => {
-    const daemon = createDaemon()
-    const created = await daemon.createMonitor(target, { name: "ADEPT-43742", sourceType: "jira", issueKey: "ADEPT-43742" })
-    if (!created.ok || !created.monitor) throw new Error("monitor creation failed")
-    const record = await daemon.service.get(created.monitor.id)
-    if (!record) throw new Error("monitor record not found")
+    const daemon = createDaemon();
+    const created = await daemon.createMonitor(target, {
+      name: "ADEPT-43742",
+      sourceType: "jira",
+      issueKey: "ADEPT-43742",
+    });
+    if (!created.ok || !created.monitor)
+      throw new Error("monitor creation failed");
+    const record = await daemon.service.get(created.monitor.id);
+    if (!record) throw new Error("monitor record not found");
 
-    const received = [0, 0, 0]
-    received.forEach((_, index) => daemon.subscribe(target, (events) => { received[index] += events.length }))
+    const received = [0, 0, 0];
+    received.forEach((_, index) =>
+      daemon.subscribe(target, (events) => {
+        received[index] += events.length;
+      }),
+    );
 
     await daemon.runtime.context.sink.deliver({
       monitor: record,
@@ -237,45 +354,61 @@ describe("SourcefedDaemon", () => {
         summary: "Jira ADEPT-43742 comment",
         actionable: true,
       },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
-    assert.equal(received.reduce((total, count) => total + count, 0), 1)
-    await daemon.stop()
-  })
-})
+    assert.equal(
+      received.reduce((total, count) => total + count, 0),
+      1,
+    );
+    await daemon.stop();
+  });
+});
 
 describe("monitor.create dispatch", () => {
-  const createTarget = { kind: "test", id: "session-1" }
+  const createTarget = { kind: "test", id: "session-1" };
 
-  async function createWith(params: Record<string, unknown>): Promise<DaemonCreateInput> {
-    let captured: DaemonCreateInput | undefined
+  async function createWith(
+    params: Record<string, unknown>,
+  ): Promise<DaemonCreateInput> {
+    let captured: DaemonCreateInput | undefined;
     const fake = {
       createMonitor: (_target: unknown, input: DaemonCreateInput) => {
-        captured = input
-        return Promise.resolve({ ok: true })
+        captured = input;
+        return Promise.resolve({ ok: true });
       },
-    } as unknown as SourcefedDaemon
+    } as unknown as SourcefedDaemon;
 
     await dispatchDaemonRequest(fake, "monitor.create", {
       target: createTarget,
       name: "issues",
       sourceType: "github-issues",
       ...params,
-    })
-    if (!captured) throw new Error("no create input reached the daemon")
-    return captured
+    });
+    if (!captured) throw new Error("no create input reached the daemon");
+    return captured;
   }
 
   test("passes a bounded issue-number list through", async () => {
-    assert.deepEqual((await createWith({ issueNumbers: [56, 57] })).issueNumbers, [56, 57])
-  })
+    assert.deepEqual(
+      (await createWith({ issueNumbers: [56, 57] })).issueNumbers,
+      [56, 57],
+    );
+  });
 
   test("refuses malformed issue numbers at the boundary", async () => {
-    const bad = [[0], [-1], [1.5], ["56"], [56, 56], Array.from({ length: 101 }, (_, i) => i + 1), Number.NaN]
+    const bad = [
+      [0],
+      [-1],
+      [1.5],
+      ["56"],
+      [56, 56],
+      Array.from({ length: 101 }, (_, i) => i + 1),
+      Number.NaN,
+    ];
 
     for (const issueNumbers of bad) {
-      await assert.rejects(createWith({ issueNumbers }), /issueNumbers/)
+      await assert.rejects(createWith({ issueNumbers }), /issueNumbers/);
     }
-  })
-})
+  });
+});

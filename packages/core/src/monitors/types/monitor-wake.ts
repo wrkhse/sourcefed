@@ -4,6 +4,6 @@
  * source of truth.
  */
 export type MonitorWake<TSource> = {
-  path: string
-  matches: (source: TSource, payload: unknown, eventName: string) => boolean
-}
+  path: string;
+  matches: (source: TSource, payload: unknown, eventName: string) => boolean;
+};

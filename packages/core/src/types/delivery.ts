@@ -1,1 +1,1 @@
-export type Delivery = "poll" | "webhook"
+export type Delivery = "poll" | "webhook";

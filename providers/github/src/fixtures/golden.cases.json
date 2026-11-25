@@ -8,10 +8,7 @@
     "GH_TOKEN": "test-token",
     "SOURCEFED_GITHUB_WEBHOOK_SECRET": "test-webhook-secret"
   },
-  "unset": [
-    "GITHUB_TOKEN",
-    "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"
-  ],
+  "unset": ["GITHUB_TOKEN", "SOURCEFED_GITHUB_REQUESTS_PER_MINUTE"],
   "cases": [
     {
       "name": "priming",
@@ -503,13 +500,8 @@
       },
       "body": "{\"action\":\"submitted\",\"review\":{\"id\":502,\"state\":\"commented\",\"body\":\"One more nit.\",\"user\":{\"login\":\"alice\"}},\"pull_request\":{\"number\":7,\"title\":\"Add schedules\"},\"repository\":{\"full_name\":\"example-org/example-repo\",\"updated_at\":\"2026-11-18T12:07:00Z\"},\"sender\":{\"login\":\"alice\"}}",
       "cursor": {
-        "reviewIds": [
-          "rev:501"
-        ],
-        "commentIds": [
-          "c:601",
-          "issue:701"
-        ],
+        "reviewIds": ["rev:501"],
+        "commentIds": ["c:601", "issue:701"],
         "historyPrimed": true,
         "lineCommentsPrimed": true,
         "conversationCommentsPrimed": true,

@@ -1,3 +1,3 @@
-import type { Monitor } from "#sourcefed/monitors"
+import type { Monitor } from "#sourcefed/monitors";
 
-export type MonitorSourceRegistry = Record<string, Monitor<any>>
+export type MonitorSourceRegistry = Record<string, Monitor<any>>;

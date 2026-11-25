@@ -1,3 +1,3 @@
 export type MonitorSource = {
-  type: string
-} & Record<string, unknown>
+  type: string;
+} & Record<string, unknown>;

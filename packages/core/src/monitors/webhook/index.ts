@@ -1,1 +1,1 @@
-export { WebhookMonitor } from "./monitor.ts"
+export { WebhookMonitor } from "./monitor.ts";

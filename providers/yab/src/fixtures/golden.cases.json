@@ -4,10 +4,7 @@
   "export": "YabMonitor",
   "fixture": "providers/yab/src/fixtures/golden.ts",
   "base": "https://mail.google.com",
-  "unset": [
-    "SOURCEFED_DEBUG",
-    "SOURCEFED_YAB_COMMAND"
-  ],
+  "unset": ["SOURCEFED_DEBUG", "SOURCEFED_YAB_COMMAND"],
   "cases": [
     {
       "name": "priming",

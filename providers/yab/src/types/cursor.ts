@@ -1,4 +1,4 @@
 export interface YabCursor {
-  primed: boolean
-  seenIds: string[]
+  primed: boolean;
+  seenIds: string[];
 }

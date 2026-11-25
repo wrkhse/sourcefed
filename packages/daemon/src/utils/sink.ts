@@ -1,6 +1,12 @@
-import type { MonitorEvent, MonitorEventQueue, MonitorEventSink, MonitorRecord, MonitorTarget } from "@sourcefed/core"
-import type { TriageDecision } from "../triage/triage.ts"
-import type { EventTriage } from "../types/daemon.ts"
+import type {
+  MonitorEvent,
+  MonitorEventQueue,
+  MonitorEventSink,
+  MonitorRecord,
+  MonitorTarget,
+} from "@sourcefed/core";
+import type { TriageDecision } from "../triage/triage.ts";
+import type { EventTriage } from "../types/daemon.ts";
 
 export class NotifyingEventSink implements MonitorEventSink {
   constructor(
@@ -11,14 +17,19 @@ export class NotifyingEventSink implements MonitorEventSink {
     private readonly log: (line: string) => void = console.error,
   ) {}
 
-  async deliver(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<{ ok: boolean; error?: string }> {
-    const decision = await this.decisionFor(input)
+  async deliver(input: {
+    monitor: MonitorRecord;
+    event: MonitorEvent;
+  }): Promise<{ ok: boolean; error?: string }> {
+    const decision = await this.decisionFor(input);
 
     // A withheld event is queued for no host at all. The source cursor still
     // advances, so Chauffeur's verdict is the last word on it.
     if (!decision.deliver) {
-      this.log(`[sourcefed] withheld event=${input.event.id ?? "none"} monitor=${input.monitor.id} rule=${decision.rule || "none"}: ${input.event.summary}`)
-      return { ok: true }
+      this.log(
+        `[sourcefed] withheld event=${input.event.id ?? "none"} monitor=${input.monitor.id} rule=${decision.rule || "none"}: ${input.event.summary}`,
+      );
+      return { ok: true };
     }
 
     try {
@@ -27,12 +38,15 @@ export class NotifyingEventSink implements MonitorEventSink {
         monitor: input.monitor,
         event: input.event,
         ...(decision.triaged ? { chauffeurTriaged: true } : {}),
-      })
-      this.notify(input.monitor.target)
-      return { ok: true }
+      });
+      this.notify(input.monitor.target);
+      return { ok: true };
     } catch (error) {
       // Only a failed enqueue is retryable: the poll keeps its cursor and offers the event again.
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -42,13 +56,16 @@ export class NotifyingEventSink implements MonitorEventSink {
    * of fail-open. An unanswered verdict delivers the event unmarked instead, so
    * the host still applies its own gate.
    */
-  private async decisionFor(input: { monitor: MonitorRecord; event: MonitorEvent }): Promise<TriageDecision> {
-    if (!this.triage) return { deliver: true, triaged: false }
+  private async decisionFor(input: {
+    monitor: MonitorRecord;
+    event: MonitorEvent;
+  }): Promise<TriageDecision> {
+    if (!this.triage) return { deliver: true, triaged: false };
 
     try {
-      return await this.triage.decide(input.monitor, input.event)
+      return await this.triage.decide(input.monitor, input.event);
     } catch {
-      return { deliver: true, triaged: false }
+      return { deliver: true, triaged: false };
     }
   }
 }

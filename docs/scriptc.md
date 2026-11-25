@@ -6,14 +6,14 @@ relying on them.
 
 ## Coverage table
 
-| Package | Analyzable | Static coverage | Hard blockers |
-|---|---|---|---|
-| `@sourcefed/core` | yes | 50/60 statements (83%) | valibot generic methods (SC1090 ×6); valibot values need the dynamic engine (SC2013 ×6); `crypto.randomUUID` |
-| `@sourcefed/daemon` | yes | 91/129 (70%) static, 6 (4%) dynamic islands under `--dynamic` | provider `Monitor` class values in `SOURCE_MAP` (SC2009 — the poll `run` function signature carries the full `MonitorRecord` shape); `Object.keys` (SC2020); `Request`/`Response`/`AbortController`/`ReadableStream.*` have no lowering (SC2020); `MonitorService` class values (SC2001) |
-| `@sourcefed/provider-{github,jira,slack}` | no (standalone) | — | `Monitor` class declarations rejected (valibot schemas inside); only reached through the daemon graph |
-| `@sourcefed/mcp` | no | — | downstream of the daemon graph; `@modelcontextprotocol/server` needs the dynamic engine |
-| `@sourcefed/cli` | no | — | inherits the daemon graph plus fs-based skills serving |
-| `@sourcefed/opencode`, `@sourcefed/pi` | n/a | — | host-loaded plugins; not native targets |
+| Package                                   | Analyzable      | Static coverage                                               | Hard blockers                                                                                                                                                                                                                                                                            |
+| ----------------------------------------- | --------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@sourcefed/core`                         | yes             | 50/60 statements (83%)                                        | valibot generic methods (SC1090 ×6); valibot values need the dynamic engine (SC2013 ×6); `crypto.randomUUID`                                                                                                                                                                             |
+| `@sourcefed/daemon`                       | yes             | 91/129 (70%) static, 6 (4%) dynamic islands under `--dynamic` | provider `Monitor` class values in `SOURCE_MAP` (SC2009 — the poll `run` function signature carries the full `MonitorRecord` shape); `Object.keys` (SC2020); `Request`/`Response`/`AbortController`/`ReadableStream.*` have no lowering (SC2020); `MonitorService` class values (SC2001) |
+| `@sourcefed/provider-{github,jira,slack}` | no (standalone) | —                                                             | `Monitor` class declarations rejected (valibot schemas inside); only reached through the daemon graph                                                                                                                                                                                    |
+| `@sourcefed/mcp`                          | no              | —                                                             | downstream of the daemon graph; `@modelcontextprotocol/server` needs the dynamic engine                                                                                                                                                                                                  |
+| `@sourcefed/cli`                          | no              | —                                                             | inherits the daemon graph plus fs-based skills serving                                                                                                                                                                                                                                   |
+| `@sourcefed/opencode`, `@sourcefed/pi`    | n/a             | —                                                             | host-loaded plugins; not native targets                                                                                                                                                                                                                                                  |
 
 ## Layout
 

@@ -1,7 +1,7 @@
-import { test } from "node:test"
-import { assertGolden, withEnvironment } from "@sourcefed/sdk"
-import { JIRA_GOLDEN } from "./fixtures/golden.ts"
-import { jiraSource } from "./monitor.ts"
+import { test } from "node:test";
+import { assertGolden, withEnvironment } from "@sourcefed/sdk";
+import { JIRA_GOLDEN } from "./fixtures/golden.ts";
+import { jiraSource } from "./monitor.ts";
 
 /** The port changes no behaviour: the transcript recorded from the pre-SDK provider must replay exactly. */
 test("the jira source replays its recorded transcript", async () => {
@@ -13,7 +13,7 @@ test("the jira source replays its recorded transcript", async () => {
       SOURCEFED_JIRA_TERMINAL_STATUS: undefined,
     },
     async () => {
-      await assertGolden(JIRA_GOLDEN, jiraSource)
+      await assertGolden(JIRA_GOLDEN, jiraSource);
     },
-  )
-})
+  );
+});

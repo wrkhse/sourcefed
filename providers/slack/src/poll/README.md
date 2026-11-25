@@ -4,13 +4,13 @@ Polling reads a Slack thread with `conversations.replies`, or a whole DM with
 `conversations.history`, and turns messages the cursor has not seen into events. Once a
 monitor is primed, each poll asks only for messages after the newest it has seen.
 
-| Module | Does |
-| --- | --- |
-| `../monitor.ts` | `slackSource.poll`: runs one poll with the host's http and clock, and maps events |
-| `utils/poll-slack.ts` | `pollSlack`: reads the source after the cursor, then parses it |
-| `utils/slack-api.ts` | Calls Slack, keeps one hourly `users.list` per token, and takes requests from the token's budget |
-| `utils/slack-limiter.ts` | `SlackRateLimiter`: one request budget per token, served in turn, paused by `Retry-After` |
-| `utils/parse-slack-read-result.ts` | Finds new messages and advances the cursor |
+| Module                             | Does                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `../monitor.ts`                    | `slackSource.poll`: runs one poll with the host's http and clock, and maps events                |
+| `utils/poll-slack.ts`              | `pollSlack`: reads the source after the cursor, then parses it                                   |
+| `utils/slack-api.ts`               | Calls Slack, keeps one hourly `users.list` per token, and takes requests from the token's budget |
+| `utils/slack-limiter.ts`           | `SlackRateLimiter`: one request budget per token, served in turn, paused by `Retry-After`        |
+| `utils/parse-slack-read-result.ts` | Finds new messages and advances the cursor                                                       |
 
 ## Rate limits
 
@@ -21,12 +21,12 @@ internal apps. Every monitor on one `SOURCEFED_SLACK_TOKEN` shares one budget, 2
 requests a minute by default (`SOURCEFED_SLACK_REQUESTS_PER_MINUTE`, read when the daemon
 starts).
 
-| Setting | Effect |
-| --- | --- |
-| unset | 20 a minute |
-| `1` | for commercially distributed apps outside the Marketplace, which Slack limits to 1 request a minute and 15 messages a page |
-| above 45 | capped at 45 with a warning: with its burst of 5, no minute starts more than Tier 3's 50 reads |
-| not a positive number | 20, with a warning |
+| Setting               | Effect                                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| unset                 | 20 a minute                                                                                                                |
+| `1`                   | for commercially distributed apps outside the Marketplace, which Slack limits to 1 request a minute and 15 messages a page |
+| above 45              | capped at 45 with a warning: with its burst of 5, no minute starts more than Tier 3's 50 reads                             |
+| not a positive number | 20, with a warning                                                                                                         |
 
 Each monitor polls about every `max(pollIntervalSec, monitors × 60 / budget)` seconds:
 about 100s with 32 monitors at the default budget, and 200s with 64.
@@ -80,10 +80,19 @@ flowchart LR
 - A monitor that is granted and polls again later joins the back of the queue.
 
 ```ts
-const limiter = new SlackRateLimiter({ requestsPerMinute: 20, log: console.warn })
+const limiter = new SlackRateLimiter({
+  requestsPerMinute: 20,
+  log: console.warn,
+});
 
 if (limiter.acquire(now().getTime(), token, monitorId, first)) {
   // call Slack; on a 429:
-  limiter.pause(now().getTime(), token, retryAfterSec, "conversations.replies", monitorId)
+  limiter.pause(
+    now().getTime(),
+    token,
+    retryAfterSec,
+    "conversations.replies",
+    monitorId,
+  );
 }
 ```

@@ -42,7 +42,7 @@
 ### 🚀 Enhancements
 
 - **core:** Add an optional structured subject to events ([#6](https://github.com/StevenJPx2/sourcefed/pull/6))
-- **adapters:** ⚠️  Take one tagged source in monitor_create ([#8](https://github.com/StevenJPx2/sourcefed/pull/8))
+- **adapters:** ⚠️ Take one tagged source in monitor_create ([#8](https://github.com/StevenJPx2/sourcefed/pull/8))
 - **github:** Add the github-issues collection source ([#10](https://github.com/StevenJPx2/sourcefed/pull/10))
 - **jira:** Add the jira-query collection source ([#11](https://github.com/StevenJPx2/sourcefed/pull/11))
 - **schedule:** Add the cron schedule source ([#12](https://github.com/StevenJPx2/sourcefed/pull/12))
@@ -61,7 +61,7 @@
 
 #### ⚠️ Breaking Changes
 
-- **adapters:** ⚠️  Take one tagged source in monitor_create ([#8](https://github.com/StevenJPx2/sourcefed/pull/8))
+- **adapters:** ⚠️ Take one tagged source in monitor_create ([#8](https://github.com/StevenJPx2/sourcefed/pull/8))
 
 ### ❤️ Contributors
 
@@ -117,7 +117,6 @@
 ### ✅ Tests
 
 - **integration:** Isolate scenarios from the caller's environment ([e2aa8d2](https://github.com/StevenJPx2/sourcefed/commit/e2aa8d2))
-
 
 ## v0.3.8
 
@@ -274,7 +273,7 @@
 
 ### 🚀 Enhancements
 
-- **opencode:** ⚠️  Migrate adapter to OpenCode plugin API v2 ([eb9a9ab](https://github.com/StevenJPx2/sourcefed/commit/eb9a9ab))
+- **opencode:** ⚠️ Migrate adapter to OpenCode plugin API v2 ([eb9a9ab](https://github.com/StevenJPx2/sourcefed/commit/eb9a9ab))
 - Add package-lock ([73cdc8e](https://github.com/StevenJPx2/sourcefed/commit/73cdc8e))
 
 ### 🩹 Fixes
@@ -288,7 +287,7 @@
 
 #### ⚠️ Breaking Changes
 
-- **opencode:** ⚠️  Migrate adapter to OpenCode plugin API v2 ([eb9a9ab](https://github.com/StevenJPx2/sourcefed/commit/eb9a9ab))
+- **opencode:** ⚠️ Migrate adapter to OpenCode plugin API v2 ([eb9a9ab](https://github.com/StevenJPx2/sourcefed/commit/eb9a9ab))
 
 ### ❤️ Contributors
 
@@ -410,4 +409,3 @@
 ### ❤️ Contributors
 
 - Steven John <stevenjpx2@gmail.com>
-

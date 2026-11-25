@@ -1,19 +1,23 @@
-import { ISSUE_NUMBER_ERROR, orderedIssueNumbers } from "@sourcefed/core"
-import { flag } from "../../utils/flags.ts"
-import { printResult } from "../../utils/format.ts"
-import type { MonitorContext } from "./index.ts"
+import { ISSUE_NUMBER_ERROR, orderedIssueNumbers } from "@sourcefed/core";
+import { flag } from "../../utils/flags.ts";
+import { printResult } from "../../utils/format.ts";
+import type { MonitorContext } from "./index.ts";
 
 export async function create(context: MonitorContext): Promise<void> {
-  const sourceType = flag(context.args, "source-type")
-  const sourceTypes = (await context.client.request("daemon.sourceTypes")) as { sourceTypes?: string[] }
+  const sourceType = flag(context.args, "source-type");
+  const sourceTypes = (await context.client.request("daemon.sourceTypes")) as {
+    sourceTypes?: string[];
+  };
   if (!sourceType || !sourceTypes.sourceTypes?.includes(sourceType)) {
-    throw new Error(`create requires --source-type ${sourceTypes.sourceTypes?.join("|") ?? "unknown"}`)
+    throw new Error(
+      `create requires --source-type ${sourceTypes.sourceTypes?.join("|") ?? "unknown"}`,
+    );
   }
   const input: Record<string, unknown> = {
     name: flag(context.args, "name") ?? sourceType,
     sourceType,
     target: context.target,
-  }
+  };
   const keyMap: Record<string, string> = {
     "issue-key": "issueKey",
     repo: "repo",
@@ -34,27 +38,34 @@ export async function create(context: MonitorContext): Promise<void> {
     at: "at",
     every: "every",
     timezone: "timezone",
-  }
+  };
   for (const key of Object.keys(keyMap)) {
-    const value = flag(context.args, key)
-    if (value) input[keyMap[key]] = value
+    const value = flag(context.args, key);
+    if (value) input[keyMap[key]] = value;
   }
   // GitHub's own issue filter separates labels with commas, so no label can contain one.
-  const labels = flag(context.args, "labels")
-  if (labels) input.labels = labels.split(",").map((label) => label.trim()).filter(Boolean)
+  const labels = flag(context.args, "labels");
+  if (labels)
+    input.labels = labels
+      .split(",")
+      .map((label) => label.trim())
+      .filter(Boolean);
   // Issue numbers are numeric, so refuse a list a source build would reject later.
-  const issueNumbers = flag(context.args, "issue-numbers")
+  const issueNumbers = flag(context.args, "issue-numbers");
   if (issueNumbers) {
-    const parts = issueNumbers.split(",").map((part) => part.trim())
-    if (!parts.every((part) => /^[1-9]\d*$/.test(part))) throw new Error("--issue-numbers must be comma-separated positive integers")
-    const numbers = orderedIssueNumbers(parts.map(Number))
-    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR)
-    input.issueNumbers = numbers
+    const parts = issueNumbers.split(",").map((part) => part.trim());
+    if (!parts.every((part) => /^[1-9]\d*$/.test(part)))
+      throw new Error(
+        "--issue-numbers must be comma-separated positive integers",
+      );
+    const numbers = orderedIssueNumbers(parts.map(Number));
+    if (!numbers) throw new Error(ISSUE_NUMBER_ERROR);
+    input.issueNumbers = numbers;
   }
-  if (context.args.includes("--include-existing")) input.includeExisting = true
-  const prNumber = flag(context.args, "pr-number")
-  if (prNumber) input.prNumber = Number(prNumber)
-  const pollIntervalSec = flag(context.args, "poll-interval-sec")
-  if (pollIntervalSec) input.pollIntervalSec = Number(pollIntervalSec)
-  printResult(await context.client.request("monitor.create", input))
+  if (context.args.includes("--include-existing")) input.includeExisting = true;
+  const prNumber = flag(context.args, "pr-number");
+  if (prNumber) input.prNumber = Number(prNumber);
+  const pollIntervalSec = flag(context.args, "poll-interval-sec");
+  if (pollIntervalSec) input.pollIntervalSec = Number(pollIntervalSec);
+  printResult(await context.client.request("monitor.create", input));
 }

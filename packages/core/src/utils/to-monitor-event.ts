@@ -1,7 +1,10 @@
-import type { MonitorEvent, SourceEvent } from "#sourcefed/types"
-import type { MonitorSource } from "#sourcefed/sources"
+import type { MonitorEvent, SourceEvent } from "#sourcefed/types";
+import type { MonitorSource } from "#sourcefed/sources";
 
-export function toMonitorEvent(event: SourceEvent, source: MonitorSource): MonitorEvent {
+export function toMonitorEvent(
+  event: SourceEvent,
+  source: MonitorSource,
+): MonitorEvent {
   const monitorEvent: MonitorEvent = {
     source,
     kind: event.kind,
@@ -11,7 +14,7 @@ export function toMonitorEvent(event: SourceEvent, source: MonitorSource): Monit
     body: event.body,
     actionable: event.actionable,
     terminal: event.terminal,
-  }
-  if (event.subject) monitorEvent.subject = event.subject
-  return monitorEvent
+  };
+  if (event.subject) monitorEvent.subject = event.subject;
+  return monitorEvent;
 }
