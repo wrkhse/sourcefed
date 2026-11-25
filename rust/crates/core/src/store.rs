@@ -404,16 +404,24 @@ fn cleanup_temp_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+
+    cleanup_paths(entries.filter_map(Result::ok).map(|entry| entry.path()));
+}
+
+// Removes generated temp files among the first `MAX_TEMP_SCAN` paths, at most
+// `MAX_TEMP_REMOVE` of them, and returns how many were removed.
+fn cleanup_paths(paths: impl Iterator<Item = PathBuf>) -> usize {
     let mut removed = 0_usize;
 
-    for entry in entries.take(MAX_TEMP_SCAN).flatten() {
-        let generated = entry
+    for path in paths.take(MAX_TEMP_SCAN) {
+        let generated = path
             .file_name()
-            .to_str()
+            .and_then(|name| name.to_str())
             .is_some_and(is_generated_temp_name);
-        let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        // symlink_metadata keeps a link to a file from counting as a file.
+        let is_file = fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file());
 
-        if generated && is_file && fs::remove_file(entry.path()).is_ok() {
+        if generated && is_file && fs::remove_file(&path).is_ok() {
             removed = removed.saturating_add(1);
         }
 
@@ -421,6 +429,8 @@ fn cleanup_temp_files(dir: &Path) {
             break;
         }
     }
+
+    removed
 }
 
 // Accepts only the form `Store::temp_path` generates, so a user's file that
@@ -724,6 +734,64 @@ mod tests {
         drop(Store::open(dir.path()).unwrap());
 
         assert_eq!(count_temp_files(), 0);
+    }
+
+    fn scan_paths(dir: &Path, generated: std::ops::Range<usize>) -> Vec<PathBuf> {
+        (0..600)
+            .map(|index| {
+                if generated.contains(&index) {
+                    let path = dir.join(format!("positions.json.7.{index}.tmp"));
+                    fs::write(&path, b"stale").unwrap();
+                    path
+                } else {
+                    dir.join(format!("other-{index}.txt"))
+                }
+            })
+            .collect()
+    }
+
+    fn existing(paths: &[PathBuf]) -> usize {
+        paths.iter().filter(|path| path.exists()).count()
+    }
+
+    #[test]
+    fn cleanup_never_scans_past_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = scan_paths(dir.path(), 550..600);
+
+        assert_eq!(cleanup_paths(paths.clone().into_iter()), 0);
+        assert_eq!(existing(&paths[550..]), 50);
+    }
+
+    #[test]
+    fn cleanup_removes_generated_files_within_the_scan_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = scan_paths(dir.path(), 450..500);
+
+        assert_eq!(cleanup_paths(paths.clone().into_iter()), 50);
+        assert_eq!(existing(&paths[450..500]), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_succeeds_when_cleanup_cannot_remove_a_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join("store");
+        let stale = store_dir.join("positions.json.1.2.tmp");
+        fs::create_dir(&store_dir).unwrap();
+        fs::write(store_dir.join(LOCK_FILE), b"").unwrap();
+        fs::write(&stale, b"stale").unwrap();
+        let mode = |bits| fs::Permissions::from_mode(bits);
+        fs::set_permissions(&store_dir, mode(0o500)).unwrap();
+
+        let opened = Store::open(&store_dir).map(drop).map_err(|e| e.to_string());
+        let kept = fs::read(&stale).map_err(|error| error.kind());
+        fs::set_permissions(&store_dir, mode(0o700)).unwrap();
+
+        assert_eq!(opened, Ok(()));
+        assert_eq!(kept, Ok(b"stale".to_vec()));
     }
 
     #[test]
