@@ -29,20 +29,14 @@ pub trait Clock: Send + Sync {
 
 /// Reads wall-clock time and sleeps on the calling thread.
 ///
-/// Returns [`Timestamp::MIN`] if the wall clock is outside Jiff's range.
+/// Converts the wall clock with a checked conversion and returns
+/// [`Timestamp::MIN`] if the clock is outside Jiff's range.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    #[expect(
-        clippy::option_if_let_else,
-        reason = "match explicitly on the out-of-range wall-clock reading"
-    )]
     fn now(&self) -> Timestamp {
-        match Timestamp::try_from(SystemTime::now()) {
-            Ok(now) => now,
-            Err(_) => Timestamp::MIN,
-        }
+        Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::MIN)
     }
 
     fn sleep(&self, duration: Duration) {
@@ -62,7 +56,8 @@ impl Backoff {
     /// Starts a backoff at `base`.
     ///
     /// # Errors
-    /// Returns an error if the base is zero or the cap is below the base.
+    /// Returns [`ModelError::Invalid`] if the base is zero or the cap is
+    /// below the base.
     pub fn new(base: Duration, cap: Duration) -> Result<Self, ModelError> {
         if base.is_zero() {
             return Err(ModelError::Invalid {
@@ -122,7 +117,7 @@ impl StopHandle {
         self.0.store(true, Ordering::Relaxed);
     }
 
-    /// Returns whether a stop was requested.
+    /// Returns whether a stop is requested.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.0.load(Ordering::Relaxed)
@@ -134,7 +129,8 @@ impl StopHandle {
 /// Source failures schedule a retry with backoff and are not returned here.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    /// The outcome could not be committed.
+    /// The outcome cannot be committed, including when the store refuses
+    /// an oversized batch with [`StoreError::TooMany`].
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -147,11 +143,12 @@ enum Schedule {
 
 /// Polls one source at a time and saves fresh events with the source position.
 ///
-/// Pending events live in the store. A successful outcome sets the next due
-/// time or ends the engine. A source failure schedules a retry with backoff;
-/// it is not returned as an error.
+/// The store owns a bounded pending queue for this engine's position key.
+/// The engine exposes it read-only and has no drain method.
+/// A successful commit sets the next due time or ends the engine. A source
+/// failure schedules a retry with backoff; it is not returned as an error.
 pub struct PollEngine {
-    config: MonitorConfig,
+    key: PositionKey,
     source: Arc<dyn Source>,
     store: Store,
     clock: Arc<dyn Clock>,
@@ -166,7 +163,8 @@ impl PollEngine {
     /// The retry base is the poll interval, limited by the default cap.
     ///
     /// # Errors
-    /// Returns an error if the source's name differs from the configuration.
+    /// Returns [`ModelError::Invalid`] if the source's name differs from
+    /// the configuration or the retry backoff is invalid.
     pub fn new(
         config: MonitorConfig,
         source: Arc<dyn Source>,
@@ -184,9 +182,13 @@ impl PollEngine {
         let base = Duration::from_secs(config.poll_interval.as_secs()).min(cap);
         let backoff = Backoff::new(base, cap)?;
         let schedule = Schedule::Due(clock.now());
+        let key = PositionKey {
+            monitor: config.id,
+            source: config.source,
+        };
 
         Ok(Self {
-            config,
+            key,
             source,
             store,
             clock,
@@ -212,21 +214,11 @@ impl PollEngine {
         }
     }
 
-    /// Returns the store's durable queue of events waiting for delivery, oldest first.
+    /// Returns the store-owned queue for this engine's key, oldest first,
+    /// or `None` if absent. The returned queue is read-only.
     #[must_use]
-    pub const fn pending(&self) -> &VecDeque<Event> {
-        self.store.pending()
-    }
-
-    /// Drains the store's pending queue, persists it empty, and returns its events.
-    ///
-    /// # Errors
-    /// Returns [`StoreError::TooLarge`] if the serialized state exceeds the byte
-    /// limit, or [`StoreError::Write`] if serialization, writing, syncing or
-    /// renaming fails. The in-memory queue is unchanged on error. A directory
-    /// sync error can occur after the saved file has been replaced.
-    pub fn take_pending(&mut self) -> Result<Vec<Event>, StoreError> {
-        self.store.take_pending()
+    pub fn pending(&self) -> Option<&VecDeque<Event>> {
+        self.store.pending(&self.key)
     }
 
     /// Consumes the engine and returns its store.
@@ -247,7 +239,9 @@ impl PollEngine {
     /// Source failures schedule a retry with backoff and do not return an error.
     ///
     /// # Errors
-    /// Returns a store error if committing an outcome fails.
+    /// Returns [`EngineError::Store`] if committing an outcome fails,
+    /// including [`StoreError::TooMany`] when a batch exceeds the key's
+    /// available pending capacity or the fresh ID limit.
     pub fn run(&mut self, max_polls: u32) -> Result<EngineState, EngineError> {
         let max_iterations =
             u64::from(max_polls).saturating_mul(ITERATIONS_PER_POLL);
@@ -293,17 +287,13 @@ impl PollEngine {
     }
 
     fn poll(&mut self, now: Timestamp) -> Result<(), StoreError> {
-        let key = PositionKey {
-            monitor: self.config.id.clone(),
-            source: self.config.source.clone(),
-        };
         let request = PollRequest {
             now,
-            position: self.store.position(&key).cloned(),
+            position: self.store.position(&self.key).cloned(),
         };
 
         if let Ok(outcome) = self.source.poll(request) {
-            return self.commit(key, &outcome);
+            return self.commit(&outcome);
         }
 
         self.backoff.fail();
@@ -317,13 +307,12 @@ impl PollEngine {
         Ok(())
     }
 
-    fn commit(
-        &mut self,
-        key: PositionKey,
-        outcome: &PollOutcome,
-    ) -> Result<(), StoreError> {
-        self.store
-            .commit(key, outcome.position().clone(), outcome.events())?;
+    fn commit(&mut self, outcome: &PollOutcome) -> Result<(), StoreError> {
+        self.store.commit(
+            self.key.clone(),
+            outcome.position().clone(),
+            outcome.events(),
+        )?;
 
         self.backoff.succeed();
         self.schedule = match outcome.next() {
@@ -337,11 +326,11 @@ impl PollEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
     use std::time::Instant;
 
     use super::*;
-    use crate::source::MAX_EVENTS_PER_POLL;
     use crate::{
         EventId, EventKind, EventSubject, MonitorId, PollError, PollInterval,
         Position, SourceName,
@@ -653,27 +642,44 @@ mod tests {
 
     #[test]
     fn an_oversized_outcome_is_rejected_without_changing_the_engine_or_store() {
-        let f = Fixture::new(5, Vec::new());
-        let event = event("first");
-        let oversized = vec![event.clone(); MAX_EVENTS_PER_POLL + 1];
+        let initial: Vec<_> = (0..MAX_PENDING_EVENTS)
+            .map(|index| event(&format!("event-{index}")))
+            .collect();
+        let fresh = event("overflow");
+        let next = Position::new("next".into()).unwrap();
+        let result = PollOutcome::new(vec![fresh.clone()], next, Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(result.unwrap())]);
 
         assert_eq!(
-            PollOutcome::new(oversized, cursor(), Next::Done).unwrap_err(),
-            ModelError::TooMany {
-                field: "poll outcome events",
-                limit: MAX_EVENTS_PER_POLL,
-            }
+            f.engine.store.commit(key(), cursor(), &initial).unwrap(),
+            MAX_PENDING_EVENTS
+        );
+        let path = f.dir.path().join("positions.json");
+        let before = fs::read(&path).unwrap();
+
+        let error = f.engine.run(1).unwrap_err();
+        let EngineError::Store(StoreError::TooMany { limit }) = error else {
+            panic!("expected too many pending events, got {error:?}");
+        };
+
+        assert_eq!(limit, MAX_PENDING_EVENTS);
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: Some(cursor()),
+            }]
         );
         assert_eq!(f.engine.state(), EngineState::Running);
-        assert_eq!(f.engine.pending(), &VecDeque::new());
+        assert_eq!(f.engine.pending(), Some(&VecDeque::from(initial)));
         assert_eq!(
             (
                 f.engine.store.position(&key()),
-                f.engine.store.is_seen(&key(), event.id()),
+                f.engine.store.is_seen(&key(), fresh.id()),
             ),
-            (None, false)
+            (Some(&cursor()), false)
         );
-        assert_eq!(f.requests(), []);
+        assert_eq!(fs::read(path).unwrap(), before);
     }
 
     #[test]
@@ -705,9 +711,7 @@ mod tests {
         assert_eq!(f.engine.run(2).unwrap(), EngineState::Ended);
         let expected = VecDeque::from([first, third, second]);
 
-        assert_eq!(f.engine.pending(), &expected);
-        assert_eq!(f.engine.take_pending().unwrap(), Vec::from(expected));
-        assert_eq!(f.engine.take_pending().unwrap(), []);
+        assert_eq!(f.engine.pending(), Some(&expected));
     }
 
     #[test]
@@ -735,7 +739,7 @@ mod tests {
         assert_eq!(f.engine.state(), EngineState::Running);
         assert!(matches!(f.engine.schedule, Schedule::Due(due) if due == at(0)));
         assert_eq!(f.engine.backoff, backoff);
-        assert_eq!(f.engine.pending(), &VecDeque::from(initial));
+        assert_eq!(f.engine.pending(), Some(&VecDeque::from(initial)));
         assert_eq!(
             (
                 f.engine.store.position(&key()),
@@ -758,7 +762,7 @@ mod tests {
         let reopened = Store::open(f.dir.path()).unwrap();
 
         assert_eq!(reopened.position(&key()), Some(&cursor()));
-        assert_eq!(reopened.pending(), &VecDeque::from(events));
+        assert_eq!(reopened.pending(&key()), Some(&VecDeque::from(events)));
     }
 
     #[test]

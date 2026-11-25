@@ -1,20 +1,21 @@
 //! `sourcefed-core` holds the model and [`Source`] contract for sourcefed.
 //! Each poll resumes from a [`Position`], returns a bounded batch of [`Event`]s
-//! and names its next step as a [`Next`]. A bounded store saves each source's
-//! position and delivered event IDs so a restart neither misses nor repeats
-//! an event.
+//! and names its next step as a [`Next`]. For each [`PositionKey`], the store
+//! saves the position, remembered event IDs, and bounded pending event queue
+//! together. Each key has its own bounded pending queue. Pending events are
+//! read-only; the store and poll engine expose no removal method.
 
 /// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;
 /// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
-/// Bounded polling, retry and pending delivery.
+/// Bounded polling and retry with durable pending events.
 pub mod poll;
 /// The saved place a source resumes polling from.
 pub mod position;
 /// The [`Source`] contract and the request and outcome of one poll.
 pub mod source;
-/// Saved positions and bounded event ID tracking.
+/// Saved positions, remembered event IDs, and pending event queues.
 pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
