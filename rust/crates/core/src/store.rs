@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs::{self, File, TryLockError};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -11,12 +13,17 @@ use crate::{Event, EventId, MonitorId, Position, SourceName};
 pub const MAX_STORE_BYTES: usize = 262_144;
 /// Maximum number of stored positions.
 pub const MAX_POSITIONS: usize = 256;
-/// Maximum number of remembered event IDs.
+/// Maximum number of remembered event IDs for each position key.
 pub const MAX_SEEN_IDS: usize = 1000;
 
 // Read one byte past the accepted size to detect an oversized file.
 const MAX_READ_BYTES: u64 = 262_145;
 const STORE_VERSION: u8 = 1;
+const STORE_FILE: &str = "positions.json";
+const LOCK_FILE: &str = "positions.lock";
+
+// Numbers temporary files so concurrent writes in one process never collide.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Identifies a position by monitor and source.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -36,11 +43,19 @@ pub enum StoreError {
     /// Writing fails; inspect the path and underlying I/O error.
     #[error("could not write {path}: {source}")]
     Write { path: PathBuf, source: io::Error },
-    /// The file is invalid; inspect or restore it before opening the store.
+    /// The file is invalid JSON, has an unsupported version, or breaks a limit.
+    ///
+    /// The reason names the problem; for invalid JSON it gives serde's line
+    /// and column. Inspect or restore the file before opening the store.
     #[error("corrupt store {path}: {reason}")]
-    Corrupt { path: PathBuf, reason: &'static str },
-    /// The position limit is reached; reduce the number of stored positions.
-    #[error("state exceeds {limit} positions")]
+    Corrupt { path: PathBuf, reason: String },
+    /// Another store holds the directory; close it before opening again.
+    #[error("store {path} is locked by another writer")]
+    Locked { path: PathBuf },
+    /// A count limit is reached: a new key would exceed the position limit, or
+    /// one commit holds more new IDs than the seen ID limit. Reduce the
+    /// positions or split the batch.
+    #[error("state exceeds {limit} items")]
     TooMany { limit: usize },
     /// The byte limit is exceeded; reduce the size of the state to save.
     #[error("state exceeds {limit} bytes")]
@@ -50,9 +65,10 @@ pub enum StoreError {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct State {
     version: u8,
-    #[serde(with = "position_entries")]
+    #[serde(with = "key_entries")]
     positions: BTreeMap<PositionKey, Position>,
-    seen: VecDeque<EventId>,
+    #[serde(with = "key_entries")]
+    seen: BTreeMap<PositionKey, VecDeque<EventId>>,
 }
 
 impl State {
@@ -60,7 +76,7 @@ impl State {
         Self {
             version: STORE_VERSION,
             positions: BTreeMap::new(),
-            seen: VecDeque::new(),
+            seen: BTreeMap::new(),
         }
     }
 
@@ -87,14 +103,19 @@ impl State {
             .map_err(read_error)?;
 
         if bytes.len() > MAX_STORE_BYTES {
-            return Err(corrupt("file exceeds byte limit"));
+            return Err(corrupt("file exceeds byte limit".to_owned()));
         }
 
-        let state: Self =
-            serde_json::from_slice(&bytes).map_err(|_| corrupt("invalid json"))?;
+        let state: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            corrupt(format!(
+                "invalid json at line {} column {}",
+                error.line(),
+                error.column()
+            ))
+        })?;
 
         if let Some(reason) = state.invalid_reason() {
-            return Err(corrupt(reason));
+            return Err(corrupt(reason.to_owned()));
         }
 
         Ok(state)
@@ -107,89 +128,118 @@ impl State {
         if self.positions.len() > MAX_POSITIONS {
             return Some("too many positions");
         }
-        if self.seen.len() > MAX_SEEN_IDS {
-            return Some("too many seen ids");
-        }
 
-        let mut unique = BTreeSet::new();
+        for ids in self.seen.values() {
+            if ids.len() > MAX_SEEN_IDS {
+                return Some("too many seen ids");
+            }
 
-        if self.seen.iter().any(|id| !unique.insert(id)) {
-            return Some("duplicate seen id");
+            let mut unique = BTreeSet::new();
+
+            if ids.iter().any(|id| !unique.insert(id)) {
+                return Some("duplicate seen id");
+            }
         }
 
         None
     }
 
-    fn record(&mut self, events: &[Event]) -> usize {
-        let mut count = 0usize;
+    fn record(
+        &mut self,
+        key: &PositionKey,
+        events: &[Event],
+    ) -> Result<usize, StoreError> {
+        let known = self.seen.get(key);
+        let mut fresh = BTreeSet::new();
 
-        for event in events {
-            let id = event.id();
+        // A repeated ID is a duplicate, not a new delivery, so it keeps its
+        // original place in the queue and is evicted in first-seen order.
+        let new_ids: Vec<&EventId> = events
+            .iter()
+            .map(Event::id)
+            .filter(|id| !known.is_some_and(|ids| ids.contains(id)))
+            .filter(|id| fresh.insert(*id))
+            .collect();
 
-            if self.seen.contains(id) {
-                continue;
-            }
-
-            if self.seen.len() == MAX_SEEN_IDS {
-                self.seen.pop_front();
-            }
-
-            self.seen.push_back(id.clone());
-            count = count.saturating_add(1);
+        if new_ids.len() > MAX_SEEN_IDS {
+            return Err(StoreError::TooMany {
+                limit: MAX_SEEN_IDS,
+            });
         }
 
-        count
+        if new_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let seen = self.seen.entry(key.clone()).or_default();
+
+        for id in &new_ids {
+            if seen.len() == MAX_SEEN_IDS {
+                seen.pop_front();
+            }
+
+            seen.push_back((*id).clone());
+        }
+
+        Ok(new_ids.len())
     }
 }
 
 // JSON object keys cannot hold a PositionKey struct, so use a sequence of pairs.
-mod position_entries {
+mod key_entries {
     use std::collections::BTreeMap;
 
-    use serde::{Deserialize, Deserializer, Serializer, de};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-    use super::{Position, PositionKey};
+    use super::PositionKey;
 
-    pub(super) fn serialize<S: Serializer>(
-        positions: &BTreeMap<PositionKey, Position>,
+    pub(super) fn serialize<S: Serializer, V: Serialize>(
+        entries: &BTreeMap<PositionKey, V>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(positions)
+        serializer.collect_seq(entries)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>, V: Deserialize<'de>>(
         deserializer: D,
-    ) -> Result<BTreeMap<PositionKey, Position>, D::Error> {
-        let entries = Vec::<(PositionKey, Position)>::deserialize(deserializer)?;
-        let mut positions = BTreeMap::new();
+    ) -> Result<BTreeMap<PositionKey, V>, D::Error> {
+        let pairs = Vec::<(PositionKey, V)>::deserialize(deserializer)?;
+        let mut entries = BTreeMap::new();
 
-        for (key, position) in entries {
-            if positions.insert(key, position).is_some() {
+        for (key, value) in pairs {
+            if entries.insert(key, value).is_some() {
                 return Err(de::Error::custom("duplicate position key"));
             }
         }
 
-        Ok(positions)
+        Ok(entries)
     }
 }
 
 /// Stores positions and seen IDs in a versioned JSON object.
 ///
 /// The object has a version, a sequence of position key and position pairs,
-/// and a sequence of seen event IDs. At the ID limit, the oldest ID is dropped.
+/// and a sequence of position key and seen event ID pairs. Each key remembers
+/// its own IDs; at the ID limit, that key's oldest ID is dropped. Only one
+/// store at a time may hold a directory.
 #[derive(Debug)]
 pub struct Store {
+    dir: PathBuf,
     path: PathBuf,
     state: State,
+    // Held for the store's lifetime so a second writer is refused.
+    _lock: File,
 }
 
 impl Store {
     /// Opens a store in the directory, or starts empty if its file is absent.
     ///
-    /// A corrupt file is refused without rewriting it.
+    /// A corrupt file is refused without rewriting it. The directory stays
+    /// locked until the store is dropped.
     ///
     /// # Errors
-    /// Returns [`StoreError::Write`] if directory creation fails,
+    /// Returns [`StoreError::Write`] if directory or lock file creation fails,
+    /// [`StoreError::Locked`] if another store holds the directory,
     /// [`StoreError::Read`] if the file cannot be read, or
     /// [`StoreError::Corrupt`] if the file is invalid or exceeds its limits.
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
@@ -197,10 +247,16 @@ impl Store {
             path: dir.to_owned(),
             source,
         })?;
-        let path = dir.join("positions.json");
+        let lock = lock(dir)?;
+        let path = dir.join(STORE_FILE);
         let state = State::load(&path)?;
 
-        Ok(Self { path, state })
+        Ok(Self {
+            dir: dir.to_owned(),
+            path,
+            state,
+            _lock: lock,
+        })
     }
 
     /// Returns the saved position for the key, if one exists.
@@ -209,23 +265,28 @@ impl Store {
         self.state.positions.get(key)
     }
 
-    /// Returns whether the event ID is in the bounded set of remembered IDs.
+    /// Returns whether the event ID is among the key's remembered IDs.
+    ///
+    /// Each key remembers its own bounded set, so an ID seen under one key is
+    /// not seen under another.
     #[must_use]
-    pub fn is_seen(&self, id: &EventId) -> bool {
-        self.state.seen.contains(id)
+    pub fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool {
+        self.state.seen.get(key).is_some_and(|ids| ids.contains(id))
     }
 
     /// Saves the position and event IDs, returning the count of new IDs.
     ///
-    /// Only IDs not remembered when encountered count as new. The oldest IDs
-    /// are dropped as needed to keep the set bounded. The position is saved
-    /// even when no event is new. The state is written to a temporary file and
-    /// renamed into place.
+    /// Only IDs not remembered for the key when encountered count as new. The
+    /// key's oldest IDs are dropped as needed to keep its set bounded. The
+    /// position is saved even when no event is new. The state is written to a
+    /// temporary file, synced, renamed into place, and the directory synced.
     ///
     /// # Errors
-    /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit,
+    /// Returns [`StoreError::TooMany`] if a new key exceeds the position limit
+    /// or the batch holds more new IDs than the seen ID limit,
     /// [`StoreError::TooLarge`] if the serialized state exceeds the byte limit,
-    /// or [`StoreError::Write`] if serialization, writing or renaming fails.
+    /// or [`StoreError::Write`] if serialization, writing, syncing or renaming
+    /// fails. On error, memory and the saved file are unchanged.
     pub fn commit(
         &mut self,
         key: PositionKey,
@@ -241,7 +302,7 @@ impl Store {
         }
 
         let mut state = self.state.clone();
-        let count = state.record(events);
+        let count = state.record(&key, events)?;
         state.positions.insert(key, position);
         self.persist(&state)?;
 
@@ -263,16 +324,73 @@ impl Store {
             });
         }
 
-        let tmp = self.path.with_extension("tmp");
-        fs::write(&tmp, bytes).map_err(|source| StoreError::Write {
-            path: tmp.clone(),
+        let tmp = self.temp_path();
+        let replaced = write_synced(&tmp, &bytes)
+            .map_err(|source| StoreError::Write {
+                path: tmp.clone(),
+                source,
+            })
+            .and_then(|()| {
+                fs::rename(&tmp, &self.path).map_err(|source| StoreError::Write {
+                    path: self.path.clone(),
+                    source,
+                })
+            });
+
+        if let Err(error) = replaced {
+            // Best effort: the write error matters more than a failed cleanup.
+            let _ = fs::remove_file(&tmp);
+
+            return Err(error);
+        }
+
+        // The rename is durable only once the directory entry is synced.
+        #[cfg(unix)]
+        sync_dir(&self.dir).map_err(|source| StoreError::Write {
+            path: self.dir.clone(),
             source,
         })?;
-        fs::rename(&tmp, &self.path).map_err(|source| StoreError::Write {
-            path: self.path.clone(),
-            source,
-        })
+
+        Ok(())
     }
+
+    fn temp_path(&self) -> PathBuf {
+        let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{STORE_FILE}.{}.{count}.tmp", process::id());
+
+        self.dir.join(name)
+    }
+}
+
+fn lock(dir: &Path) -> Result<File, StoreError> {
+    let path = dir.join(LOCK_FILE);
+    let file = File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|source| StoreError::Write {
+            path: path.clone(),
+            source,
+        })?;
+
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(StoreError::Locked { path }),
+        Err(TryLockError::Error(source)) => Err(StoreError::Write { path, source }),
+    }
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create_new(path)?;
+    file.write_all(bytes)?;
+
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]
@@ -302,6 +420,14 @@ mod tests {
         .unwrap()
     }
 
+    fn events(range: std::ops::Range<usize>) -> Vec<Event> {
+        range.map(|index| event(format!("event-{index}"))).collect()
+    }
+
+    fn cursor() -> Position {
+        Position::new("cursor".into()).unwrap()
+    }
+
     fn assert_corrupt(dir: &Path, path: &Path, reason: &str) {
         let error = Store::open(dir).unwrap_err();
 
@@ -324,14 +450,25 @@ mod tests {
         );
     }
 
+    fn assert_no_temp_files(dir: &Path) {
+        let temp_files: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+
+        assert_eq!(temp_files, Vec::<std::ffi::OsString>::new());
+    }
+
     fn state_at_byte_limit() -> (State, PositionKey, Position) {
         let mut state = State::empty();
         let suffix = "x".repeat(MAX_ID_LEN - 4);
-        state.seen = (0..MAX_SEEN_IDS)
+        let key = key(1);
+        let ids = (0..MAX_SEEN_IDS)
             .map(|index| EventId::new(format!("{index:04}{suffix}")).unwrap())
             .collect();
+        state.seen.insert(key.clone(), ids);
 
-        let key = key(1);
         state
             .positions
             .insert(key.clone(), Position::new("x".into()).unwrap());
@@ -345,16 +482,14 @@ mod tests {
     }
 
     fn state_with_counts(positions: usize, seen: usize) -> State {
-        let position = Position::new("cursor".into()).unwrap();
+        let ids = (0..seen)
+            .map(|index| EventId::new(format!("event-{index}")).unwrap())
+            .collect();
 
         State {
             version: STORE_VERSION,
-            positions: (0..positions)
-                .map(|index| (key(index), position.clone()))
-                .collect(),
-            seen: (0..seen)
-                .map(|index| EventId::new(format!("event-{index}")).unwrap())
-                .collect(),
+            positions: (0..positions).map(|index| (key(index), cursor())).collect(),
+            seen: BTreeMap::from([(key(0), ids)]),
         }
     }
 
@@ -363,7 +498,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store_dir = dir.path().join("store");
         let key = key(1);
-        let position = Position::new("cursor".into()).unwrap();
+        let position = cursor();
         let events = [event("deploy-1".into())];
         let event_id = events.first().unwrap().id();
         let mut store = Store::open(&store_dir).unwrap();
@@ -374,22 +509,128 @@ mod tests {
                 .unwrap(),
             1
         );
+        drop(store);
 
         let mut reopened = Store::open(&store_dir).unwrap();
 
         assert_eq!(
-            (reopened.position(&key), reopened.is_seen(event_id)),
+            (reopened.position(&key), reopened.is_seen(&key, event_id)),
             (Some(&position), true)
         );
-        assert_eq!(reopened.commit(key, position, &events).unwrap(), 0);
+        assert_eq!(reopened.commit(key.clone(), position, &events).unwrap(), 0);
+        drop(reopened);
 
         let reopened = Store::open(&store_dir).unwrap();
         let other = event("deploy-2".into());
 
         assert_eq!(
-            (reopened.is_seen(event_id), reopened.is_seen(other.id())),
+            (
+                reopened.is_seen(&key, event_id),
+                reopened.is_seen(&key, other.id())
+            ),
             (true, false)
         );
+    }
+
+    #[test]
+    fn a_second_open_of_the_same_directory_is_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let error = Store::open(dir.path()).unwrap_err();
+        let StoreError::Locked { path } = error else {
+            panic!("expected locked store, got {error:?}");
+        };
+
+        assert_eq!(path, dir.path().join(LOCK_FILE));
+
+        drop(store);
+
+        assert_eq!(Store::open(dir.path()).unwrap().position(&key(1)), None);
+    }
+
+    #[test]
+    fn the_oldest_id_is_evicted_and_the_newest_stays_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let batch = events(0..MAX_SEEN_IDS);
+        let newest = events(MAX_SEEN_IDS..MAX_SEEN_IDS + 1);
+
+        assert_eq!(
+            store.commit(key(1), cursor(), &batch).unwrap(),
+            MAX_SEEN_IDS
+        );
+        assert_eq!(store.commit(key(1), cursor(), &newest).unwrap(), 1);
+        assert_eq!(
+            (
+                store.is_seen(&key(1), batch[0].id()),
+                store.is_seen(&key(1), batch[1].id()),
+                store.is_seen(&key(1), newest[0].id()),
+            ),
+            (false, true, true)
+        );
+    }
+
+    #[test]
+    fn a_repeated_id_is_not_refreshed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let batch = events(0..MAX_SEEN_IDS);
+        let repeat = [batch[0].clone()];
+        let newest = events(MAX_SEEN_IDS..MAX_SEEN_IDS + 1);
+
+        assert_eq!(
+            store.commit(key(1), cursor(), &batch).unwrap(),
+            MAX_SEEN_IDS
+        );
+        assert_eq!(store.commit(key(1), cursor(), &repeat).unwrap(), 0);
+        assert_eq!(store.commit(key(1), cursor(), &newest).unwrap(), 1);
+        assert_eq!(
+            (
+                store.is_seen(&key(1), batch[0].id()),
+                store.is_seen(&key(1), batch[1].id()),
+            ),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn the_same_id_from_two_sources_is_seen_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let shared = [event("shared".into())];
+        let id = shared[0].id();
+
+        assert_eq!(store.commit(key(1), cursor(), &shared).unwrap(), 1);
+        assert_eq!(
+            (store.is_seen(&key(1), id), store.is_seen(&key(2), id)),
+            (true, false)
+        );
+        assert_eq!(store.commit(key(2), cursor(), &shared).unwrap(), 1);
+        assert_eq!(
+            (store.is_seen(&key(1), id), store.is_seen(&key(2), id)),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn an_oversized_batch_is_refused_without_changing_state_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.commit(key(1), cursor(), &[]).unwrap(), 0);
+        let before = store.state.clone();
+        let bytes = fs::read(&store.path).unwrap();
+        let batch = events(0..MAX_SEEN_IDS + 1);
+
+        let error = store.commit(key(1), cursor(), &batch).unwrap_err();
+        let StoreError::TooMany { limit } = error else {
+            panic!("expected too many seen ids, got {error:?}");
+        };
+
+        assert_eq!(limit, MAX_SEEN_IDS);
+        assert_eq!(store.state, before);
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_no_temp_files(dir.path());
     }
 
     #[test]
@@ -398,7 +639,7 @@ mod tests {
         let path = dir.path().join("positions.json");
         fs::write(&path, b"{").unwrap();
 
-        assert_corrupt(dir.path(), &path, "invalid json");
+        assert_corrupt(dir.path(), &path, "invalid json at line 1 column 1");
         assert_eq!(fs::read(&path).unwrap().as_slice(), b"{");
     }
 
@@ -422,10 +663,10 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let store = Store::open(dir.path()).unwrap();
-        let id = state.seen.front().unwrap();
+        let id = state.seen[&key].front().unwrap();
 
         assert_eq!(
-            (store.position(&key), store.is_seen(id)),
+            (store.position(&key), store.is_seen(&key, id)),
             (Some(&position), true)
         );
     }
@@ -438,9 +679,8 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
 
         let store = Store::open(dir.path()).unwrap();
-        let position = Position::new("cursor".into()).unwrap();
 
-        assert_eq!(store.position(&key(0)), Some(&position));
+        assert_eq!(store.position(&key(0)), Some(&cursor()));
     }
 
     #[test]
@@ -452,7 +692,7 @@ mod tests {
         };
         let id = EventId::new("duplicate".into()).unwrap();
         let duplicate_seen_ids = State {
-            seen: VecDeque::from([id.clone(), id]),
+            seen: BTreeMap::from([(key(0), VecDeque::from([id.clone(), id]))]),
             ..State::empty()
         };
 
@@ -498,13 +738,12 @@ mod tests {
     fn position_overflow_does_not_change_state_or_write_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
-        let position = Position::new("cursor".into()).unwrap();
         store.state.positions = (0..MAX_POSITIONS)
-            .map(|index| (key(index), position.clone()))
+            .map(|index| (key(index), cursor()))
             .collect();
         let before = store.state.clone();
 
-        let error = store.commit(key(MAX_POSITIONS), position, &[]).unwrap_err();
+        let error = store.commit(key(MAX_POSITIONS), cursor(), &[]).unwrap_err();
         let StoreError::TooMany { limit } = error else {
             panic!("expected too many positions, got {error:?}");
         };
@@ -512,21 +751,22 @@ mod tests {
         assert_eq!(limit, MAX_POSITIONS);
         assert_eq!(store.state, before);
         assert_missing(&store.path);
-        assert_missing(&store.path.with_extension("tmp"));
+        assert_no_temp_files(dir.path());
     }
 
     #[test]
-    fn commit_leaves_the_final_state_and_no_temporary_file() {
+    fn commit_saves_a_file_that_parses_back_to_the_state() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
-        let position = Position::new("cursor".into()).unwrap();
         let path = dir.path().join("positions.json");
+        let batch = events(0..2);
 
-        assert_eq!(store.commit(key(1), position, &[]).unwrap(), 0);
-        assert_missing(&path.with_extension("tmp"));
+        assert_eq!(store.commit(key(1), cursor(), &batch).unwrap(), 2);
+        assert_no_temp_files(dir.path());
 
         let bytes = fs::read(&path).unwrap();
 
+        assert_ne!(bytes.len(), 0);
         assert_eq!(
             serde_json::from_slice::<State>(&bytes).unwrap(),
             store.state
@@ -544,6 +784,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(fs::read(&store.path).unwrap().len(), MAX_STORE_BYTES);
+        drop(store);
 
         let reopened = Store::open(dir.path()).unwrap();
 
@@ -554,8 +795,7 @@ mod tests {
     fn byte_overflow_leaves_the_previous_state_and_file_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
-        let position = Position::new("cursor".into()).unwrap();
-        assert_eq!(store.commit(key(1), position.clone(), &[]).unwrap(), 0);
+        assert_eq!(store.commit(key(1), cursor(), &[]).unwrap(), 0);
         let before = store.state.clone();
         let bytes = fs::read(&store.path).unwrap();
 
@@ -565,7 +805,7 @@ mod tests {
             .map(|index| event(format!("{index:04}{suffix}")))
             .collect();
 
-        let error = store.commit(key(2), position, &events).unwrap_err();
+        let error = store.commit(key(2), cursor(), &events).unwrap_err();
         let StoreError::TooLarge { limit } = error else {
             panic!("expected state too large, got {error:?}");
         };
@@ -573,6 +813,6 @@ mod tests {
         assert_eq!(limit, MAX_STORE_BYTES);
         assert_eq!(store.state, before);
         assert_eq!(fs::read(&store.path).unwrap(), bytes);
-        assert_missing(&store.path.with_extension("tmp"));
+        assert_no_temp_files(dir.path());
     }
 }
