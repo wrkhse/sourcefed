@@ -111,8 +111,10 @@ jobs:
             ':(exclude)CHANGELOG.md'
           )
           file_list="$RUNNER_TEMP/tidy-files"
-          git ls-files -z -- "${pathspecs[@]}" > "$file_list" \
-            || { echo "::error::could not list tracked files"; exit 2; }
+          if ! git ls-files -z -- "${pathspecs[@]}" > "$file_list"; then
+            echo "::error::could not list tracked files"
+            exit 2
+          fi
           mapfile -d '' -t files < "$file_list"
           if (( ${#files[@]} == 0 )); then
             echo "::error::no tracked files matched the tidy check pathspecs"

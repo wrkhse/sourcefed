@@ -5,7 +5,9 @@ import { goldenSource } from "./golden-source.mjs";
 test("goldenSource formats recorded values as a TypeScript fixture", () => {
   const header = "/** Example recording. */";
   const fixture = {
-    cases: [{ "content-type": "application/json", cursor: null, terminal: false }],
+    cases: [
+      { "content-type": "application/json", cursor: null, terminal: false },
+    ],
     replies: [],
     headers: {},
     now: undefined,
