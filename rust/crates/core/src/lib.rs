@@ -1,21 +1,33 @@
 //! `sourcefed-core` holds the model and [`Source`] contract for sourcefed.
 //! Each poll resumes from a [`Position`], returns a bounded batch of [`Event`]s
-//! and names its next step as a [`Next`]. A bounded store saves each source's
-//! position and delivered event IDs so a restart neither misses nor repeats an event.
+//! and names its next step as a [`Next`]. For each [`PositionKey`], the store
+//! saves the position, remembered event IDs, and bounded pending event queue
+//! together. Consumers acknowledge delivered events by key and ID without
+//! changing the position or forgetting those IDs. A full pending queue
+//! refuses fresh events until pending events are acknowledged.
+//!
+//! The store refuses version 1 files. This project is pre-production and
+//! provides no migration for those files.
 
 /// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;
 /// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
+/// Bounded polling and retry with durable pending events.
+pub mod poll;
 /// The saved place a source resumes polling from.
 pub mod position;
 /// The [`Source`] contract and the request and outcome of one poll.
 pub mod source;
-/// Saved positions and bounded event ID tracking.
+/// Saved positions, remembered event IDs, and pending event queues.
 pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
+pub use poll::{
+    Backoff, Clock, ClockError, DEFAULT_BACKOFF_CAP_SECS, EngineError, EngineState,
+    MAX_PENDING_EVENTS, MAX_WAIT_SECS, PollEngine, StopHandle, SystemClock,
+};
 pub use position::Position;
 pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};
 pub use store::{PositionKey, Store, StoreError};
