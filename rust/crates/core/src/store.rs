@@ -276,21 +276,13 @@ impl Store {
     /// [`StoreError::Read`] if the file cannot be read, or
     /// [`StoreError::Corrupt`] if the file is invalid or exceeds its limits.
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
-        Self::open_with_cleanup(dir, cleanup_temp_files)
-    }
-
-    // Opens the store with the given temp file cleanup, so tests can control
-    // the directory entries it sees. The cleanup runs while the lock is held.
-    fn open_with_cleanup(
-        dir: &Path,
-        cleanup: impl FnOnce(&Path) -> usize,
-    ) -> Result<Self, StoreError> {
         fs::create_dir_all(dir).map_err(|source| StoreError::Write {
             path: dir.to_owned(),
             source,
         })?;
         let lock = lock(dir)?;
-        cleanup(dir);
+        cleanup_temp_files(dir);
+
         let path = dir.join(STORE_FILE);
         let state = State::load(&path)?;
 
@@ -844,30 +836,25 @@ mod tests {
     }
 
     #[test]
-    fn opening_keeps_generated_files_past_the_scan_limit() {
+    fn opening_removes_exactly_the_temp_file_limit_when_more_exist() {
         let dir = tempfile::tempdir().unwrap();
-        let generated: Vec<_> = (0..10)
+        let generated: Vec<_> = (0..MAX_TEMP_REMOVE + 100)
             .map(|index| {
                 let path = dir.path().join(format!("positions.json.7.{index}.tmp"));
                 fs::write(&path, b"stale").unwrap();
                 path
             })
             .collect();
-        let cleanup = |dir: &Path| {
-            let injected =
-                (0..MAX_TEMP_SCAN).map(|_| Err(io::Error::other("injected")));
-            let entries: Vec<io::Result<fs::DirEntry>> =
-                injected.chain(fs::read_dir(dir).unwrap()).collect();
 
-            cleanup_entries(entries.into_iter())
-        };
-
-        let opened = Store::open_with_cleanup(dir.path(), cleanup)
+        let opened = Store::open(dir.path())
             .map(drop)
             .map_err(|error| error.to_string());
 
         assert_eq!(opened, Ok(()));
-        assert_eq!(existing(&generated), 10);
+        assert_eq!(
+            generated.len().checked_sub(existing(&generated)),
+            Some(MAX_TEMP_REMOVE)
+        );
     }
 
     #[test]
