@@ -6,9 +6,9 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
-use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use sourcefed_core::{
@@ -24,8 +24,6 @@ const MAX_INPUTS_PER_POLL: usize = 64;
 // At most this many inputs wait between the stdin reader and the polls; once
 // full, the reader blocks rather than growing memory.
 const MAX_QUEUED_INPUTS: usize = 128;
-// How long the last inputs may take to arrive once a stop is requested.
-const DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
 #[command(name = "sourcefed-core", version)]
@@ -88,10 +86,15 @@ fn follow(args: Follow) -> Result<(), Box<dyn Error>> {
     let mut engine = engine(args.job, args.every, &args.state_dir)?;
     let (sender, receiver) = input_channel();
     let stop = engine.handle();
-    thread::spawn(move || read_input(io::stdin().lock(), &stop, &sender));
+    let reader = Arc::new(ReaderState::default());
+    let state = Arc::clone(&reader);
+    thread::spawn(move || {
+        read_input(io::stdin().lock(), &stop, &state, &sender);
+    });
 
     let mut inputs = Inputs {
         receiver,
+        reader,
         stopped: false,
     };
     let mut printed = HashSet::new();
@@ -154,8 +157,47 @@ fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
     mpsc::sync_channel(MAX_QUEUED_INPUTS)
 }
 
+// What the stdin reader is doing, shared with the polls. The reader sends
+// only after moving from reading to sending, so once the run halts it, at
+// most the one input it is already sending still arrives.
+#[derive(Debug, Default)]
+struct ReaderState(AtomicU8);
+
+impl ReaderState {
+    const READING: u8 = 0;
+    const SENDING: u8 = 1;
+    const HALTED: u8 = 2;
+
+    // Moves from reading to sending; false once halted.
+    fn begin_send(&self) -> bool {
+        self.advance(Self::READING, Self::SENDING)
+    }
+
+    // Moves from sending back to reading; false once halted.
+    fn end_send(&self) -> bool {
+        self.advance(Self::SENDING, Self::READING)
+    }
+
+    fn advance(&self, from: u8, to: u8) -> bool {
+        self.0
+            .compare_exchange(from, to, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    fn is_halted(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::HALTED
+    }
+
+    // Halts the reader and returns whether it was sending, in which case one
+    // more input arrives before the reader drops its sender.
+    fn halt(&self) -> bool {
+        self.0.swap(Self::HALTED, Ordering::SeqCst) == Self::SENDING
+    }
+}
+
 struct Inputs {
     receiver: Receiver<Input>,
+    reader: Arc<ReaderState>,
     stopped: bool,
 }
 
@@ -181,22 +223,33 @@ impl Inputs {
         Ok(())
     }
 
+    // Applies every input the reader queued before the run ended, by a stop
+    // or the poll limit, so no ack is replayed after a restart. The queue
+    // holds at most `MAX_QUEUED_INPUTS`, plus the one a halted reader was
+    // already sending.
     fn finish(&mut self, engine: &mut PollEngine) -> Result<(), Box<dyn Error>> {
-        // Every queued ack is applied, whether a stop or the poll limit ended
-        // the run, so none is left unread and replayed after a restart. The
-        // queue holds at most `MAX_QUEUED_INPUTS`, plus one from a blocked
-        // reader.
-        self.take(engine, MAX_QUEUED_INPUTS.saturating_add(1))?;
+        let limit = MAX_QUEUED_INPUTS.saturating_add(1);
 
-        // A stop request is sent before it is flagged, so the acks ahead of
-        // it are already queued; wait for them to arrive.
-        while engine.handle().is_stopped() && !self.stopped {
-            match self.receiver.recv_timeout(DRAIN_WAIT) {
-                Ok(input) => self.handle(engine, input)?,
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                    break;
-                }
-            }
+        if self.reader.halt() {
+            self.drain(engine, limit)
+        } else {
+            self.take(engine, limit)
+        }
+    }
+
+    // Applies up to `limit` inputs, waiting for each, until the reader drops
+    // its sender.
+    fn drain(
+        &mut self,
+        engine: &mut PollEngine,
+        limit: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        for _ in 0..limit {
+            let Ok(input) = self.receiver.recv() else {
+                break;
+            };
+
+            self.handle(engine, input)?;
         }
 
         Ok(())
@@ -208,9 +261,12 @@ impl Inputs {
         input: Input,
     ) -> Result<(), Box<dyn Error>> {
         match input {
-            // An unknown ID removes nothing, so it is left alone.
             Input::Ack(id) => {
-                engine.ack(std::slice::from_ref(&id))?;
+                let removed = engine.ack(std::slice::from_ref(&id))?;
+                eprintln!(
+                    "sourcefed-core: ack {}: {removed} event(s) removed",
+                    id.as_str()
+                );
             }
             Input::Stop => self.stopped = true,
         }
@@ -222,11 +278,12 @@ impl Inputs {
 fn read_input(
     mut reader: impl BufRead,
     stop: &StopHandle,
+    state: &ReaderState,
     sender: &SyncSender<Input>,
 ) {
     let mut line = Vec::new();
 
-    loop {
+    while !state.is_halted() {
         match read_line(&mut reader, &mut line) {
             Ok(Line::End) => return,
             Ok(Line::Read) => {}
@@ -255,12 +312,16 @@ fn read_input(
         };
         let stopping = input == Input::Stop;
 
-        if sender.send(input).is_err() {
+        if !state.begin_send() || sender.send(input).is_err() {
             return;
         }
 
         if stopping {
             stop.stop();
+        }
+
+        if !state.end_send() {
+            return;
         }
     }
 }
@@ -310,7 +371,6 @@ fn parse_input(line: &str) -> Result<Input, String> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::TrySendError;
-    use std::time::Instant;
 
     use sourcefed_core::{Event, Position, PositionKey, SourceName};
 
@@ -329,21 +389,31 @@ mod tests {
             sender,
             Inputs {
                 receiver,
+                reader: Arc::new(ReaderState::default()),
                 stopped: false,
             },
         )
     }
 
-    // Saves one pending event under the key `follow` uses for job deploy.
     fn pending_engine(dir: &Path) -> PollEngine {
-        let event: Event = serde_json::from_value(serde_json::json!({
-            "id": ID,
-            "kind": "timer.fired",
-            "subject": { "source": "timer", "key": "deploy" },
-            "summary": "timer deploy fired at 2026-01-01T00:00:00Z",
-            "at": "2026-01-01T00:00:00Z",
-        }))
-        .unwrap();
+        pending_engine_with(dir, &[ID])
+    }
+
+    // Saves pending events under the key `follow` uses for job deploy.
+    fn pending_engine_with(dir: &Path, ids: &[&str]) -> PollEngine {
+        let events: Vec<Event> = ids
+            .iter()
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "kind": "timer.fired",
+                    "subject": { "source": "timer", "key": "deploy" },
+                    "summary": "timer deploy fired at 2026-01-01T00:00:00Z",
+                    "at": "2026-01-01T00:00:00Z",
+                }))
+                .unwrap()
+            })
+            .collect();
         let key = PositionKey {
             monitor: MonitorId::new("deploy".into()).unwrap(),
             source: SourceName::new("timer".into()).unwrap(),
@@ -351,7 +421,7 @@ mod tests {
         let position = Position::new("2026-01-01T00:00:01Z".into()).unwrap();
         Store::open(dir)
             .unwrap()
-            .commit(key, position, &[event])
+            .commit(key, position, &events)
             .unwrap();
 
         engine("deploy".into(), 1, dir).unwrap()
@@ -414,10 +484,8 @@ mod tests {
 
         sender.send(ack(ID)).unwrap();
         sender.send(Input::Stop).unwrap();
-        let started = Instant::now();
         inputs.finish(&mut engine).unwrap();
 
-        assert!(started.elapsed() < DRAIN_WAIT);
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
         assert!(inputs.stopped);
     }
@@ -428,32 +496,100 @@ mod tests {
         let mut engine = pending_engine(dir.path());
         let (_sender, mut inputs) = inputs();
 
-        let started = Instant::now();
         inputs.finish(&mut engine).unwrap();
 
-        assert!(started.elapsed() < DRAIN_WAIT);
         assert_eq!(pending_ids(&engine), [ID]);
         assert!(!inputs.stopped);
     }
 
     #[test]
-    fn finish_applies_every_queued_input_when_the_poll_limit_ends_the_run() {
+    fn finish_applies_a_full_queue_the_reader_left_when_the_run_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let count = MAX_QUEUED_INPUTS.saturating_add(MAX_INPUTS_PER_POLL);
+        let ids: Vec<String> = (0..count)
+            .map(|index| format!("timer:deploy:{index}"))
+            .collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut engine = pending_engine_with(dir.path(), &refs);
+        let (sender, mut inputs) = inputs();
+        let lines: String = ids.iter().flat_map(|id| ["ack ", id, "\n"]).collect();
+        let state = Arc::clone(&inputs.reader);
+
+        let reader = thread::spawn(move || {
+            read_input(lines.as_bytes(), &StopHandle::default(), &state, &sender);
+        });
+
+        // Applying all but a queue's worth lets the reader finish and leaves
+        // the queue full for `finish`.
+        for _ in 0..MAX_INPUTS_PER_POLL {
+            let input = inputs.receiver.recv().unwrap();
+            inputs.handle(&mut engine, input).unwrap();
+        }
+
+        reader.join().unwrap();
+        inputs.finish(&mut engine).unwrap();
+
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn finish_waits_for_the_input_a_halted_reader_was_sending() {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = pending_engine(dir.path());
         let (sender, mut inputs) = inputs();
 
-        for index in 0..MAX_INPUTS_PER_POLL {
+        for index in 0..MAX_QUEUED_INPUTS {
             let other = format!("timer:deploy:other-{index}");
             sender.send(ack(&other)).unwrap();
         }
 
-        sender.send(ack(ID)).unwrap();
-        let started = Instant::now();
+        // The queue is full, so this send blocks until `finish` makes room.
+        assert!(inputs.reader.begin_send());
+        let reader = thread::spawn(move || sender.send(ack(ID)));
+
         inputs.finish(&mut engine).unwrap();
 
-        assert!(started.elapsed() < DRAIN_WAIT);
+        assert_eq!(reader.join().unwrap(), Ok(()));
+        assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
-        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn reader_state_sends_only_until_halted() {
+        let state = ReaderState::default();
+
+        assert!(!state.end_send());
+        assert!(state.begin_send());
+        assert!(!state.begin_send());
+        assert!(state.end_send());
+        assert!(!state.is_halted());
+        assert!(!state.halt());
+        assert!(state.is_halted());
+        assert!(!state.begin_send());
+
+        let sending = ReaderState::default();
+
+        assert!(sending.begin_send());
+        assert!(sending.halt());
+        assert!(!sending.end_send());
+        assert!(sending.is_halted());
+    }
+
+    #[test]
+    fn read_input_reads_and_sends_nothing_once_halted() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let mut lines = &b"ack first\nstop\n"[..];
+        state.halt();
+
+        read_input(&mut lines, &stop, &state, &sender);
+
+        assert_eq!(lines, b"ack first\nstop\n");
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
     }
 
     #[test]
@@ -473,14 +609,15 @@ mod tests {
     #[test]
     fn read_input_flags_a_stop_only_for_a_stop_line() {
         let stop = StopHandle::default();
+        let state = ReaderState::default();
         let (sender, receiver) = input_channel();
 
-        read_input(&b"ack first\n"[..], &stop, &sender);
+        read_input(&b"ack first\n"[..], &stop, &state, &sender);
 
         assert!(!stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
 
-        read_input(&b"stop\n"[..], &stop, &sender);
+        read_input(&b"stop\n"[..], &stop, &state, &sender);
 
         assert!(stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [Input::Stop]);
@@ -489,13 +626,14 @@ mod tests {
     #[test]
     fn read_input_discards_an_over_long_line_through_its_newline() {
         let stop = StopHandle::default();
+        let state = ReaderState::default();
         let (sender, receiver) = input_channel();
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         // Cut at the limit, the tail of this ack line would read as a stop.
         let pad = "x".repeat(limit.saturating_sub("ack ".len()));
         let lines = format!("ack {pad}stop\nack first\n");
 
-        read_input(lines.as_bytes(), &stop, &sender);
+        read_input(lines.as_bytes(), &stop, &state, &sender);
 
         assert!(!stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
@@ -504,16 +642,32 @@ mod tests {
     #[test]
     fn read_input_accepts_a_line_of_exactly_the_limit() {
         let stop = StopHandle::default();
+        let state = ReaderState::default();
         let (sender, receiver) = input_channel();
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         let over = limit.saturating_add(1);
 
-        read_input(format!("{:<over$}\n", "stop").as_bytes(), &stop, &sender);
+        read_input(
+            format!("{:<over$}\n", "stop").as_bytes(),
+            &stop,
+            &state,
+            &sender,
+        );
 
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
 
-        read_input(format!("{:<limit$}\n", "stop").as_bytes(), &stop, &sender);
-        read_input(format!("{:<limit$}", "stop").as_bytes(), &stop, &sender);
+        read_input(
+            format!("{:<limit$}\n", "stop").as_bytes(),
+            &stop,
+            &state,
+            &sender,
+        );
+        read_input(
+            format!("{:<limit$}", "stop").as_bytes(),
+            &stop,
+            &state,
+            &sender,
+        );
 
         assert_eq!(
             receiver.try_iter().collect::<Vec<_>>(),
@@ -547,10 +701,11 @@ mod tests {
     #[test]
     fn read_input_sends_inputs_in_order_and_flags_a_stop() {
         let stop = StopHandle::default();
+        let state = ReaderState::default();
         let (sender, receiver) = input_channel();
         let lines = "ack first\nbogus\nstop\nack later\n";
 
-        read_input(lines.as_bytes(), &stop, &sender);
+        read_input(lines.as_bytes(), &stop, &state, &sender);
         drop(sender);
 
         let ack = |id: &str| Input::Ack(EventId::new(id.into()).unwrap());
