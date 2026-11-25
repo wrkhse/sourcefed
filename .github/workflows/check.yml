@@ -101,11 +101,15 @@ jobs:
         shell: bash --noprofile --norc {0}
         run: |
           set -uo pipefail
-          # The build rewrites these two bundles, so formatting them would leave
-          # the tree dirty after check.
-          mapfile -d '' -t files < <(git ls-files -z -- . \
-            ':(exclude)adapters/opencode/tui-compiled.mjs' \
-            ':(exclude)adapters/opencode/tui-compiled.d.mts')
+          pathspecs=(
+            '*.ts' '*.tsx' '*.mjs' '*.mts' '*.js' '*.json'
+            '*.md' '*.yml' '*.yaml' '*.toml'
+            # The build rewrites these two bundles, so formatting them would leave
+            # the tree dirty after check.
+            ':(exclude)adapters/opencode/tui-compiled.mjs'
+            ':(exclude)adapters/opencode/tui-compiled.d.mts'
+          )
+          mapfile -d '' -t files < <(git ls-files -z -- "${pathspecs[@]}")
           tidy check --skip-unknown "${files[@]}"
           status=$?
           case "$status" in
