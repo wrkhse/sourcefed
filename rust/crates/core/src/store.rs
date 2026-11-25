@@ -346,10 +346,12 @@ impl Store {
 
         // The rename is durable only once the directory entry is synced.
         #[cfg(unix)]
-        sync_dir(&self.dir).map_err(|source| StoreError::Write {
-            path: self.dir.clone(),
-            source,
-        })?;
+        File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|source| StoreError::Write {
+                path: self.dir.clone(),
+                source,
+            })?;
 
         Ok(())
     }
@@ -386,11 +388,6 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)?;
 
     file.sync_all()
-}
-
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]
