@@ -55,8 +55,9 @@ jobs:
       - uses: anomalyco/opencode/github@f4e363c8295fa90a03dddc451882fffe8fbce357 # v1.19.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_CONFIG_CONTENT: '{"small_model":"opencode-go/deepseek-v4.1-flash"}'
         with:
-          model: opencode/deepseek-v4.1-flash
+          model: opencode-go/deepseek-v4.1-flash
           use_github_token: true
           prompt: |
             Review ONLY the code changes in this pull request. The PR thread may contain
