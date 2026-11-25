@@ -71,3 +71,42 @@ jobs:
       - run: npm run build:tui
       - run: npm run build:public
       - run: npm run integration -- provider-timer.test.mjs
+
+  # Formatting is checked by tidy, pinned by version and archive checksum.
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The pinned tidy v2.0.0
+        env:
+          TIDY_RELEASE: https://github.com/lukeed/tidy/releases/download/v2.0.0
+          TIDY_ASSET: tidy-x86_64-unknown-linux-musl.tar.gz
+          TIDY_SHA: 4b8166b1cdde610fd783f2d59511b0fb35d15ef96069ef20642b948ab90907ea
+        run: |
+          archive="$RUNNER_TEMP/tidy.tar.gz"
+          curl -fsSLo "$archive" "$TIDY_RELEASE/$TIDY_ASSET"
+          echo "$TIDY_SHA  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/tidy"
+          tar xzf "$archive" -C "$RUNNER_TEMP/tidy"
+          chmod +x "$RUNNER_TEMP/tidy/tidy"
+          echo "$RUNNER_TEMP/tidy" >> "$GITHUB_PATH"
+      # The default bash shell runs with -e, which would end the step at a
+      # failing tidy before the status is reported. This shell has no -e; the
+      # step still exits with tidy's own status.
+      - name: tidy check
+        shell: bash --noprofile --norc {0}
+        run: |
+          set -uo pipefail
+          tidy check .
+          status=$?
+          case "$status" in
+            0) ;;
+            1) echo "::error::tidy check found unformatted files." ;;
+            2) echo "::error::tidy check could not parse a file or its config." ;;
+            *) echo "::error::tidy check exited with status $status." ;;
+          esac
+          exit "$status"
