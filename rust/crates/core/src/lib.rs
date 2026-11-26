@@ -11,6 +11,7 @@
 //! through the poll engine, prints each normalized event as one NDJSON line,
 //! and reads ack and stop lines on stdin. Each poll reads a bounded number of
 //! input lines, and a line over 512 bytes is discarded with a diagnostic.
+//! If it runs 65536 bytes further, the reader stops reading stdin.
 //!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.
