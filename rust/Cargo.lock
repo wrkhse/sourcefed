@@ -507,6 +507,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sourcefed-sim"
+version = "0.1.0-rc.1"
+dependencies = [
+ "jiff",
+ "sourcefed-core",
+]
+
+[[package]]
 name = "syn"
 version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,14 @@
+[package]
+name = "sourcefed-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jiff.workspace = true
+sourcefed-core = { path = "../core", version = "0.1.0-rc.1" }
+
+[lints]
+workspace = true
