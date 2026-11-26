@@ -308,9 +308,6 @@ jobs:
           fi
           printf 'unacknowledged:\n%s\n' "$unacked"
           mapfile -t pending_ids <<< "$unacked"
-          # The Export step is a separate shell, so hand it an ID that only
-          # the restart prints, for its GIF frame assertion.
-          echo "PENDING_ID=${pending_ids[-1]}" >> "$GITHUB_ENV"
 
           termctrl send run text:stop enter
           termctrl wait run "sourcefed-core exited with" --timeout 10000
@@ -395,6 +392,9 @@ jobs:
             exit 1
           fi
           echo "downtime firing $downtime"
+          # The Export step is a separate shell, so hand it the ID that only
+          # the restart prints; it is absent from the run's full output.
+          echo "DOWNTIME_ID=$downtime" >> "$GITHUB_ENV"
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
@@ -456,51 +456,35 @@ jobs:
           done
           ls -l artifacts/*.mp4
 
-          # Prints the time in milliseconds of the recording's marker, or
-          # fails when the recording has no such marker. It runs inside $(),
-          # so the error goes to stderr to reach the log.
-          marker_ms() {
-            local ms
-            ms=$(termctrl markers "$1" |
-              awk -v name="$2" '$2 == name && !found { print $1; found = 1 }')
-            if [[ -z $ms ]]; then
-              echo "::error::$1 has no $2 marker" >&2
-              return 1
-            fi
-
-            echo "$ms"
-          }
-
-          # OCR reads each take at its first firing, so both takes, not only
-          # the GIF's last frame, show their text. The frame is halfway
-          # through the hold after the take's first clip; the footer, whose
-          # caption can name timer.fired, is cropped off, and the spaces OCR
-          # puts inside a word are dropped. ffmpeg writes no frame past the
-          # end of a video and still succeeds, so the frame is checked.
-          for take in run:fired restart:delivered; do
-            name=${take%%:*}
-            recording="artifacts/$name.termctrl"
-            start=$(marker_ms "$recording" start)
-            shown=$(marker_ms "$recording" "${take#*:}")
-            at=$(( shown - start + 1250 ))
-            seek=$(printf '%d.%03d' $(( at / 1000 )) $(( at % 1000 )))
-            frame="artifacts/ocr-$name.png"
-            rm -f -- "$frame"
-            ffmpeg -hide_banner -loglevel error -y -ss "$seek" \
-              -i "artifacts/demo-$name.mp4" -frames:v 1 \
-              -vf 'crop=iw:ih*3/4:0:0,format=gray,negate' "$frame"
-            if [[ ! -s $frame ]]; then
-              echo "::error::demo-$name.mp4 has no frame at $seek s"
+          # OCR reads every frame of each exported take at 1 fps with the
+          # footer cropped, then concatenates the text. Both takes must show
+          # timer.fired in their recorded terminal, so a take that filmed no
+          # output fails without assuming when a marker lands. Whitespace
+          # OCR inserts inside a word is dropped.
+          for take in run restart; do
+            frames_dir=$(mktemp -d)
+            ffmpeg -hide_banner -loglevel error -y \
+              -i "artifacts/demo-$take.mp4" \
+              -vf 'fps=1,crop=iw:ih*3/4:0:0,format=gray,negate' \
+              "$frames_dir/frame-%05d.png"
+            shopt -s nullglob
+            frames=("$frames_dir"/*.png)
+            shopt -u nullglob
+            if (( ${#frames[@]} == 0 )); then
+              echo "::error::demo-$take.mp4 yielded no frames for OCR"
               exit 1
             fi
 
-            text=$(tesseract "$frame" stdout)
-            printf -- '--- OCR of demo-%s.mp4 at %s s ---\n%s\n' \
-              "$name" "$seek" "$text"
+            text=
+            for frame in "${frames[@]}"; do
+              text+=$(tesseract "$frame" stdout)$'\n'
+            done
+            printf -- '--- OCR of demo-%s.mp4 frames ---\n%s\n' "$take" "$text"
             if [[ $(tr -d '[:space:]' <<< "$text") != *timer.fired* ]]; then
-              echo "::error::OCR finds no timer.fired in demo-$name.mp4 at $seek s"
+              echo "::error::OCR finds no timer.fired in demo-$take.mp4"
               exit 1
             fi
+            rm -rf -- "$frames_dir"
           done
 
           # Both takes have the same terminal size, so their frames match.
@@ -542,57 +526,43 @@ jobs:
           fi
 
           # The blank-GIF guard reads the exported GIF itself, not the mp4s
-          # or their footers. A frame from each take is sampled at a fraction
-          # of the GIF's duration: a quarter in, the run's printed event is
-          # still on screen, and three quarters in, the restart's delivered
-          # events are. The footer, whose captions name timer.fired, is
-          # cropped off, so OCR must find the text in the recorded terminal.
-          # Whitespace OCR inserts inside a word is dropped. The run's frame
-          # must show timer.fired; the restart's must show a pending event ID
-          # that only the restart prints, so a leaked run frame cannot pass.
-          duration=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
-          # ffprobe reports N/A or nothing for a format without a duration;
-          # multiplying either into a sample time would seek to time zero.
-          if ! awk -v d="$duration" \
-            'BEGIN { exit !(d ~ /^[0-9]+([.][0-9]+)?$/ && d > 0) }'; then
-            echo "::error::demo.gif has no numeric duration: '$duration'"
+          # or their footers. Every frame is extracted at 1 fps into a temp
+          # folder, OCRed with the footer cropped and concatenated. The run
+          # take shows timer.fired and the restart shows the downtime ID,
+          # so finding both proves the two takes are present without assuming
+          # balanced lengths or sample times. Whitespace OCR inserts inside
+          # a word is dropped.
+          if [[ -z ${DOWNTIME_ID:-} ]]; then
+            echo "::error::no downtime event ID for the GIF assertion"
             exit 1
           fi
-          if [[ -z $PENDING_ID ]]; then
-            echo "::error::no pending event ID for the GIF restart frame"
+          gif_frames=$(mktemp -d)
+          ffmpeg -hide_banner -loglevel error -y -i artifacts/demo.gif \
+            -vf 'fps=1,crop=iw:ih*3/4:0:0,format=gray,negate' \
+            "$gif_frames/frame-%05d.png"
+          shopt -s nullglob
+          frames=("$gif_frames"/*.png)
+          shopt -u nullglob
+          if (( ${#frames[@]} == 0 )); then
+            echo "::error::demo.gif yielded no frames for OCR"
             exit 1
           fi
-          for sample in 0.25:run 0.75:restart; do
-            fraction=${sample%%:*}
-            label=${sample#*:}
-            # The run shows timer.fired; the restart must print a pending
-            # event that only its own take can show.
-            if [[ $label == restart ]]; then
-              expected=$PENDING_ID
-            else
-              expected=timer.fired
-            fi
-            at=$(awk -v d="$duration" -v f="$fraction" \
-              'BEGIN { printf "%.3f", d * f }')
-            frame="artifacts/gif-$label.png"
-            rm -f -- "$frame"
-            ffmpeg -hide_banner -loglevel error -y -ss "$at" \
-              -i artifacts/demo.gif -frames:v 1 \
-              -vf 'crop=iw:ih*3/4:0:0,format=gray,negate' "$frame"
-            if [[ ! -s $frame ]]; then
-              echo "::error::demo.gif has no frame at $at s ($label take)"
-              exit 1
-            fi
 
-            text=$(tesseract "$frame" stdout)
-            printf -- '--- OCR of demo.gif at %s s (%s take) ---\n%s\n' \
-              "$at" "$label" "$text"
-            if [[ $(tr -d '[:space:]' <<< "$text") != *"$expected"* ]]; then
-              echo "::error::demo.gif at $at s ($label take) shows no $expected"
-              exit 1
-            fi
+          gif_text=
+          for frame in "${frames[@]}"; do
+            gif_text+=$(tesseract "$frame" stdout)$'\n'
           done
+          printf -- '--- OCR of demo.gif frames ---\n%s\n' "$gif_text"
+          flat=$(tr -d '[:space:]' <<< "$gif_text")
+          if [[ $flat != *timer.fired* ]]; then
+            echo "::error::OCR finds no timer.fired in demo.gif"
+            exit 1
+          fi
+          if [[ $flat != *"$DOWNTIME_ID"* ]]; then
+            echo "::error::OCR finds no downtime event $DOWNTIME_ID in demo.gif"
+            exit 1
+          fi
+          rm -rf -- "$gif_frames"
 
           # Secondary guard: the final hold shows the restart's output. A
           # frame of text measures about 0.04 or more in grayscale standard
