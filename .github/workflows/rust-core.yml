@@ -69,7 +69,8 @@ jobs:
 
   # Every viable mutant in the lines a pull request changes must be caught; an
   # equivalent one is excluded in .cargo/mutants.toml, with why. A dispatched
-  # run repeats it on a branch, diffed against main, to check the gate itself.
+  # run on a branch uses the diff by default, or the full tree with full_tree;
+  # see wrkhse/sourcefed#117.
   mutants-shard:
     strategy:
       fail-fast: false
@@ -78,8 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      FULL_TREE: ${{ github.ref == 'refs/heads/main' || inputs.full_tree == true }}
-      CARGO_MUTANTS_MINIMUM_TEST_TIMEOUT: 60
+      FULL_TREE: ${{ inputs.full_tree == true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      FULL_TREE: ${{ github.ref == 'refs/heads/main' || inputs.full_tree == true }}
+      FULL_TREE: ${{ inputs.full_tree == true }}
     steps:
       - name: Download shard outcomes
         uses: >- # v4.3.0
