@@ -86,12 +86,6 @@ impl SimClock {
         self.faults.lock().ok().map_or(u64::MAX, |faults| *faults)
     }
 
-    fn set_now(&self, at: Timestamp) {
-        if let Ok(mut now) = self.now.lock() {
-            *now = at;
-        }
-    }
-
     fn count_fault(&self) {
         if let Ok(mut faults) = self.faults.lock() {
             *faults = faults.saturating_add(1);
@@ -101,42 +95,44 @@ impl SimClock {
 
 impl Clock for SimClock {
     fn now(&self) -> Result<Timestamp, ClockError> {
+        // Invariant: a poisoned time lock fails closed whatever the script,
+        // so hold one guard across the check and the reading it protects.
+        let Ok(mut now) = self.now.lock() else {
+            return Err(ClockError::Past);
+        };
+
         let Ok(mut readings) = self.readings.lock() else {
             // Invariant: a poisoned fault queue fails closed, so the engine
             // stops rather than reading possibly inconsistent clock state.
             return Err(ClockError::Past);
         };
 
-        let reading = readings.pop_front();
-        drop(readings);
-
-        let Some(reading) = reading else {
-            return Ok(self.virtual_now());
-        };
-
-        match reading {
-            Ok(at) => {
-                self.set_now(at);
+        match readings.pop_front() {
+            Some(Ok(at)) => {
+                *now = at;
 
                 Ok(at)
             }
-            Err(fault) => {
+            Some(Err(fault)) => {
                 self.count_fault();
 
                 Err(fault.into())
             }
+            None => Ok(*now),
         }
     }
 
     fn sleep(&self, duration: Duration) {
-        let next = self
-            .virtual_now()
-            .checked_add(duration)
-            .unwrap_or(Timestamp::MAX);
-        self.set_now(next);
+        // Invariant: a poisoned time lock fails closed; no duration is
+        // applied and none is logged for a sleep that never moved time.
+        let Ok(mut now) = self.now.lock() else {
+            return;
+        };
+        *now = now.checked_add(duration).unwrap_or(Timestamp::MAX);
+        drop(now);
 
         // Invariant: a poisoned log is skipped, but virtual time still moves,
-        // so the checker sees time move without a sleep or advance.
+        // so the checker sees time move without a logged sleep.
         if let Ok(mut sleeps) = self.sleeps.lock() {
             sleeps.push(duration);
         }
@@ -258,6 +254,47 @@ mod tests {
         poison_time(&clock);
 
         assert_eq!(clock.virtual_now(), Timestamp::MAX);
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_fails_closed_on_reading() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        poison_time(&clock);
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_preserves_scripted_readings() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        clock.script(Ok(at(5)));
+        clock.script(Err(ClockFault::Future));
+        poison_time(&clock);
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+        assert_eq!(clock.now(), Err(ClockError::Past));
+
+        {
+            let readings = clock.readings.lock().unwrap();
+            assert_eq!(readings.len(), 2);
+            assert_eq!(readings.front(), Some(&Ok(at(5))));
+            assert_eq!(readings.back(), Some(&Err(ClockFault::Future)));
+        }
+        assert_eq!(clock.fault_count(), 0);
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_does_not_log_a_sleep() {
+        let start = at(0);
+        let clock = Arc::new(SimClock::new(start));
+        poison_time(&clock);
+
+        assert_eq!(*clock.now.lock().unwrap_err().into_inner(), start);
+
+        clock.sleep(Duration::from_secs(5));
+
+        assert_eq!(clock.sleep_log(), Vec::<Duration>::new());
+        assert_eq!(*clock.now.lock().unwrap_err().into_inner(), start);
     }
 
     #[test]
