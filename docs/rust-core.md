@@ -16,7 +16,13 @@ sourcefed-core follow --job deploy --every 5 \
 Five seconds in, stdout prints one JSON line:
 
 ```json
-{"id":"timer:deploy:2026-11-26T09:00:05Z","kind":"timer.fired","subject":{"source":"timer","key":"deploy"},"summary":"timer deploy fired at 2026-11-26T09:00:05Z","at":"2026-11-26T09:00:05Z"}
+{
+  "id": "timer:deploy:2026-11-26T09:00:05Z",
+  "kind": "timer.fired",
+  "subject": { "source": "timer", "key": "deploy" },
+  "summary": "timer deploy fired at 2026-11-26T09:00:05Z",
+  "at": "2026-11-26T09:00:05Z"
+}
 ```
 
 Write `ack timer:deploy:2026-11-26T09:00:05Z` on stdin and the event never
