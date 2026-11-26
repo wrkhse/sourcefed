@@ -141,13 +141,14 @@ jobs:
           echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
       # The runner has no monospace font, and a video rendered without one
       # shows no glyphs, so the font the videos name is installed and found.
-      - name: Install termctrl 1.2.1, ffmpeg and DejaVu Sans Mono
+      # ImageMagick measures the exported GIF.
+      - name: Install termctrl 1.2.1, ffmpeg, ImageMagick and DejaVu Sans Mono
         run: |
           set -euo pipefail
 
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ffmpeg fontconfig fonts-dejavu-core
+            ffmpeg fontconfig fonts-dejavu-core imagemagick
           family=$(fc-match -f '%{family}' 'DejaVu Sans Mono')
           [[ "$family" == *"DejaVu Sans Mono"* ]] || {
             echo "::error::fontconfig matched '$family' for DejaVu Sans Mono"
@@ -395,7 +396,7 @@ jobs:
           termctrl markers artifacts/restart.termctrl
       # Each take exports with its captions and holds, the two join into one
       # clip, and the clip becomes a GIF of at most 1200 pixels wide and
-      # 3 MB. The restart's 3 second tail is the GIF's final hold.
+      # 3 MB. The restart's 3.5 second tail is the GIF's final hold.
       - name: Export the demo GIF
         run: |
           set -euo pipefail
@@ -447,7 +448,7 @@ jobs:
             termctrl video "artifacts/$take.termctrl" \
               --edit "artifacts/$take-edit.json" --footer --fps 10 \
               --font-family "DejaVu Sans Mono" \
-              --tail-ms 3000 --out "artifacts/demo-$take.mp4"
+              --tail-ms 3500 --out "artifacts/demo-$take.mp4"
           done
           ls -l artifacts/*.mp4
 
@@ -486,6 +487,20 @@ jobs:
             -show_entries stream=width -of csv=p=0 artifacts/demo.gif)
           if (( gif_width > 1200 )); then
             echo "::error::demo.gif is $gif_width pixels wide"
+            exit 1
+          fi
+
+          # The final hold shows the restart's output. A frame of text
+          # measures about 0.04 or more in grayscale standard deviation (0 to
+          # 1); a dark frame with only a cursor, about 0.01. Below 0.02 the
+          # GIF rendered no glyphs.
+          ffmpeg -hide_banner -loglevel error -y -sseof -1 \
+            -i artifacts/demo.gif -frames:v 1 artifacts/demo-last.png
+          deviation=$(convert artifacts/demo-last.png -colorspace Gray \
+            -format '%[fx:standard_deviation]' info:)
+          echo "demo.gif final frame grayscale deviation: $deviation"
+          if ! awk -v d="$deviation" 'BEGIN { exit !(d >= 0.02) }'; then
+            echo "::error::demo.gif's final frame is blank (deviation $deviation)"
             exit 1
           fi
       - uses: >- # v7.0.2
@@ -569,4 +584,22 @@ jobs:
             gh release create "$TAG" --prerelease --latest=false --verify-tag \
               --title "sourcefed-core $TAG" --notes "$notes" \
               -- "${assets[@]}"
+          fi
+
+          # A dispatch brings the release in line with what it attaches: the
+          # notes name the GIF, and the videos an earlier run attached go.
+          # The flags restate the release's kind, so editing keeps it.
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            gh release edit "$TAG" --prerelease --latest=false --notes "$notes"
+            stale=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '
+              .assets[].name
+              | select(. == "demo-run.mp4" or . == "demo-restart.mp4")')
+            while IFS= read -r name; do
+              if [[ -z $name ]]; then
+                continue
+              fi
+
+              echo "deleting the stale asset $name"
+              gh release delete-asset "$TAG" "$name" --yes
+            done <<< "$stale"
           fi
