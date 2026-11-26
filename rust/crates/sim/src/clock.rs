@@ -277,12 +277,16 @@ mod tests {
 
     #[test]
     fn a_poisoned_time_lock_does_not_log_a_sleep() {
-        let clock = Arc::new(SimClock::new(at(0)));
+        let start = at(0);
+        let clock = Arc::new(SimClock::new(start));
         poison_time(&clock);
+
+        assert_eq!(*clock.now.lock().unwrap_err().into_inner(), start);
+
         clock.sleep(Duration::from_secs(5));
 
         assert_eq!(clock.sleep_log(), Vec::<Duration>::new());
-        assert_eq!(clock.virtual_now(), Timestamp::MAX);
+        assert_eq!(*clock.now.lock().unwrap_err().into_inner(), start);
     }
 
     #[test]
