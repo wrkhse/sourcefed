@@ -582,7 +582,7 @@ mod tests {
             hasher.finish()
         };
 
-        assert_eq!(finish(|h| h.write_u16(0x1234)), 0x7EE9_E07B_4B1C_0883);
+        assert_eq!(finish(|h| h.write_u16(0x1234)), 0x07EE_9E07_B4B1_C883);
         assert_eq!(finish(|h| h.write_u32(0x1234_5678)), 0xCCCF_D053_E47C_3365);
         assert_eq!(
             finish(|h| h.write_u128(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF)),
