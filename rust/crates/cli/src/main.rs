@@ -18,11 +18,11 @@ use sourcefed_core::{
 
 // One input line holds a command and an event ID of at most 256 bytes.
 const MAX_INPUT_LINE: u64 = 512;
-// At most this many bytes of an over-long line are discarded in search of
-// its newline, after the bytes read to find it over-long. A line that runs
-// further ends the reading of stdin, so an endless line cannot keep the
-// reader consuming for the rest of the run.
+// After detecting an over-long line, read_line discards at most this many
+// more bytes before handing off to the reader's interruptible discard.
 const MAX_DISCARD_BYTES: u64 = 65_536;
+// Check for reader shutdown between chunks without copying discarded bytes.
+const DISCARD_CHUNK_BYTES: usize = 512;
 // At most this many inputs apply between two polls, so a fast writer on stdin
 // cannot hold polling back; the rest wait for the next poll.
 const MAX_INPUTS_PER_POLL: usize = 64;
@@ -41,8 +41,10 @@ struct Cli {
 enum Command {
     /// Follows a timer and prints each event as one JSON line. Each poll
     /// reads a bounded number of ack and stop lines from stdin; a line over
-    /// 512 bytes is discarded with a diagnostic, and one that runs 65536
-    /// bytes further ends the reading of stdin.
+    /// 512 bytes is discarded with a diagnostic. If it runs another 65536
+    /// bytes without a newline, the reader logs discard-bound-exceeded and
+    /// discards the rest in bounded chunks. The reader continues to accept
+    /// later ack and stop lines.
     /// An ack sent while sourcefed-core is stopping may be ignored; its event
     /// is delivered again on the next run.
     Follow(Follow),
@@ -384,11 +386,17 @@ fn read_input(
             }
             Ok(Line::Endless) => {
                 eprintln!(
-                    "sourcefed-core: input line runs {MAX_DISCARD_BYTES} bytes \
-                     past the {MAX_INPUT_LINE}-byte limit; reading stdin ends"
+                    "sourcefed-core: discard-bound-exceeded: input line runs \
+                     {MAX_DISCARD_BYTES} bytes past the {MAX_INPUT_LINE}-byte limit"
                 );
 
-                return;
+                if let Err(error) = discard_line_remainder(&mut reader, state) {
+                    eprintln!("sourcefed-core: stdin: {error}");
+
+                    return;
+                }
+
+                continue;
             }
             Err(error) => {
                 eprintln!("sourcefed-core: stdin: {error}");
@@ -444,8 +452,8 @@ fn send_held(
 }
 
 // Reads one line of at most `MAX_INPUT_LINE` bytes before its newline into
-// `line`. A longer line is discarded through its newline, so none of it is
-// read as a command; one that runs past the discard bound is endless.
+// `line`. A longer line is discarded through its newline or up to the
+// discard bound. If it runs past the bound, the caller skips the rest.
 fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Line> {
     line.clear();
 
@@ -490,6 +498,34 @@ fn discard_line(reader: &mut impl BufRead, chunk: &mut Vec<u8>) -> io::Result<bo
     }
 
     Ok(false)
+}
+
+// Skips an over-long line without copying its tail, checking for shutdown
+// between chunks. Bytes after the newline belong to the next command.
+fn discard_line_remainder(
+    reader: &mut impl BufRead,
+    state: &ReaderState,
+) -> io::Result<()> {
+    while !state.is_halted() {
+        let buf = reader.fill_buf()?;
+        let size = buf.len().min(DISCARD_CHUNK_BYTES);
+
+        if size == 0 {
+            break;
+        }
+
+        let newline = buf.iter().take(size).position(|&byte| byte == b'\n');
+
+        if let Some(newline) = newline {
+            reader.consume(newline.saturating_add(1));
+
+            break;
+        }
+
+        reader.consume(size);
+    }
+
+    Ok(())
 }
 
 fn parse_input(line: &str) -> Result<Input, String> {
@@ -1060,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn read_input_stops_reading_at_the_discard_bound_of_an_endless_line() {
+    fn read_line_stops_at_the_discard_bound_of_an_endless_line() {
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
         // The first read takes one byte past the limit, and the discard
@@ -1069,17 +1105,37 @@ mod tests {
         let later = "\nstop\nack first\n";
 
         for unread in [later.to_owned(), format!("{}{later}", "x".repeat(limit))] {
+            let lines = format!("{read}{unread}");
+            let mut lines = lines.as_bytes();
+            let mut line = Vec::new();
+
+            assert_eq!(read_line(&mut lines, &mut line).unwrap(), Line::Endless);
+            assert_eq!(lines, unread.as_bytes());
+        }
+    }
+
+    #[test]
+    fn read_input_processes_stop_and_ack_after_the_discard_bound() {
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let pad = "x".repeat(limit.saturating_add(1).saturating_add(bound));
+
+        // The over-long line ends in a fake stop, with or without another
+        // full chunk before it. Only the stop on its own line should arrive.
+        for extra in [0, DISCARD_CHUNK_BYTES] {
             let stop = StopHandle::default();
             let state = ReaderState::default();
             let (sender, receiver) = input_channel();
-            let lines = format!("{read}{unread}");
-            let mut lines = lines.as_bytes();
+            let tail = "x".repeat(extra);
+            let lines = format!("{pad}{tail}stop\nstop\nack first\n");
 
-            read_input(&mut lines, &stop, &state, &sender);
+            read_input(lines.as_bytes(), &stop, &state, &sender);
 
-            assert_eq!(std::str::from_utf8(lines), Ok(unread.as_str()));
-            assert!(!stop.is_stopped());
-            assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+            assert!(stop.is_stopped());
+            assert_eq!(
+                receiver.try_iter().collect::<Vec<_>>(),
+                [Input::Stop, ack("first")]
+            );
         }
     }
 
