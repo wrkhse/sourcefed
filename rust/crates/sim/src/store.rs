@@ -475,6 +475,40 @@ mod tests {
     }
 
     #[test]
+    fn a_repeat_without_fresh_events_moves_its_id_to_the_back() {
+        let key = key(1);
+        let mut state = State::default();
+        let x = event("x".into());
+        let a = event("a".into());
+        let b = event("b".into());
+        let mut fillers = Vec::new();
+
+        {
+            let seen = state.seen.entry(key.clone()).or_default();
+            seen.push_back(x.id().clone());
+            seen.push_back(a.id().clone());
+            seen.push_back(b.id().clone());
+            for index in 3..MAX_SEEN_IDS {
+                let id = event(format!("filler-{index}")).id().clone();
+                fillers.push(id.clone());
+                seen.push_back(id);
+            }
+        }
+
+        assert_eq!(
+            record(&mut state, &key, std::slice::from_ref(&a)).unwrap(),
+            0
+        );
+
+        let mut expected = vec![x.id().clone(), b.id().clone()];
+        expected.extend(fillers);
+        expected.push(a.id().clone());
+
+        let seen = state.seen.get(&key).unwrap();
+        assert_eq!(seen.iter().cloned().collect::<Vec<EventId>>(), expected);
+    }
+
+    #[test]
     fn scripted_commit_fault_leaves_state_unchanged() {
         let mut store = MemoryStore::new();
         store.script(StoreControl::CommitFault);
