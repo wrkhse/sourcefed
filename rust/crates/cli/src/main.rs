@@ -874,6 +874,40 @@ mod tests {
     }
 
     #[test]
+    fn finish_leaves_an_ack_sent_after_the_drain_window_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
+        let (release, gate) = mpsc::channel();
+        let (done, sent) = mpsc::channel();
+
+        // The reader is mid-send, but holds its ack until the test releases
+        // it, after `finish` has stopped draining.
+        assert!(inputs.reader.begin_send());
+
+        thread::spawn(move || {
+            if gate.recv_timeout(WAIT).is_ok() {
+                let _ = done.send(sender.send(ack(ID)));
+            }
+        });
+
+        let started = Instant::now();
+        let (inputs, engine) = finish_within(inputs, engine);
+
+        assert!(started.elapsed() >= DRAIN_WAIT);
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), [ID]);
+
+        release.send(()).unwrap();
+
+        // The late ack reaches the queue only after `finish` returned, so the
+        // event stays pending and is delivered again on the next run.
+        assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
+        assert_eq!(inputs.receiver.try_iter().collect::<Vec<_>>(), [ack(ID)]);
+        assert_eq!(pending_ids(&engine), [ID]);
+    }
+
+    #[test]
     fn finish_applies_an_ack_the_reader_claimed_before_the_halt() {
         let dir = tempfile::tempdir().unwrap();
         let engine = pending_engine(dir.path());
