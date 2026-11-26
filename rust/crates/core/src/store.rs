@@ -836,6 +836,27 @@ mod tests {
         );
     }
 
+    fn trait_seen<S: StateStore>(
+        store: &S,
+        key: &PositionKey,
+        id: &EventId,
+    ) -> bool {
+        store.is_seen(key, id)
+    }
+
+    #[test]
+    fn the_state_store_trait_delegates_is_seen_to_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let key = key(1);
+        let known = [event("known".into())];
+        let unknown = EventId::new("unknown".into()).unwrap();
+
+        assert_eq!(store.commit(key.clone(), cursor(), &known).unwrap(), 1);
+        assert!(trait_seen(&store, &key, known[0].id()));
+        assert!(!trait_seen(&store, &key, &unknown));
+    }
+
     #[test]
     fn pending_appends_each_fresh_event_once_and_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
