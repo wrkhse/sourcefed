@@ -86,12 +86,6 @@ impl SimClock {
         self.faults.lock().ok().map_or(u64::MAX, |faults| *faults)
     }
 
-    fn set_now(&self, at: Timestamp) {
-        if let Ok(mut now) = self.now.lock() {
-            *now = at;
-        }
-    }
-
     fn count_fault(&self) {
         if let Ok(mut faults) = self.faults.lock() {
             *faults = faults.saturating_add(1);
@@ -101,35 +95,30 @@ impl SimClock {
 
 impl Clock for SimClock {
     fn now(&self) -> Result<Timestamp, ClockError> {
+        // Invariant: a poisoned time lock fails closed whatever the script,
+        // so hold one guard across the check and the reading it protects.
+        let Ok(mut now) = self.now.lock() else {
+            return Err(ClockError::Past);
+        };
+
         let Ok(mut readings) = self.readings.lock() else {
             // Invariant: a poisoned fault queue fails closed, so the engine
             // stops rather than reading possibly inconsistent clock state.
             return Err(ClockError::Past);
         };
 
-        let reading = readings.pop_front();
-        drop(readings);
-
-        let Some(reading) = reading else {
-            // Invariant: a poisoned time lock fails closed, so an unscripted
-            // reading reports an error instead of the MAX sentinel.
-            if self.now.lock().is_err() {
-                return Err(ClockError::Past);
-            }
-            return Ok(self.virtual_now());
-        };
-
-        match reading {
-            Ok(at) => {
-                self.set_now(at);
+        match readings.pop_front() {
+            Some(Ok(at)) => {
+                *now = at;
 
                 Ok(at)
             }
-            Err(fault) => {
+            Some(Err(fault)) => {
                 self.count_fault();
 
                 Err(fault.into())
             }
+            None => Ok(*now),
         }
     }
 
@@ -273,6 +262,25 @@ mod tests {
         poison_time(&clock);
 
         assert_eq!(clock.now(), Err(ClockError::Past));
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_preserves_scripted_readings() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        clock.script(Ok(at(5)));
+        clock.script(Err(ClockFault::Future));
+        poison_time(&clock);
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+        assert_eq!(clock.now(), Err(ClockError::Past));
+
+        {
+            let readings = clock.readings.lock().unwrap();
+            assert_eq!(readings.len(), 2);
+            assert_eq!(readings.front(), Some(&Ok(at(5))));
+            assert_eq!(readings.back(), Some(&Err(ClockFault::Future)));
+        }
+        assert_eq!(clock.fault_count(), 0);
     }
 
     #[test]
