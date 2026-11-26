@@ -75,19 +75,22 @@ pub fn simulate(
         let left = steps.saturating_sub(index);
         let state = engine.run(1)?;
 
-        // The first timer poll only sets its position, so no queue exists
-        // yet. A queue missing after that is an error, not an empty run.
-        if engine.pending().is_none() {
-            if index > 0 {
-                return Err(NO_PENDING.into());
-            }
-            continue;
+        if state != EngineState::Running {
+            outcome = Outcome::Ended;
+            break;
         }
 
-        events = events.saturating_add(print_new(&engine, &mut printed, out)?);
-
-        let pending = engine.pending().ok_or(NO_PENDING)?;
-        let pending: Vec<_> = pending.into();
+        // The first timer poll only sets its position, so no queue exists
+        // yet. A queue missing after that is an error, not an empty run.
+        let pending: Vec<_> = match engine.pending() {
+            Some(pending) => {
+                let fresh = print_new(&engine, &mut printed, out)?;
+                events = events.saturating_add(fresh);
+                pending.into()
+            }
+            None if index == 0 => Vec::new(),
+            None => return Err(NO_PENDING.into()),
+        };
 
         inputs.schedule(&mut draw, &pending, left);
 
@@ -97,13 +100,10 @@ pub fn simulate(
             inputs.apply_next(&mut engine)?
         };
 
+        forget_acked(&engine, &mut printed);
+
         if stopped {
             outcome = Outcome::Stopped;
-            break;
-        }
-
-        if state != EngineState::Running {
-            outcome = Outcome::Ended;
             break;
         }
     }
@@ -134,13 +134,25 @@ fn print_new(
     }
 
     out.flush()?;
-    seen.retain(|id| pending.iter().any(|event| event.id() == id));
 
     Ok(count)
 }
 
+// Forgets delivered IDs only after this step's acks have removed their
+// events, so an acked ID can be printed again if its event returns.
+fn forget_acked(engine: &PollEngine<MemoryStore>, seen: &mut HashSet<EventId>) {
+    let Some(pending) = engine.pending() else {
+        seen.clear();
+        return;
+    };
+
+    seen.retain(|id| pending.iter().any(|event| event.id() == id));
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use sourcefed_core::{
         Event, EventKind, EventSubject, Position, PositionKey, SourceName,
         StateStore,
@@ -218,6 +230,24 @@ mod tests {
     }
 
     #[test]
+    fn a_single_step_applies_the_final_stop_without_a_pending_queue() {
+        let mut out = Vec::new();
+        let seed = Seed::from_u64(0x3C6E_F372_FE94_F82B);
+
+        let summary = simulate(seed, 1, &mut out).unwrap();
+
+        assert_eq!(
+            summary,
+            Summary {
+                steps: 1,
+                events: 0,
+                outcome: Outcome::Stopped,
+            }
+        );
+        assert_eq!(out, Vec::<u8>::new());
+    }
+
+    #[test]
     fn final_step_events_are_printed_before_the_stop() {
         let mut out = Vec::new();
         let seed = Seed::from_u64(0x3C6E_F372_FE94_F82B);
@@ -257,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn a_seen_id_is_dropped_only_when_its_event_leaves_the_pending_queue() {
+    fn a_forgotten_id_is_printed_again_when_it_returns() {
         let source = SourceName::new("sim".into()).unwrap();
         let subject = EventSubject::new(source, "sim".into()).unwrap();
         let first = Event::new(
@@ -302,6 +332,8 @@ mod tests {
             format!("{first_line}{second_line}").as_bytes()
         );
 
+        forget_acked(&second_only, &mut seen);
+
         let first_again = engine_with_pending(std::slice::from_ref(&first));
 
         assert_eq!(print_new(&first_again, &mut seen, &mut out).unwrap(), 1);
@@ -309,5 +341,43 @@ mod tests {
             out.as_slice(),
             format!("{first_line}{second_line}{first_line}").as_bytes()
         );
+    }
+
+    #[test]
+    fn forget_acked_drops_an_id_as_soon_as_it_is_acked() {
+        let source = SourceName::new("sim".into()).unwrap();
+        let subject = EventSubject::new(source, "sim".into()).unwrap();
+        let first = Event::new(
+            EventId::new("first".into()).unwrap(),
+            EventKind::TimerFired,
+            subject.clone(),
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let second = Event::new(
+            EventId::new("second".into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut engine = engine_with_pending(&[first.clone(), second.clone()]);
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        assert_eq!(print_new(&engine, &mut seen, &mut out).unwrap(), 2);
+        assert_eq!(
+            seen,
+            HashSet::from([first.id().clone(), second.id().clone()])
+        );
+
+        assert_eq!(engine.ack(std::slice::from_ref(first.id())).unwrap(), 1);
+        assert_eq!(engine.pending(), Some(VecDeque::from([second.clone()])));
+
+        forget_acked(&engine, &mut seen);
+
+        assert_eq!(seen, HashSet::from([second.id().clone()]));
     }
 }
