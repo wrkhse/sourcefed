@@ -164,16 +164,28 @@ fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
     mpsc::sync_channel(MAX_QUEUED_INPUTS)
 }
 
-// What the stdin reader is doing, shared with the polls. The reader holds
-// each input as soon as it has read and parsed the line, then claims it by
-// moving from reading to sending, and sends only a claimed input. Once the
-// run halts it, the one input it already claimed still arrives, and one it
-// held without claiming stays held for `Inputs::finish`. Only a line the
-// reader has read but not yet held when the run ends is dropped.
+// The reader locks the handoff slot after reading a complete line and holds
+// it through parsing and publication. Shutdown can close the slot first,
+// or take the input already being prepared. Neither operation holds the
+// lock during stdin reads or channel sends.
 #[derive(Debug, Default)]
 struct ReaderState {
     phase: AtomicU8,
-    held: Mutex<Option<Input>>,
+    held: Mutex<Held>,
+    #[cfg(test)]
+    hold_gate: Option<tests::HoldGate>,
+}
+
+#[derive(Debug)]
+enum Held {
+    Open(Option<Input>),
+    Closed,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self::Open(None)
+    }
 }
 
 impl ReaderState {
@@ -207,9 +219,26 @@ impl ReaderState {
         self.phase.swap(Self::HALTED, Ordering::SeqCst) == Self::SENDING
     }
 
-    // Holds the input the reader has just parsed, until it is claimed.
-    fn hold(&self, input: Input) {
-        *self.lock_held() = Some(input);
+    // Parses and publishes one bounded line as a single handoff. False if
+    // finish already closed the slot.
+    fn hold(
+        &self,
+        parse: impl FnOnce() -> Result<Input, String>,
+    ) -> Result<bool, String> {
+        let mut held = self.lock_held();
+        let Held::Open(input) = &mut *held else {
+            return Ok(false);
+        };
+
+        #[cfg(test)]
+        if let Some(gate) = &self.hold_gate {
+            gate.wait();
+        }
+
+        *input = Some(parse()?);
+        drop(held);
+
+        Ok(true)
     }
 
     // Moves from reading to sending and hands over the held input. None once
@@ -223,12 +252,24 @@ impl ReaderState {
     }
 
     fn take_held(&self) -> Option<Input> {
-        self.lock_held().take()
+        match &mut *self.lock_held() {
+            Held::Open(input) => input.take(),
+            Held::Closed => None,
+        }
     }
 
-    // The lock only ever guards a whole `Option` being stored or taken, so
-    // the value under a poisoned lock is still valid and is used as it is.
-    fn lock_held(&self) -> MutexGuard<'_, Option<Input>> {
+    fn close_held(&self) -> Option<Input> {
+        let held = std::mem::replace(&mut *self.lock_held(), Held::Closed);
+
+        match held {
+            Held::Open(input) => input,
+            Held::Closed => None,
+        }
+    }
+
+    // Parsing completes before replacing the slot, so the value under a
+    // poisoned lock is still valid and is used as it is.
+    fn lock_held(&self) -> MutexGuard<'_, Held> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -275,7 +316,7 @@ impl Inputs {
             self.take(engine, limit)?;
         }
 
-        if let Some(input) = self.reader.take_held() {
+        if let Some(input) = self.reader.close_held() {
             self.handle(engine, input)?;
         }
 
@@ -354,12 +395,14 @@ fn read_input(
             }
         }
 
-        let text = std::str::from_utf8(&line).map_err(|error| error.to_string());
+        match state.hold(|| {
+            let text =
+                std::str::from_utf8(&line).map_err(|error| error.to_string())?;
 
-        match text.and_then(parse_input) {
-            // Held before the claim, so a halt that lands between the two
-            // leaves the input for `Inputs::finish` rather than losing it.
-            Ok(input) => state.hold(input),
+            parse_input(text)
+        }) {
+            Ok(true) => {}
+            Ok(false) => return,
             Err(error) => {
                 eprintln!("sourcefed-core: {error}");
 
@@ -547,12 +590,11 @@ mod tests {
         (inputs, engine)
     }
 
-    // Waits at most `WAIT` for the reader to claim a line, yielding between
-    // checks.
-    fn claimed_within(state: &ReaderState) -> bool {
+    // Waits at most `WAIT` for a phase change, yielding between checks.
+    fn reached_within(ready: impl Fn() -> bool) -> bool {
         let started = Instant::now();
 
-        while state.phase.load(Ordering::SeqCst) != ReaderState::SENDING {
+        while !ready() {
             if started.elapsed() >= WAIT {
                 return false;
             }
@@ -561,6 +603,19 @@ mod tests {
         }
 
         true
+    }
+
+    #[derive(Debug)]
+    pub struct HoldGate {
+        entered: mpsc::Sender<()>,
+        resume: Mutex<Receiver<()>>,
+    }
+
+    impl HoldGate {
+        pub fn wait(&self) {
+            self.entered.send(()).unwrap();
+            self.resume.lock().unwrap().recv_timeout(WAIT).unwrap();
+        }
     }
 
     // Serves `lines` and halts the reader as their last byte is read, the
@@ -756,7 +811,9 @@ mod tests {
 
         // The reader claims the line, then blocks on the full queue, so the
         // halt in `finish` comes after the claim and before the send.
-        assert!(claimed_within(&inputs.reader));
+        assert!(reached_within(|| {
+            inputs.reader.phase.load(Ordering::SeqCst) == ReaderState::SENDING
+        }));
 
         let (inputs, engine) = finish_within(inputs, engine);
 
@@ -788,6 +845,51 @@ mod tests {
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
         assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn finish_applies_an_ack_the_reader_is_preparing_at_the_halt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+        let (entered, holding) = mpsc::channel();
+        let (resume, released) = mpsc::channel();
+        Arc::get_mut(&mut inputs.reader).unwrap().hold_gate = Some(HoldGate {
+            entered,
+            resume: Mutex::new(released),
+        });
+        let state = Arc::clone(&inputs.reader);
+        let reader_state = Arc::clone(&state);
+        let line = format!("ack {ID}\n");
+        let (done, read) = mpsc::channel();
+
+        thread::spawn(move || {
+            read_input(
+                line.as_bytes(),
+                &StopHandle::default(),
+                &reader_state,
+                &sender,
+            );
+            done.send(()).unwrap();
+        });
+
+        // The reader has read the line but has not published it. Let finish
+        // halt the reader before allowing the handoff to complete.
+        assert_eq!(holding.recv_timeout(WAIT), Ok(()));
+        let (done, finished) = mpsc::channel();
+
+        thread::spawn(move || {
+            inputs.finish(&mut engine).unwrap();
+            done.send(engine).unwrap();
+        });
+
+        assert!(reached_within(|| state.is_halted()));
+        resume.send(()).unwrap();
+
+        let engine = finished.recv_timeout(WAIT).unwrap();
+
+        assert_eq!(read.recv_timeout(WAIT), Ok(()));
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
     }
 
     #[test]
@@ -837,17 +939,21 @@ mod tests {
     #[test]
     fn reader_state_hands_a_held_input_to_one_taker() {
         let state = ReaderState::default();
-        state.hold(ack(ID));
+        assert_eq!(state.hold(|| Ok(ack(ID))), Ok(true));
 
         assert_eq!(state.claim(), Some(ack(ID)));
         assert_eq!(state.take_held(), None);
         assert!(state.end_send());
 
-        state.hold(Input::Stop);
+        assert_eq!(state.hold(|| Ok(Input::Stop)), Ok(true));
 
         assert!(!state.halt());
         assert_eq!(state.claim(), None);
         assert_eq!(state.take_held(), Some(Input::Stop));
+        assert_eq!(state.take_held(), None);
+
+        assert_eq!(state.close_held(), None);
+        assert_eq!(state.hold(|| Ok(ack(ID))), Ok(false));
         assert_eq!(state.take_held(), None);
     }
 

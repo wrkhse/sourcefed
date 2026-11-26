@@ -72,9 +72,9 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
 
     assert!(first.wait().unwrap().success());
     // The polls left after the second event would take about thirteen
-    // seconds. A stop ends the run within one, and the bound leaves a slow
-    // machine room.
-    assert!(stopping.elapsed() < Duration::from_secs(10));
+    // seconds. A stop ends the run within one poll, with room for a slow
+    // machine.
+    assert!(stopping.elapsed() < Duration::from_secs(3));
     assert!(!rest.contains(&id));
 
     // What the first run printed and never acknowledged, oldest first.
