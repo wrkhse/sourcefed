@@ -17,4 +17,4 @@ pub mod trace;
 pub use clock::{ClockFault, SimClock};
 pub use seed::{Seed, SeedError};
 pub use store::{MemoryStore, StoreControl};
-pub use trace::{Step, Trace, replay};
+pub use trace::{ReplayError, Step, Trace, replay};

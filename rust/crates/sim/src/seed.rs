@@ -9,7 +9,7 @@ use std::str::FromStr;
 const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 const MIX_1: u64 = 0xBF58_476D_1CE4_E5B9;
 const MIX_2: u64 = 0x94D0_49BB_1331_11EB;
-const SEED_HEX_LEN: usize = 16;
+const SEED_HEX_MAX_LEN: usize = 16;
 
 /// A 64-bit seed whose draws are the only source of simulation choices.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -18,7 +18,7 @@ pub struct Seed(u64);
 /// Why a string cannot be parsed as a `Seed`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SeedError {
-    /// The text does not have exactly 16 bytes.
+    /// The text is empty or longer than 16 hex digits.
     Length,
     /// One byte is not a hexadecimal digit.
     Digit,
@@ -27,7 +27,7 @@ pub enum SeedError {
 impl fmt::Display for SeedError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Length => formatter.write_str("seed must have 16 hex digits"),
+            Self::Length => formatter.write_str("seed must have 1 to 16 hex digits"),
             Self::Digit => formatter.write_str("seed has a non-hex digit"),
         }
     }
@@ -85,7 +85,7 @@ impl FromStr for Seed {
     type Err = SeedError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        if text.len() != SEED_HEX_LEN {
+        if text.is_empty() || text.len() > SEED_HEX_MAX_LEN {
             return Err(SeedError::Length);
         }
 
@@ -162,13 +162,19 @@ mod tests {
     }
 
     #[test]
-    fn parsing_requires_exactly_16_hex_digits() {
+    fn parsing_accepts_one_to_16_hex_digits() {
         assert_eq!("0000000000000001".parse::<Seed>(), Ok(Seed::from_u64(1)));
         assert_eq!(
             "00FFff00000000aA".parse::<Seed>(),
             Ok(Seed::from_u64(0x00FF_FF00_0000_00AA))
         );
-        assert_eq!("000000000000001".parse::<Seed>(), Err(SeedError::Length));
+        assert_eq!("8f3a".parse::<Seed>(), Ok(Seed::from_u64(0x8F3A)));
+        assert_eq!("a".parse::<Seed>(), Ok(Seed::from_u64(0xA)));
+        assert_eq!(
+            "000000000000001".parse::<Seed>(),
+            Ok(Seed::from_u64(0x00_0000_0000_0001))
+        );
+        assert_eq!("".parse::<Seed>(), Err(SeedError::Length));
         assert_eq!("00000000000000000".parse::<Seed>(), Err(SeedError::Length));
         assert_eq!("000000000000000g".parse::<Seed>(), Err(SeedError::Digit));
     }
@@ -182,8 +188,12 @@ mod tests {
             "00000000000000aa"
         );
         assert_eq!(
+            "8f3a".parse::<Seed>().unwrap().to_string(),
+            "0000000000008f3a"
+        );
+        assert_eq!(
             SeedError::Length.to_string(),
-            "seed must have 16 hex digits"
+            "seed must have 1 to 16 hex digits"
         );
         assert_eq!(SeedError::Digit.to_string(), "seed has a non-hex digit");
     }

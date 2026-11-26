@@ -160,6 +160,20 @@ impl StateStore for MemoryStore {
     }
 }
 
+// Reports which limit a batch can hit: the pending queue while it is the
+// tighter constraint, the seen-ID list once the pending queue has room.
+const fn limit_for(
+    pending_room: usize,
+    pending_cap: usize,
+    seen_cap: usize,
+) -> usize {
+    if pending_room < seen_cap {
+        pending_cap
+    } else {
+        seen_cap
+    }
+}
+
 // Applies one batch to a private copy of the state so a refused commit changes
 // nothing. Repeated IDs move to the newest end before fresh IDs are appended.
 fn record(
@@ -173,7 +187,7 @@ fn record(
     let pending_room = MAX_PENDING_EVENTS
         .saturating_sub(state.pending.get(key).map_or(0, VecDeque::len));
     let room = pending_room.min(MAX_SEEN_IDS);
-    let limit = MAX_PENDING_EVENTS.min(MAX_SEEN_IDS);
+    let limit = limit_for(pending_room, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
     for event in events {
         let id = event.id();
@@ -442,6 +456,13 @@ mod tests {
         assert!(store.is_seen(&key(1), initial[0].id()));
         assert!(!store.is_seen(&key(1), initial[1].id()));
         assert!(store.is_seen(&key(1), fresh[0].id()));
+    }
+
+    #[test]
+    fn the_reported_limit_names_the_binding_constraint() {
+        assert_eq!(limit_for(5, 1000, 10), 1000);
+        assert_eq!(limit_for(10, 1000, 10), 10);
+        assert_eq!(limit_for(11, 1000, 10), 10);
     }
 
     #[test]

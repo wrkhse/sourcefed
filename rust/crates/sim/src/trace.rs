@@ -4,6 +4,7 @@
 //! the same hash, with no engine, process, wall clock or operating-system
 //! randomness involved.
 
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
@@ -39,7 +40,80 @@ impl Hasher for FnvHasher {
             self.0 = self.0.wrapping_mul(FNV_PRIME);
         }
     }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_u128(&mut self, value: u128) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        let wide = u64::try_from(value).unwrap_or(u64::MAX);
+        self.write(&wide.to_le_bytes());
+    }
+
+    fn write_i8(&mut self, value: i8) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_i16(&mut self, value: i16) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_i32(&mut self, value: i32) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_i128(&mut self, value: i128) {
+        self.write(&value.to_le_bytes());
+    }
+
+    fn write_isize(&mut self, value: isize) {
+        let wide = i64::try_from(value).unwrap_or(i64::MAX);
+        self.write(&wide.to_le_bytes());
+    }
 }
+
+/// A setup failure that stops a replay before it records a step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayError {
+    /// The fixed position key could not be built.
+    Key,
+    /// A step's event could not be built.
+    Event,
+    /// A step's position could not be built.
+    Position,
+}
+
+impl fmt::Display for ReplayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key => formatter.write_str("invalid replay key"),
+            Self::Event => formatter.write_str("invalid replay event"),
+            Self::Position => formatter.write_str("invalid replay position"),
+        }
+    }
+}
+
+impl std::error::Error for ReplayError {}
 
 /// One step recorded by a replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,16 +236,26 @@ fn hash_step(step: &Step, hasher: &mut FnvHasher) {
 ///
 /// Each step takes one draw for the reading, sleeps for a seeded duration,
 /// commits one seeded event and acknowledges that event every third step.
-#[must_use]
-pub fn replay(mut seed: Seed, steps: u32) -> Trace {
+///
+/// # Errors
+///
+/// Returns an error when the key, an event or a position cannot be built,
+/// rather than recording a shorter trace that looks successful.
+pub fn replay(seed: Seed, steps: u32) -> Result<Trace, ReplayError> {
+    replay_with(seed, steps, replay_key())
+}
+
+// The key arrives as a result so a failed setup is returned, never hidden
+// behind an empty trace.
+fn replay_with(
+    mut seed: Seed,
+    steps: u32,
+    key: Result<PositionKey, ReplayError>,
+) -> Result<Trace, ReplayError> {
+    let key = key?;
     let mut trace = Trace::new(seed);
     let clock = SimClock::new(Timestamp::UNIX_EPOCH);
     let mut store = MemoryStore::new();
-    let key = replay_key();
-
-    let Some(key) = key else {
-        return trace;
-    };
 
     for index in 0..steps {
         let draw = seed.next_u64();
@@ -186,15 +270,10 @@ pub fn replay(mut seed: Seed, steps: u32) -> Trace {
         clock.sleep(duration);
         trace.push(Step::Sleep(duration));
 
-        let Some(event) =
-            next_event(&mut seed, &key.source, clock.virtual_now(), index)
-        else {
-            continue;
-        };
+        let event = next_event(&mut seed, &key.source, clock.virtual_now(), index)?;
         let position_text = format!("step-{index}-{draw}");
-        let Ok(position) = Position::new(position_text.clone()) else {
-            continue;
-        };
+        let position = Position::new(position_text.clone())
+            .map_err(|_| ReplayError::Position)?;
 
         let commit = match store.commit(
             key.clone(),
@@ -222,14 +301,14 @@ pub fn replay(mut seed: Seed, steps: u32) -> Trace {
         }
     }
 
-    trace
+    Ok(trace)
 }
 
-fn replay_key() -> Option<PositionKey> {
-    let source = SourceName::new("sim".into()).ok()?;
-    let monitor = MonitorId::new("replay".into()).ok()?;
+fn replay_key() -> Result<PositionKey, ReplayError> {
+    let source = SourceName::new("sim".into()).map_err(|_| ReplayError::Key)?;
+    let monitor = MonitorId::new("replay".into()).map_err(|_| ReplayError::Key)?;
 
-    Some(PositionKey { monitor, source })
+    Ok(PositionKey { monitor, source })
 }
 
 fn script_reading(clock: &SimClock, draw: u64) {
@@ -258,11 +337,14 @@ fn next_event(
     source: &SourceName,
     now: Timestamp,
     index: u32,
-) -> Option<Event> {
-    let subject = EventSubject::new(source.clone(), "step".into()).ok()?;
-    let id = EventId::new(format!("sim-{index}-{}", seed.below(1_000_000))).ok()?;
+) -> Result<Event, ReplayError> {
+    let subject = EventSubject::new(source.clone(), "step".into())
+        .map_err(|_| ReplayError::Event)?;
+    let id = EventId::new(format!("sim-{index}-{}", seed.below(1_000_000)))
+        .map_err(|_| ReplayError::Event)?;
 
-    Event::new(id, EventKind::TimerFired, subject, "replay".into(), now).ok()
+    Event::new(id, EventKind::TimerFired, subject, "replay".into(), now)
+        .map_err(|_| ReplayError::Event)
 }
 
 #[cfg(test)]
@@ -272,17 +354,17 @@ mod tests {
 
     #[test]
     fn the_same_seed_records_the_same_steps_and_hash() {
-        let first = replay(Seed::from_u64(42), 5);
-        let second = replay(Seed::from_u64(42), 5);
+        let first = replay(Seed::from_u64(42), 5).unwrap();
+        let second = replay(Seed::from_u64(42), 5).unwrap();
 
         assert_eq!(first.steps(), second.steps());
         assert_eq!(first.hash(), second.hash());
-        assert_ne!(first.hash(), replay(Seed::from_u64(43), 5).hash());
+        assert_ne!(first.hash(), replay(Seed::from_u64(43), 5).unwrap().hash());
     }
 
     #[test]
     fn each_step_records_a_reading_a_sleep_and_a_commit() {
-        let trace = replay(Seed::from_u64(3), 5);
+        let trace = replay(Seed::from_u64(3), 5).unwrap();
         let steps = trace.steps();
         let count = |variant: fn(&Step) -> bool| {
             steps.iter().filter(|step| variant(step)).count()
@@ -300,7 +382,7 @@ mod tests {
 
     #[test]
     fn a_scripted_fault_is_recorded_instead_of_a_reading() {
-        let future = replay(Seed::from_u64(1), 1);
+        let future = replay(Seed::from_u64(1), 1).unwrap();
 
         assert_eq!(future.steps()[0], Step::Fault(ClockFault::Future));
         assert_eq!(future.steps()[1], Step::Sleep(Duration::from_millis(8519)));
@@ -313,7 +395,7 @@ mod tests {
             }
         );
 
-        let past = replay(Seed::from_u64(2), 1);
+        let past = replay(Seed::from_u64(2), 1).unwrap();
 
         assert_eq!(past.steps()[0], Step::Fault(ClockFault::Past));
         assert_ne!(past.hash(), future.hash());
@@ -321,11 +403,11 @@ mod tests {
 
     #[test]
     fn zero_steps_records_nothing_but_keeps_the_seed_in_the_hash() {
-        let trace = replay(Seed::from_u64(7), 0);
+        let trace = replay(Seed::from_u64(7), 0).unwrap();
 
         assert_eq!(trace.steps(), &[]);
-        assert_eq!(trace.hash(), replay(Seed::from_u64(7), 0).hash());
-        assert_ne!(trace.hash(), replay(Seed::from_u64(8), 0).hash());
+        assert_eq!(trace.hash(), replay(Seed::from_u64(7), 0).unwrap().hash());
+        assert_ne!(trace.hash(), replay(Seed::from_u64(8), 0).unwrap().hash());
     }
 
     #[test]
@@ -344,7 +426,7 @@ mod tests {
     fn a_full_pending_queue_records_a_commit_fault() {
         let steps =
             u32::try_from(MAX_PENDING_EVENTS.saturating_mul(2)).unwrap_or_default();
-        let trace = replay(Seed::from_u64(3), steps);
+        let trace = replay(Seed::from_u64(3), steps).unwrap();
         let expected = Step::CommitFault(
             StoreError::TooMany {
                 limit: MAX_PENDING_EVENTS,
@@ -365,6 +447,16 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn a_failed_setup_is_returned_instead_of_a_successful_trace() {
+        let result = replay_with(Seed::from_u64(3), 5, Err(ReplayError::Key));
+
+        assert_eq!(result, Err(ReplayError::Key));
+        assert_eq!(ReplayError::Key.to_string(), "invalid replay key");
+        assert_eq!(ReplayError::Event.to_string(), "invalid replay event");
+        assert_eq!(ReplayError::Position.to_string(), "invalid replay position");
     }
 
     #[test]
