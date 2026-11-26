@@ -164,6 +164,9 @@ jobs:
           work=$(mktemp -d)
           run_live=
           restart_live=
+          # The restart alone prints this marker, so the GIF can prove
+          # the second take is present without OCR of a long event ID.
+          restart_token=RESTART-TAKE
 
           # A command that fails in an EXIT trap leaves the step's result as
           # it was. cleanup returns the incoming status, or 1 when a live
@@ -199,6 +202,9 @@ jobs:
           cmd=(./sourcefed-core follow --job demo --every 1 --state-dir state
             --max-polls "$1")
           echo "\$ ${cmd[*]}"
+          if [[ -n ${2:-} ]]; then
+            echo "$2"
+          fi
           "${cmd[@]}"
           echo "sourcefed-core exited with $?"
           read -r _
@@ -330,7 +336,8 @@ jobs:
           # The same poll budget as the run, so every pending event can
           # return; the first poll prints them all, then stop ends it.
           termctrl start restart --record artifacts/restart.termctrl \
-            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 30
+            --cols 120 --rows 16 --cwd "$work" -- \
+            bash ./follow.sh 30 "$restart_token"
           restart_live=1
           termctrl mark restart start
           for pending in "${pending_ids[@]}"; do
@@ -392,9 +399,10 @@ jobs:
             exit 1
           fi
           echo "downtime firing $downtime"
-          # The Export step is a separate shell, so hand it the ID that only
-          # the restart prints; it is absent from the run's full output.
-          echo "DOWNTIME_ID=$downtime" >> "$GITHUB_ENV"
+
+          # The Export step is a separate shell, so hand it the marker
+          # that only the restart prints; the run never shows it.
+          echo "RESTART_TOKEN=$restart_token" >> "$GITHUB_ENV"
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
@@ -448,11 +456,44 @@ jobs:
           }
           JSON
 
+          # One tail setting feeds both the export command and its guard.
+          export_tail=(--tail-ms 3500)
+
+          # The GIF carries its timing settings into the release. Prove
+          # two takes have edit plans, every step holds for 2.5 seconds,
+          # and the command adds the 3.5 second tail: the final hold.
+          plans=(artifacts/*-edit.json)
+          takes=(artifacts/*.termctrl)
+          if (( ${#plans[@]} != 2 || ${#takes[@]} != 2 )); then
+            echo "::error::expected two takes and two edit plans, found"
+            echo "::error::${#takes[@]} takes and ${#plans[@]} plans"
+            exit 1
+          fi
+          for plan in "${plans[@]}"; do
+            clips=$(jq -e '.clips | length' "$plan") || {
+              echo "::error::$plan has no clips array"
+              exit 1
+            }
+            if (( clips == 0 )); then
+              echo "::error::$plan has no clips"
+              exit 1
+            fi
+            if ! jq -e 'all(.clips[]; .hold_ms == 2500)' \
+              "$plan" > /dev/null; then
+              echo "::error::$plan has a clip without hold_ms 2500"
+              exit 1
+            fi
+          done
+          if [[ ${export_tail[*]} != "--tail-ms 3500" ]]; then
+            echo "::error::export tail is ${export_tail[*]}, not 3500 ms"
+            exit 1
+          fi
+
           for take in run restart; do
             termctrl video "artifacts/$take.termctrl" \
-              --edit "artifacts/$take-edit.json" --footer --fps 10 \
-              --font-family "DejaVu Sans Mono" \
-              --tail-ms 3500 --out "artifacts/demo-$take.mp4"
+              --edit "artifacts/$take-edit.json" "${export_tail[@]}" \
+              --footer --fps 10 --font-family "DejaVu Sans Mono" \
+              --out "artifacts/demo-$take.mp4"
           done
           ls -l artifacts/*.mp4
 
@@ -528,12 +569,12 @@ jobs:
           # The blank-GIF guard reads the exported GIF itself, not the mp4s
           # or their footers. Every frame is extracted at 1 fps into a temp
           # folder, OCRed with the footer cropped and concatenated. The run
-          # take shows timer.fired and the restart shows the downtime ID,
-          # so finding both proves the two takes are present without assuming
+          # take shows timer.fired and the restart shows a short marker, so
+          # finding both proves the two takes are present without assuming
           # balanced lengths or sample times. Whitespace OCR inserts inside
           # a word is dropped.
-          if [[ -z ${DOWNTIME_ID:-} ]]; then
-            echo "::error::no downtime event ID for the GIF assertion"
+          if [[ -z ${RESTART_TOKEN:-} ]]; then
+            echo "::error::no restart marker for the GIF assertion"
             exit 1
           fi
           gif_frames=$(mktemp -d)
@@ -558,8 +599,8 @@ jobs:
             echo "::error::OCR finds no timer.fired in demo.gif"
             exit 1
           fi
-          if [[ $flat != *"$DOWNTIME_ID"* ]]; then
-            echo "::error::OCR finds no downtime event $DOWNTIME_ID in demo.gif"
+          if [[ $flat != *"$RESTART_TOKEN"* ]]; then
+            echo "::error::OCR finds no restart marker $RESTART_TOKEN in demo.gif"
             exit 1
           fi
           rm -rf -- "$gif_frames"
@@ -687,9 +728,3 @@ jobs:
               -- "${assets[@]}"
           fi
 
-          # A dispatch brings the notes in line with the GIF it re-recorded.
-          # Only the notes change, so the release keeps its prerelease kind
-          # and its latest status as published.
-          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-            gh release edit "$TAG" --notes "$notes"
-          fi
