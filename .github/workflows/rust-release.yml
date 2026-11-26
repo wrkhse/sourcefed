@@ -174,6 +174,22 @@ jobs:
             termctrl logs "$1" | tr -d '\r\n'
           }
 
+          # An event ID ends at its instant's Z, so the colon after the ID in
+          # the ack log line is never part of a match.
+          id_pattern='timer:demo:[0-9T:.-]+Z'
+
+          # Prints each distinct event ID in stdin other than $1, sorted.
+          # awk and sort succeed when nothing matches.
+          other_ids() {
+            awk -v pattern="$id_pattern" -v acked="$1" '{
+              while (match($0, pattern)) {
+                found = substr($0, RSTART, RLENGTH)
+                if (found != acked) print found
+                $0 = substr($0, RSTART + RLENGTH)
+              }
+            }' | sort -u
+          }
+
           termctrl start run --record artifacts/run.termctrl \
             --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 30
           run_live=1
@@ -182,7 +198,7 @@ jobs:
           termctrl mark run fired
 
           if ! id=$(termctrl logs run | tr -d '\r\n' |
-            grep -oE 'timer:demo:[0-9TZ:.-]+' | sed -n 1p) || [[ -z "$id" ]]
+            grep -oE "$id_pattern" | sed -n 1p) || [[ -z "$id" ]]
           then
             echo "::error::no event ID on the run's screen"
             exit 1
@@ -202,6 +218,15 @@ jobs:
             echo "::error::the run did not exit cleanly"
             exit 1
           }
+
+          # The firing after the acked one prints a poll before the ack is
+          # applied, so the run leaves at least one event unacknowledged.
+          unacked=$(printf '%s\n' "$run" | other_ids "$id")
+          if [[ -z "$unacked" ]]; then
+            echo "::error::the run printed no unacknowledged timer.fired event"
+            exit 1
+          fi
+          printf 'unacknowledged:\n%s\n' "$unacked"
 
           termctrl start restart --record artifacts/restart.termctrl \
             --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 3
@@ -223,6 +248,13 @@ jobs:
             echo "::error::the restart delivered the acked $id again"
             exit 1
           }
+
+          while IFS= read -r pending; do
+            if [[ "$restart" != *"$pending"* ]]; then
+              echo "::error::the restart did not deliver unacknowledged $pending"
+              exit 1
+            fi
+          done <<< "$unacked"
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
