@@ -12,8 +12,10 @@
 //! and reads ack and stop lines on stdin. Each poll reads a bounded number of
 //! input lines, and a line over 512 bytes is discarded with a diagnostic.
 //! If it runs another 65536 bytes without a newline, the reader logs
-//! `discard-bound-exceeded` and discards the rest in bounded chunks. The
-//! reader continues to accept later ack and stop lines.
+//! `discard-bound-exceeded` and discards the remainder in bounded chunks.
+//! A newline before the remainder discard reaches one mebibyte lets later
+//! ack and stop lines reach the reader. At the cap it logs
+//! `discard-total-cap-reached` and ends stdin reading.
 //!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.

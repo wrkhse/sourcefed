@@ -23,6 +23,8 @@ const MAX_INPUT_LINE: u64 = 512;
 const MAX_DISCARD_BYTES: u64 = 65_536;
 // Check for reader shutdown between chunks without copying discarded bytes.
 const DISCARD_CHUNK_BYTES: usize = 512;
+// The remainder discard has its own byte budget after read_line's discard.
+const MAX_TOTAL_DISCARD_BYTES: usize = 1_048_576;
 // At most this many inputs apply between two polls, so a fast writer on stdin
 // cannot hold polling back; the rest wait for the next poll.
 const MAX_INPUTS_PER_POLL: usize = 64;
@@ -43,8 +45,10 @@ enum Command {
     /// reads a bounded number of ack and stop lines from stdin; a line over
     /// 512 bytes is discarded with a diagnostic. If it runs another 65536
     /// bytes without a newline, the reader logs discard-bound-exceeded and
-    /// discards the rest in bounded chunks. The reader continues to accept
-    /// later ack and stop lines.
+    /// discards the remainder in bounded chunks. A newline before the
+    /// remainder discard reaches one mebibyte lets later ack and stop lines
+    /// reach the reader. At the cap it logs discard-total-cap-reached and
+    /// ends stdin reading.
     /// An ack sent while sourcefed-core is stopping may be ignored; its event
     /// is delivered again on the next run.
     Follow(Follow),
@@ -501,31 +505,44 @@ fn discard_line(reader: &mut impl BufRead, chunk: &mut Vec<u8>) -> io::Result<bo
 }
 
 // Skips an over-long line without copying its tail, checking for shutdown
-// between chunks. Bytes after the newline belong to the next command.
+// between chunks. A newline before the byte cap leaves the next command
+// unread; reaching the cap ends stdin reading with an error.
 fn discard_line_remainder(
     reader: &mut impl BufRead,
     state: &ReaderState,
 ) -> io::Result<()> {
-    while !state.is_halted() {
+    let mut left = MAX_TOTAL_DISCARD_BYTES;
+
+    // Allow one iteration per byte for short reads, but never spin at EOF.
+    for _ in 0..MAX_TOTAL_DISCARD_BYTES {
+        if state.is_halted() {
+            return Ok(());
+        }
+
         let buf = reader.fill_buf()?;
-        let size = buf.len().min(DISCARD_CHUNK_BYTES);
+        let size = buf.len().min(DISCARD_CHUNK_BYTES).min(left);
 
         if size == 0 {
-            break;
+            return Ok(());
         }
 
         let newline = buf.iter().take(size).position(|&byte| byte == b'\n');
+        let consumed = newline.map_or(size, |index| index.saturating_add(1));
+        reader.consume(consumed);
+        left = left.saturating_sub(consumed);
 
-        if let Some(newline) = newline {
-            reader.consume(newline.saturating_add(1));
-
+        if left == 0 {
             break;
         }
 
-        reader.consume(size);
+        if newline.is_some() {
+            return Ok(());
+        }
     }
 
-    Ok(())
+    Err(io::Error::other(
+        "discard-total-cap-reached: reading stdin ends",
+    ))
 }
 
 fn parse_input(line: &str) -> Result<Input, String> {
@@ -1137,6 +1154,38 @@ mod tests {
                 [Input::Stop, ack("first")]
             );
         }
+    }
+
+    #[test]
+    fn discard_line_remainder_consumes_bytes_until_eof_without_a_newline() {
+        let mut reader = &b"trailing bytes without a newline"[..];
+        let state = ReaderState::default();
+
+        discard_line_remainder(&mut reader, &state).unwrap();
+
+        assert_eq!(reader.fill_buf().unwrap(), b"");
+    }
+
+    #[test]
+    fn read_input_ends_at_the_total_discard_cap() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let cap = limit
+            .saturating_add(1)
+            .saturating_add(bound)
+            .saturating_add(MAX_TOTAL_DISCARD_BYTES);
+        let pad = "x".repeat(cap);
+        let lines = format!("{pad}x\nstop\nack first\n");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, b"x\nstop\nack first\n");
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
     }
 
     #[test]
