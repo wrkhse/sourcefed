@@ -5,9 +5,9 @@ use std::error::Error;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use clap::{Args, Parser, Subcommand};
@@ -18,6 +18,11 @@ use sourcefed_core::{
 
 // One input line holds a command and an event ID of at most 256 bytes.
 const MAX_INPUT_LINE: u64 = 512;
+// At most this many bytes of an over-long line are discarded in search of
+// its newline, after the bytes read to find it over-long. A line that runs
+// further ends the reading of stdin, so an endless line cannot keep the
+// reader consuming for the rest of the run.
+const MAX_DISCARD_BYTES: u64 = 65_536;
 // At most this many inputs apply between two polls, so a fast writer on stdin
 // cannot hold polling back; the rest wait for the next poll.
 const MAX_INPUTS_PER_POLL: usize = 64;
@@ -36,7 +41,10 @@ struct Cli {
 enum Command {
     /// Follows a timer and prints each event as one JSON line. Each poll
     /// reads a bounded number of ack and stop lines from stdin; a line over
-    /// 512 bytes is discarded with a diagnostic.
+    /// 512 bytes is discarded with a diagnostic, and one that runs 65536
+    /// bytes further ends the reading of stdin.
+    /// An ack sent while sourcefed-core is stopping may be ignored; its event
+    /// is delivered again on the next run.
     Follow(Follow),
 }
 
@@ -66,6 +74,7 @@ enum Input {
 enum Line {
     Read,
     TooLong,
+    Endless,
     End,
 }
 
@@ -157,12 +166,29 @@ fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
     mpsc::sync_channel(MAX_QUEUED_INPUTS)
 }
 
-// What the stdin reader is doing, shared with the polls. The reader claims
-// each line it reads by moving from reading to sending, before parsing it,
-// and sends only a claimed line. Once the run halts it, at most the one line
-// it already claimed still arrives; a line read after the halt is dropped.
+// The reader locks the handoff slot after reading a complete line and holds
+// it through parsing and publication. Shutdown can close the slot first,
+// or take the input already being prepared. Neither operation holds the
+// lock during stdin reads or channel sends.
 #[derive(Debug, Default)]
-struct ReaderState(AtomicU8);
+struct ReaderState {
+    phase: AtomicU8,
+    held: Mutex<Held>,
+    #[cfg(test)]
+    hold_gate: Option<tests::HoldGate>,
+}
+
+#[derive(Debug)]
+enum Held {
+    Open(Option<Input>),
+    Closed,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self::Open(None)
+    }
+}
 
 impl ReaderState {
     const READING: u8 = 0;
@@ -180,19 +206,73 @@ impl ReaderState {
     }
 
     fn advance(&self, from: u8, to: u8) -> bool {
-        self.0
+        self.phase
             .compare_exchange(from, to, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
     fn is_halted(&self) -> bool {
-        self.0.load(Ordering::SeqCst) == Self::HALTED
+        self.phase.load(Ordering::SeqCst) == Self::HALTED
     }
 
     // Halts the reader and returns whether it was sending, in which case one
     // more input arrives before the reader drops its sender.
     fn halt(&self) -> bool {
-        self.0.swap(Self::HALTED, Ordering::SeqCst) == Self::SENDING
+        self.phase.swap(Self::HALTED, Ordering::SeqCst) == Self::SENDING
+    }
+
+    // Parses and publishes one bounded line as a single handoff. False if
+    // finish already closed the slot.
+    fn hold(
+        &self,
+        parse: impl FnOnce() -> Result<Input, String>,
+    ) -> Result<bool, String> {
+        let mut held = self.lock_held();
+        let Held::Open(input) = &mut *held else {
+            return Ok(false);
+        };
+
+        #[cfg(test)]
+        if let Some(gate) = &self.hold_gate {
+            gate.wait();
+        }
+
+        *input = Some(parse()?);
+        drop(held);
+
+        Ok(true)
+    }
+
+    // Moves from reading to sending and hands over the held input. None once
+    // halted, and the input stays held.
+    fn claim(&self) -> Option<Input> {
+        if !self.begin_send() {
+            return None;
+        }
+
+        self.take_held()
+    }
+
+    fn take_held(&self) -> Option<Input> {
+        match &mut *self.lock_held() {
+            Held::Open(input) => input.take(),
+            Held::Closed => None,
+        }
+    }
+
+    fn close_held(&self) -> Option<Input> {
+        let held = std::mem::replace(&mut *self.lock_held(), Held::Closed);
+
+        match held {
+            Held::Open(input) => input,
+            Held::Closed => None,
+        }
+    }
+
+    // Parsing completes before replacing the slot, so the value under a
+    // poisoned lock is still valid and is used as it is.
+    fn lock_held(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -224,18 +304,25 @@ impl Inputs {
         Ok(())
     }
 
-    // Applies every input the reader queued before the run ended, by a stop
-    // or the poll limit, so no ack is replayed after a restart. The queue
-    // holds at most `MAX_QUEUED_INPUTS`, plus the one a halted reader was
-    // already sending.
+    // Applies every input the reader queued or held before the run ended, by
+    // a stop or the poll limit, so no ack is replayed after a restart. The
+    // queue holds at most `MAX_QUEUED_INPUTS`, plus the one a halted reader
+    // was already sending. The input it held without claiming is the last it
+    // read, so it applies after the queue. Nothing here waits on stdin.
     fn finish(&mut self, engine: &mut PollEngine) -> Result<(), Box<dyn Error>> {
         let limit = MAX_QUEUED_INPUTS.saturating_add(1);
 
         if self.reader.halt() {
-            self.drain(engine, limit)
+            self.drain(engine, limit)?;
         } else {
-            self.take(engine, limit)
+            self.take(engine, limit)?;
         }
+
+        if let Some(input) = self.reader.close_held() {
+            self.handle(engine, input)?;
+        }
+
+        Ok(())
     }
 
     // Applies up to `limit` inputs, waiting for each, until the reader drops
@@ -295,6 +382,14 @@ fn read_input(
 
                 continue;
             }
+            Ok(Line::Endless) => {
+                eprintln!(
+                    "sourcefed-core: input line runs {MAX_DISCARD_BYTES} bytes \
+                     past the {MAX_INPUT_LINE}-byte limit; reading stdin ends"
+                );
+
+                return;
+            }
             Err(error) => {
                 eprintln!("sourcefed-core: stdin: {error}");
 
@@ -302,44 +397,55 @@ fn read_input(
             }
         }
 
-        // Claimed before parsing, so a halt that comes after this point
-        // still waits for the line; a halt that came first drops it.
-        if !state.begin_send() {
-            return;
-        }
+        match state.hold(|| {
+            let text =
+                std::str::from_utf8(&line).map_err(|error| error.to_string())?;
 
-        let text = std::str::from_utf8(&line).map_err(|error| error.to_string());
-        let input = match text.and_then(parse_input) {
-            Ok(input) => input,
+            parse_input(text)
+        }) {
+            Ok(true) => {}
+            Ok(false) => return,
             Err(error) => {
                 eprintln!("sourcefed-core: {error}");
 
-                if !state.end_send() {
-                    return;
-                }
-
                 continue;
             }
-        };
-        let stopping = input == Input::Stop;
-
-        if sender.send(input).is_err() {
-            return;
         }
 
-        if stopping {
-            stop.stop();
-        }
-
-        if !state.end_send() {
+        if !send_held(stop, state, sender) {
             return;
         }
     }
 }
 
+// Sends the input the reader holds. False once reading has to end: the run
+// halted the reader, or the polls dropped the receiver.
+fn send_held(
+    stop: &StopHandle,
+    state: &ReaderState,
+    sender: &SyncSender<Input>,
+) -> bool {
+    // A halt that comes after the claim waits for this send; one that came
+    // first leaves the input held.
+    let Some(input) = state.claim() else {
+        return false;
+    };
+    let stopping = input == Input::Stop;
+
+    if sender.send(input).is_err() {
+        return false;
+    }
+
+    if stopping {
+        stop.stop();
+    }
+
+    state.end_send()
+}
+
 // Reads one line of at most `MAX_INPUT_LINE` bytes before its newline into
 // `line`. A longer line is discarded through its newline, so none of it is
-// read as a command.
+// read as a command; one that runs past the discard bound is endless.
 fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Line> {
     line.clear();
 
@@ -356,9 +462,34 @@ fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Line> 
         return Ok(Line::Read);
     }
 
-    reader.skip_until(b'\n')?;
+    if discard_line(reader, line)? {
+        return Ok(Line::TooLong);
+    }
 
-    Ok(Line::TooLong)
+    Ok(Line::Endless)
+}
+
+// Discards the rest of an over-long line through its newline or the end of
+// the input, reading at most `MAX_INPUT_LINE` bytes at a time into `chunk`.
+// False once `MAX_DISCARD_BYTES` are read and the line has not ended; no
+// byte past those is read.
+fn discard_line(reader: &mut impl BufRead, chunk: &mut Vec<u8>) -> io::Result<bool> {
+    let mut left = MAX_DISCARD_BYTES;
+
+    while left > 0 {
+        chunk.clear();
+
+        let size = left.min(MAX_INPUT_LINE);
+        let read = reader.by_ref().take(size).read_until(b'\n', chunk)?;
+
+        if read == 0 || chunk.last() == Some(&b'\n') {
+            return Ok(true);
+        }
+
+        left = left.saturating_sub(size);
+    }
+
+    Ok(false)
 }
 
 fn parse_input(line: &str) -> Result<Input, String> {
@@ -461,12 +592,11 @@ mod tests {
         (inputs, engine)
     }
 
-    // Waits at most `WAIT` for the reader to claim a line, yielding between
-    // checks.
-    fn claimed_within(state: &ReaderState) -> bool {
+    // Waits at most `WAIT` for a phase change, yielding between checks.
+    fn reached_within(ready: impl Fn() -> bool) -> bool {
         let started = Instant::now();
 
-        while state.0.load(Ordering::SeqCst) != ReaderState::SENDING {
+        while !ready() {
             if started.elapsed() >= WAIT {
                 return false;
             }
@@ -475,6 +605,54 @@ mod tests {
         }
 
         true
+    }
+
+    #[derive(Debug)]
+    pub struct HoldGate {
+        entered: mpsc::Sender<()>,
+        resume: Mutex<Receiver<()>>,
+    }
+
+    impl HoldGate {
+        pub fn wait(&self) {
+            self.entered.send(()).unwrap();
+            self.resume.lock().unwrap().recv_timeout(WAIT).unwrap();
+        }
+    }
+
+    // Serves `lines` and halts the reader as their last byte is read, the
+    // way a run ends just after a line reaches the reader.
+    struct HaltsWhenRead<'a> {
+        lines: &'a [u8],
+        state: &'a ReaderState,
+    }
+
+    impl HaltsWhenRead<'_> {
+        fn halt_at_the_end(&self) {
+            if self.lines.is_empty() {
+                self.state.halt();
+            }
+        }
+    }
+
+    impl Read for HaltsWhenRead<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let read = self.lines.read(buf)?;
+            self.halt_at_the_end();
+
+            Ok(read)
+        }
+    }
+
+    impl BufRead for HaltsWhenRead<'_> {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Ok(self.lines)
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.lines.consume(amount);
+            self.halt_at_the_end();
+        }
     }
 
     fn pending_ids(engine: &PollEngine) -> Vec<&str> {
@@ -635,7 +813,9 @@ mod tests {
 
         // The reader claims the line, then blocks on the full queue, so the
         // halt in `finish` comes after the claim and before the send.
-        assert!(claimed_within(&inputs.reader));
+        assert!(reached_within(|| {
+            inputs.reader.phase.load(Ordering::SeqCst) == ReaderState::SENDING
+        }));
 
         let (inputs, engine) = finish_within(inputs, engine);
 
@@ -645,7 +825,77 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_line_releases_the_readers_claim() {
+    fn finish_applies_a_line_the_reader_read_just_before_the_halt() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
+        let line = format!("ack {ID}\n");
+        let reader = HaltsWhenRead {
+            lines: line.as_bytes(),
+            state: &inputs.reader,
+        };
+
+        // The halt lands after the read and before the claim, so the reader
+        // sends nothing and leaves the ack held.
+        read_input(reader, &StopHandle::default(), &inputs.reader, &sender);
+
+        assert_eq!(inputs.receiver.try_iter().collect::<Vec<_>>(), []);
+        assert_eq!(pending_ids(&engine), [ID]);
+
+        let (inputs, engine) = finish_within(inputs, engine);
+
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+        assert!(!inputs.stopped);
+    }
+
+    #[test]
+    fn finish_applies_an_ack_the_reader_is_preparing_at_the_halt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = pending_engine(dir.path());
+        let (sender, mut inputs) = inputs();
+        let (entered, holding) = mpsc::channel();
+        let (resume, released) = mpsc::channel();
+        Arc::get_mut(&mut inputs.reader).unwrap().hold_gate = Some(HoldGate {
+            entered,
+            resume: Mutex::new(released),
+        });
+        let state = Arc::clone(&inputs.reader);
+        let reader_state = Arc::clone(&state);
+        let line = format!("ack {ID}\n");
+        let (done, read) = mpsc::channel();
+
+        thread::spawn(move || {
+            read_input(
+                line.as_bytes(),
+                &StopHandle::default(),
+                &reader_state,
+                &sender,
+            );
+            done.send(()).unwrap();
+        });
+
+        // The reader has read the line but has not published it. Let finish
+        // halt the reader before allowing the handoff to complete.
+        assert_eq!(holding.recv_timeout(WAIT), Ok(()));
+        let (done, finished) = mpsc::channel();
+
+        thread::spawn(move || {
+            inputs.finish(&mut engine).unwrap();
+            done.send(engine).unwrap();
+        });
+
+        assert!(reached_within(|| state.is_halted()));
+        resume.send(()).unwrap();
+
+        let engine = finished.recv_timeout(WAIT).unwrap();
+
+        assert_eq!(read.recv_timeout(WAIT), Ok(()));
+        assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn an_unparseable_line_holds_no_claim() {
         let dir = tempfile::tempdir().unwrap();
         let engine = pending_engine(dir.path());
         let (sender, inputs) = inputs();
@@ -659,8 +909,8 @@ mod tests {
         );
         drop(sender);
 
-        // The reader read to the end and released its claim, so `finish`
-        // has nothing to wait for and applies the ack after the bad line.
+        // The reader read to the end and holds no claim, so `finish` has
+        // nothing to wait for and applies the ack after the bad line.
         let (inputs, engine) = finish_within(inputs, engine);
 
         assert!(inputs.reader.is_halted());
@@ -686,6 +936,27 @@ mod tests {
         assert!(sending.halt());
         assert!(!sending.end_send());
         assert!(sending.is_halted());
+    }
+
+    #[test]
+    fn reader_state_hands_a_held_input_to_one_taker() {
+        let state = ReaderState::default();
+        assert_eq!(state.hold(|| Ok(ack(ID))), Ok(true));
+
+        assert_eq!(state.claim(), Some(ack(ID)));
+        assert_eq!(state.take_held(), None);
+        assert!(state.end_send());
+
+        assert_eq!(state.hold(|| Ok(Input::Stop)), Ok(true));
+
+        assert!(!state.halt());
+        assert_eq!(state.claim(), None);
+        assert_eq!(state.take_held(), Some(Input::Stop));
+        assert_eq!(state.take_held(), None);
+
+        assert_eq!(state.close_held(), None);
+        assert_eq!(state.hold(|| Ok(ack(ID))), Ok(false));
+        assert_eq!(state.take_held(), None);
     }
 
     #[test]
@@ -748,6 +1019,68 @@ mod tests {
 
         assert!(!stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
+    }
+
+    #[test]
+    fn read_input_discards_an_over_long_line_whole_across_chunks() {
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let first_read = limit.saturating_add(1);
+
+        // Cut after the first read, or after one discarded chunk, the tail
+        // of the line would read as a stop.
+        for pad in [first_read, first_read.saturating_add(limit)] {
+            let stop = StopHandle::default();
+            let state = ReaderState::default();
+            let (sender, receiver) = input_channel();
+            let lines = format!("{}stop\nack first\n", "x".repeat(pad));
+
+            read_input(lines.as_bytes(), &stop, &state, &sender);
+
+            assert!(!stop.is_stopped());
+            assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
+        }
+    }
+
+    #[test]
+    fn read_input_discards_a_line_that_ends_at_the_discard_bound() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        // After the first read of one byte past the limit, the newline is
+        // the last byte the bound lets the reader discard.
+        let pad = "x".repeat(limit.saturating_add(bound));
+        let lines = format!("{pad}\nack first\n");
+
+        read_input(lines.as_bytes(), &stop, &state, &sender);
+
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [ack("first")]);
+    }
+
+    #[test]
+    fn read_input_stops_reading_at_the_discard_bound_of_an_endless_line() {
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        // The first read takes one byte past the limit, and the discard
+        // takes the bound; the line runs on by one byte or by many.
+        let read = "x".repeat(limit.saturating_add(1).saturating_add(bound));
+        let later = "\nstop\nack first\n";
+
+        for unread in [later.to_owned(), format!("{}{later}", "x".repeat(limit))] {
+            let stop = StopHandle::default();
+            let state = ReaderState::default();
+            let (sender, receiver) = input_channel();
+            let lines = format!("{read}{unread}");
+            let mut lines = lines.as_bytes();
+
+            read_input(&mut lines, &stop, &state, &sender);
+
+            assert_eq!(std::str::from_utf8(lines), Ok(unread.as_str()));
+            assert!(!stop.is_stopped());
+            assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+        }
     }
 
     #[test]
