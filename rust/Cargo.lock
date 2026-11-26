@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "sourcefed-cli"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "clap",
  "serde_json",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "sourcefed-core"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "jiff",
  "proptest",

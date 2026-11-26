@@ -1,0 +1,217 @@
+name: rust-release
+
+# A tag such as v0.1.0-rc.1 names a release candidate of sourcefed-core, the
+# Rust binary built from the sourcefed-cli package. `build` checks the tag
+# against the package version, builds the binary and smoke-tests its tarball;
+# `recording` films the released binary firing a timer; `release` attaches
+# the tarball, its SHA256SUMS and the recording to a GitHub prerelease.
+
+on:
+  push:
+    tags: ["v0.1.0-rc.*"]
+
+# Each job asks for what it needs; only `release` writes.
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-release-${{ github.ref }}
+
+env:
+  TAG: ${{ github.ref_name }}
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.100.0
+      - name: The tag names the sourcefed-cli version
+        run: |
+          set -euo pipefail
+
+          version=$(cargo +1.100.0 metadata --locked --no-deps \
+            --format-version 1 |
+            jq -r '.packages[] | select(.name == "sourcefed-cli") | .version')
+          [[ "$version" == "${TAG#v}" ]] || {
+            echo "::error::sourcefed-cli is $version, the tag is $TAG"
+            exit 1
+          }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=sourcefed-core-$version-$TARGET.tar.gz" >> "$GITHUB_ENV"
+      - run: cargo +1.100.0 build --release --locked -p sourcefed-cli
+      - name: Pack the binary
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/dist"
+          tar -czf "$RUNNER_TEMP/dist/$ARCHIVE" -C target/release sourcefed-core
+          tar -tzvf "$RUNNER_TEMP/dist/$ARCHIVE"
+      # Runs the binary from the tarball, outside the checkout, the way a
+      # person who downloads it would.
+      - name: Smoke-test the packed binary
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          tar -xzf "$RUNNER_TEMP/dist/$ARCHIVE" -C "$work"
+          cd "$work"
+
+          printed=$(./sourcefed-core --version)
+          [[ "$printed" == "sourcefed-core $VERSION" ]] || {
+            echo "::error::--version printed '$printed'"
+            exit 1
+          }
+
+          # The first poll saves the next firing; a later one prints it.
+          timeout 30 ./sourcefed-core follow --job smoke --every 1 \
+            --state-dir "$work/state" --max-polls 3 \
+            < /dev/null > events.jsonl
+          cat events.jsonl
+          jq -e -s 'any(.[]; .kind == "timer.fired")' events.jsonl
+      - uses: >- # v7.0.2
+          actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sourcefed-core-tarball
+          path: ${{ runner.temp }}/dist/*.tar.gz
+          if-no-files-found: error
+
+  # Films the packed binary following a timer, for the prerelease. The
+  # recording is a release asset only; it is never committed.
+  recording:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: sourcefed-core-tarball
+          path: ${{ runner.temp }}/dist
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.100.0
+      # terminal-control builds its Ghostty core with Zig 0.15.2.
+      - name: Install Zig 0.15.2
+        env:
+          ZIG_SHA256: >-
+            02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+        run: |
+          set -euo pipefail
+
+          url=https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zig.tar.xz" "$url"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+      - name: Install termctrl 1.2.1 and ffmpeg
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          cargo +1.100.0 install terminal-control --version 1.2.1 --locked
+          termctrl --version
+      - name: Record the binary firing a timer
+        run: |
+          set -euo pipefail
+
+          work=$(mktemp -d)
+          trap 'termctrl stop demo || true; rm -rf "$work"' EXIT
+          tar -xzf "$RUNNER_TEMP"/dist/*.tar.gz -C "$work"
+          mkdir -p artifacts
+
+          termctrl start demo --record artifacts/demo.termctrl \
+            --cols 120 --rows 14 -- \
+            "$work/sourcefed-core" follow --job demo --every 1 \
+            --state-dir "$work/state" --max-polls 4
+          termctrl mark demo start
+          termctrl wait demo timer.fired --timeout 30000
+          termctrl mark demo fired
+          termctrl send demo text:stop enter
+          termctrl mark demo stopped
+          termctrl stop demo
+          termctrl markers artifacts/demo.termctrl
+      - name: Export the video
+        run: |
+          set -euo pipefail
+
+          cat > artifacts/demo-edit.json <<'JSON'
+          {
+            "clips": [
+              {
+                "from": "start",
+                "to": "fired",
+                "caption": "follow --job demo --every 1: the timer fires",
+                "hold_ms": 2500
+              },
+              {
+                "from": "fired",
+                "to": "stopped",
+                "caption": "Each firing is one timer.fired JSON line; stop ends it",
+                "hold_ms": 2500
+              }
+            ]
+          }
+          JSON
+          termctrl video artifacts/demo.termctrl \
+            --edit artifacts/demo-edit.json --footer --fps 10 \
+            --tail-ms 3000 --out artifacts/demo.mp4
+          ls -l artifacts/demo.mp4
+      - uses: >- # v7.0.2
+          actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: demo-recording
+          path: artifacts/demo.mp4
+          if-no-files-found: error
+
+  release:
+    needs: [build, recording]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: sourcefed-core-tarball
+          path: ${{ runner.temp }}/release
+      - uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: demo-recording
+          path: ${{ runner.temp }}/release
+      - name: Write SHA256SUMS
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -euo pipefail
+
+          sha256sum -- *.tar.gz demo.mp4 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish the GitHub prerelease
+        working-directory: ${{ runner.temp }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          gh release create "$TAG" --prerelease --verify-tag \
+            --title "sourcefed-core $TAG" \
+            --notes "A release candidate of sourcefed-core, the Rust core, \
+          for x86_64 Linux. Check the tarball against SHA256SUMS, unpack it \
+          and run sourcefed-core --version. demo.mp4 shows this binary \
+          following a timer." \
+            -- *.tar.gz SHA256SUMS demo.mp4
