@@ -1,0 +1,313 @@
+//! The guarantees a simulation run must satisfy.
+
+use std::fmt;
+use std::time::Duration;
+
+use jiff::Timestamp;
+use sourcefed_core::{DEFAULT_BACKOFF_CAP_SECS, EventId, MAX_WAIT_SECS};
+
+use crate::clock::{ClockFault, SimClock};
+use crate::store::MemoryStore;
+
+/// A scripted clock reading and what the engine did with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockMark {
+    /// The reading the clock was asked to report.
+    pub fault: ClockFault,
+    /// Commits observed before the reading.
+    pub polls_before: usize,
+    /// Commits observed after the run that consumed it.
+    pub polls_after: usize,
+    /// Whether the engine was stopped after that run.
+    pub stopped: bool,
+}
+
+/// Which durable write was scripted to fail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreFaultKind {
+    /// A poll's commit failed.
+    Commit,
+    /// An acknowledgement failed.
+    Ack,
+}
+
+/// What the run emitted, delivered, printed and injected.
+#[derive(Debug, Default)]
+pub struct Trace {
+    tick: u64,
+    /// IDs the engine saved as fresh events, in commit order.
+    pub emitted: Vec<EventId>,
+    /// Printed IDs and the tick when each was printed.
+    pub printed: Vec<(EventId, u64)>,
+    /// Acknowledged IDs and the tick when each ack was saved.
+    pub acked: Vec<(EventId, u64)>,
+    /// Scripted readings and the engine's response to each.
+    pub clock_faults: Vec<ClockMark>,
+    /// Store faults injected during the run.
+    pub store_faults: Vec<StoreFaultKind>,
+    /// Sleep durations requested by the engine.
+    pub sleeps: Vec<Duration>,
+    /// Virtual time at the start of the run.
+    pub start: Option<Timestamp>,
+    /// Seconds added to virtual time outside sleeps.
+    pub advance_secs: u64,
+    /// Commits observed in the run.
+    pub polls: usize,
+    /// How many steps the run was given.
+    pub steps: u32,
+    /// The timer interval in seconds.
+    pub interval_secs: u64,
+}
+
+impl Trace {
+    /// Starts a trace for a run with the given virtual start and timer.
+    #[must_use]
+    pub fn new(start: Timestamp, steps: u32, interval_secs: u64) -> Self {
+        Self {
+            start: Some(start),
+            steps,
+            interval_secs,
+            ..Self::default()
+        }
+    }
+
+    /// Records an ID the engine saved as a fresh event.
+    pub fn emit(&mut self, id: &EventId) {
+        self.emitted.push(id.clone());
+    }
+
+    /// Records an ID written to stdout.
+    pub fn print(&mut self, id: &EventId) {
+        self.bump();
+        self.printed.push((id.clone(), self.tick));
+    }
+
+    /// Records an ID whose acknowledgement was saved.
+    pub fn ack(&mut self, id: &EventId) {
+        self.bump();
+        self.acked.push((id.clone(), self.tick));
+    }
+
+    const fn bump(&mut self) {
+        self.tick = self.tick.saturating_add(1);
+    }
+}
+
+/// A guarantee the run failed, with a short reason.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Violation {
+    /// An emitted event was neither printed nor acknowledged.
+    AtLeastOnceDelivery { id: String, reason: String },
+    /// An acknowledged event was printed again or left pending.
+    NoAckLostBeforeHalt { id: String, reason: String },
+    /// State or pending work outgrew its bounds; checked by pinned seeds.
+    #[expect(dead_code, reason = "reserved for the PR 4 pinned seeds")]
+    BoundedCleanup { reason: String },
+    /// An out-of-range reading did not fail closed like the real clock.
+    ClockFaultsFailClosed { fault: ClockFault, reason: String },
+    /// Simulated sleeps or poll lateness left their bounds.
+    PollsOnTimeInSimulatedTime { reason: String },
+}
+
+impl Violation {
+    /// Returns the guarantee's name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::AtLeastOnceDelivery { .. } => "at-least-once delivery",
+            Self::NoAckLostBeforeHalt { .. } => "no ack lost before halt",
+            Self::BoundedCleanup { .. } => "bounded cleanup",
+            Self::ClockFaultsFailClosed { .. } => "clock faults fail closed",
+            Self::PollsOnTimeInSimulatedTime { .. } => {
+                "polls on time in simulated time"
+            }
+        }
+    }
+
+    /// Returns the short reason the guarantee failed.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::AtLeastOnceDelivery { reason, .. }
+            | Self::NoAckLostBeforeHalt { reason, .. }
+            | Self::BoundedCleanup { reason }
+            | Self::ClockFaultsFailClosed { reason, .. }
+            | Self::PollsOnTimeInSimulatedTime { reason } => reason,
+        }
+    }
+}
+
+impl fmt::Display for Violation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.name(), self.reason())
+    }
+}
+
+impl std::error::Error for Violation {}
+
+/// Checks a completed trace against the guarantees it can prove.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Checker;
+
+impl Checker {
+    /// Returns each violated guarantee, in check order.
+    ///
+    /// Bounded cleanup is reserved for the pinned seeds in the next slice;
+    /// this checker does not claim to prove it.
+    #[must_use]
+    pub fn check(
+        trace: &Trace,
+        clock: &SimClock,
+        store: &MemoryStore,
+    ) -> Vec<Violation> {
+        let mut violations = Vec::new();
+
+        Self::check_delivery(trace, store, &mut violations);
+        Self::check_clock(trace, &mut violations);
+        Self::check_sleeps(trace, clock, &mut violations);
+
+        violations
+    }
+
+    fn check_delivery(trace: &Trace, store: &MemoryStore, out: &mut Vec<Violation>) {
+        for id in &trace.emitted {
+            let printed = trace.printed.iter().any(|(value, _)| value == id);
+            let acked = trace.acked.iter().any(|(value, _)| value == id);
+
+            // An ack saved before any print is a delivered event too.
+            if !printed && !acked {
+                out.push(Violation::AtLeastOnceDelivery {
+                    id: id.as_str().to_owned(),
+                    reason: "emitted event was neither printed nor acked".into(),
+                });
+            }
+        }
+
+        for (id, at) in &trace.acked {
+            let replayed = trace
+                .printed
+                .iter()
+                .any(|(value, tick)| value == id && tick > at);
+
+            if replayed {
+                out.push(Violation::NoAckLostBeforeHalt {
+                    id: id.as_str().to_owned(),
+                    reason: "acked event was printed again".into(),
+                });
+            } else if store.is_pending(id) {
+                out.push(Violation::NoAckLostBeforeHalt {
+                    id: id.as_str().to_owned(),
+                    reason: "acked event is still pending".into(),
+                });
+            }
+        }
+    }
+
+    fn check_clock(trace: &Trace, out: &mut Vec<Violation>) {
+        for mark in &trace.clock_faults {
+            match mark.fault {
+                ClockFault::Ok => {}
+                ClockFault::Past => {
+                    if !mark.stopped {
+                        out.push(Violation::ClockFaultsFailClosed {
+                            fault: mark.fault,
+                            reason: "past reading left the engine running".into(),
+                        });
+                    }
+                }
+                ClockFault::Future => {
+                    if mark.polls_after != mark.polls_before {
+                        out.push(Violation::ClockFaultsFailClosed {
+                            fault: mark.fault,
+                            reason: "future reading polled while deferred".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_sleeps(trace: &Trace, clock: &SimClock, out: &mut Vec<Violation>) {
+        let per_step = DEFAULT_BACKOFF_CAP_SECS
+            .div_ceil(MAX_WAIT_SECS)
+            .saturating_add(1);
+        let budget = u64::from(trace.steps)
+            .saturating_mul(per_step)
+            .saturating_mul(MAX_WAIT_SECS);
+        let mut total = 0_u64;
+
+        for sleep in &trace.sleeps {
+            let secs = sleep.as_secs();
+
+            if secs > MAX_WAIT_SECS {
+                out.push(Violation::PollsOnTimeInSimulatedTime {
+                    reason: "a sleep exceeded the wait cap".into(),
+                });
+            }
+
+            total = total.saturating_add(secs);
+        }
+
+        if total > budget {
+            out.push(Violation::PollsOnTimeInSimulatedTime {
+                reason: "total sleeps exceeded the step budget".into(),
+            });
+        }
+
+        let Some(start) = trace.start else {
+            return;
+        };
+        let elapsed = total.saturating_add(trace.advance_secs);
+        let expected = start
+            .checked_add(Duration::from_secs(elapsed))
+            .unwrap_or(Timestamp::MAX);
+
+        if clock.virtual_now() != expected {
+            out.push(Violation::PollsOnTimeInSimulatedTime {
+                reason: "virtual time moved without a sleep or advance".into(),
+            });
+        }
+
+        Self::check_lateness(trace, clock, start, per_step, out);
+    }
+
+    fn check_lateness(
+        trace: &Trace,
+        clock: &SimClock,
+        start: Timestamp,
+        per_step: u64,
+        out: &mut Vec<Violation>,
+    ) {
+        if trace.polls == 0 {
+            return;
+        }
+
+        let done = u64::try_from(trace.polls.saturating_sub(1)).unwrap_or(u64::MAX);
+        let scheduled = done.saturating_mul(trace.interval_secs);
+        let due = start
+            .checked_add(Duration::from_secs(scheduled))
+            .unwrap_or(Timestamp::MAX);
+        let now = clock.virtual_now();
+
+        if now < due {
+            out.push(Violation::PollsOnTimeInSimulatedTime {
+                reason: "a poll happened before its due time".into(),
+            });
+        }
+
+        let faults = u64::try_from(trace.clock_faults.len()).unwrap_or(u64::MAX);
+        let slack = per_step
+            .saturating_mul(MAX_WAIT_SECS)
+            .saturating_add(faults.saturating_mul(MAX_WAIT_SECS))
+            .saturating_add(trace.advance_secs);
+        let limit = due
+            .checked_add(Duration::from_secs(slack))
+            .unwrap_or(Timestamp::MAX);
+
+        if now > limit {
+            out.push(Violation::PollsOnTimeInSimulatedTime {
+                reason: "lateness accumulated beyond the wait budget".into(),
+            });
+        }
+    }
+}
