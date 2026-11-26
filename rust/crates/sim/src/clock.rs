@@ -111,6 +111,11 @@ impl Clock for SimClock {
         drop(readings);
 
         let Some(reading) = reading else {
+            // Invariant: a poisoned time lock fails closed, so an unscripted
+            // reading reports an error instead of the MAX sentinel.
+            if self.now.lock().is_err() {
+                return Err(ClockError::Past);
+            }
             return Ok(self.virtual_now());
         };
 
@@ -129,14 +134,16 @@ impl Clock for SimClock {
     }
 
     fn sleep(&self, duration: Duration) {
-        let next = self
-            .virtual_now()
-            .checked_add(duration)
-            .unwrap_or(Timestamp::MAX);
-        self.set_now(next);
+        // Invariant: a poisoned time lock fails closed; no duration is
+        // applied and none is logged for a sleep that never moved time.
+        let Ok(mut now) = self.now.lock() else {
+            return;
+        };
+        *now = now.checked_add(duration).unwrap_or(Timestamp::MAX);
+        drop(now);
 
         // Invariant: a poisoned log is skipped, but virtual time still moves,
-        // so the checker sees time move without a sleep or advance.
+        // so the checker sees time move without a logged sleep.
         if let Ok(mut sleeps) = self.sleeps.lock() {
             sleeps.push(duration);
         }
@@ -257,6 +264,24 @@ mod tests {
         let clock = Arc::new(SimClock::new(at(0)));
         poison_time(&clock);
 
+        assert_eq!(clock.virtual_now(), Timestamp::MAX);
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_fails_closed_on_reading() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        poison_time(&clock);
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+    }
+
+    #[test]
+    fn a_poisoned_time_lock_does_not_log_a_sleep() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        poison_time(&clock);
+        clock.sleep(Duration::from_secs(5));
+
+        assert_eq!(clock.sleep_log(), Vec::<Duration>::new());
         assert_eq!(clock.virtual_now(), Timestamp::MAX);
     }
 
