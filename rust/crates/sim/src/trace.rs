@@ -573,4 +573,25 @@ mod tests {
 
         assert_eq!(trace.hash(), 0x0F36_9EF7_383E_59EC);
     }
+
+    #[test]
+    fn every_hasher_write_method_produces_a_pinned_fnv_1a_value() {
+        let finish = |write: fn(&mut FnvHasher)| {
+            let mut hasher = FnvHasher::default();
+            write(&mut hasher);
+            hasher.finish()
+        };
+
+        assert_eq!(finish(|h| h.write_u16(0x1234)), 0x7EE9_E07B_4B1C_0883);
+        assert_eq!(finish(|h| h.write_u32(0x1234_5678)), 0xCCCF_D053_E47C_3365);
+        assert_eq!(
+            finish(|h| h.write_u128(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF)),
+            0xB536_2734_0C64_A305
+        );
+        assert_eq!(finish(|h| h.write_usize(0x1234)), 0x07B3_2D0D_C6FD_F72B);
+        assert_eq!(finish(|h| h.write_i8(-5)), 0xAF64_764C_8602_F23A);
+        assert_eq!(finish(|h| h.write_i16(-1234)), 0x07D9_C507_B49F_AEBE);
+        assert_eq!(finish(|h| h.write_i128(-5)), 0x9124_1FDF_D789_5751);
+        assert_eq!(finish(|h| h.write_isize(-5)), 0x714E_D5A0_3C1C_29B9);
+    }
 }
