@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use sourcefed_core::{
@@ -18,17 +19,23 @@ use sourcefed_core::{
 
 // One input line holds a command and an event ID of at most 256 bytes.
 const MAX_INPUT_LINE: u64 = 512;
-// At most this many bytes of an over-long line are discarded in search of
-// its newline, after the bytes read to find it over-long. A line that runs
-// further ends the reading of stdin, so an endless line cannot keep the
-// reader consuming for the rest of the run.
+// After detecting an over-long line, read_line discards at most this many
+// more bytes before handing off to the reader's interruptible discard.
 const MAX_DISCARD_BYTES: u64 = 65_536;
+// Check for reader shutdown between chunks without copying discarded bytes.
+const DISCARD_CHUNK_BYTES: usize = 512;
+// The remainder discard has its own byte budget after read_line's discard.
+const MAX_TOTAL_DISCARD_BYTES: usize = 1_048_576;
 // At most this many inputs apply between two polls, so a fast writer on stdin
-// cannot hold polling back; the rest wait for the next poll.
+// cannot hold polling back; the rest wait for the next poll. The reader also
+// stops if it discards this many over-long lines without sending an input.
 const MAX_INPUTS_PER_POLL: usize = 64;
 // At most this many inputs wait between the stdin reader and the polls; once
 // full, the reader blocks rather than growing memory.
 const MAX_QUEUED_INPUTS: usize = 128;
+// While finishing, wait at most this long for each input from a halted
+// reader, so a stalled reader cannot hold shutdown back.
+const DRAIN_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Parser)]
 #[command(name = "sourcefed-core", version)]
@@ -41,8 +48,15 @@ struct Cli {
 enum Command {
     /// Follows a timer and prints each event as one JSON line. Each poll
     /// reads a bounded number of ack and stop lines from stdin; a line over
-    /// 512 bytes is discarded with a diagnostic, and one that runs 65536
-    /// bytes further ends the reading of stdin.
+    /// 512 bytes is discarded with a diagnostic. If it runs another 65536
+    /// bytes without a newline, the reader logs discard-bound-exceeded and
+    /// discards the remainder in bounded chunks. A newline within the
+    /// remainder discard's first mebibyte lets later ack and stop lines
+    /// reach the reader unless the discarded-line budget is exhausted. The
+    /// byte cap ends stdin reading with discard-total-cap-reached. The
+    /// reader also logs discard-line-budget-exhausted and stops after
+    /// discarding 64 over-long lines without sending an input. A successful
+    /// input send resets the count; an invalid input does not.
     /// An ack sent while sourcefed-core is stopping may be ignored; its event
     /// is delivered again on the next run.
     Follow(Follow),
@@ -325,15 +339,15 @@ impl Inputs {
         Ok(())
     }
 
-    // Applies up to `limit` inputs, waiting for each, until the reader drops
-    // its sender.
+    // Applies up to `limit` inputs, waiting at most `DRAIN_WAIT` for each,
+    // until the reader drops its sender or stops sending.
     fn drain(
         &mut self,
         engine: &mut PollEngine,
         limit: usize,
     ) -> Result<(), Box<dyn Error>> {
         for _ in 0..limit {
-            let Ok(input) = self.receiver.recv() else {
+            let Ok(input) = self.receiver.recv_timeout(DRAIN_WAIT) else {
                 break;
             };
 
@@ -370,25 +384,44 @@ fn read_input(
     sender: &SyncSender<Input>,
 ) {
     let mut line = Vec::new();
+    let mut discarded_lines = 0_usize;
 
     while !state.is_halted() {
         match read_line(&mut reader, &mut line) {
             Ok(Line::End) => return,
             Ok(Line::Read) => {}
-            Ok(Line::TooLong) => {
-                eprintln!(
-                    "sourcefed-core: input line exceeds {MAX_INPUT_LINE} bytes"
-                );
+            Ok(discarded_line @ (Line::TooLong | Line::Endless)) => {
+                if discarded_line == Line::Endless {
+                    eprintln!(
+                        "sourcefed-core: discard-bound-exceeded: input line runs \
+                         {MAX_DISCARD_BYTES} bytes past the \
+                         {MAX_INPUT_LINE}-byte limit"
+                    );
+
+                    if let Err(error) = discard_line_remainder(&mut reader, state) {
+                        eprintln!("sourcefed-core: stdin: {error}");
+
+                        return;
+                    }
+                } else {
+                    eprintln!(
+                        "sourcefed-core: input line exceeds {MAX_INPUT_LINE} bytes"
+                    );
+                }
+
+                discarded_lines = discarded_lines.saturating_add(1);
+
+                if discarded_lines == MAX_INPUTS_PER_POLL {
+                    eprintln!(
+                        "sourcefed-core: discard-line-budget-exhausted: discarded \
+                         {MAX_INPUTS_PER_POLL} over-long lines without sending an \
+                         input; reading stdin ends"
+                    );
+
+                    return;
+                }
 
                 continue;
-            }
-            Ok(Line::Endless) => {
-                eprintln!(
-                    "sourcefed-core: input line runs {MAX_DISCARD_BYTES} bytes \
-                     past the {MAX_INPUT_LINE}-byte limit; reading stdin ends"
-                );
-
-                return;
             }
             Err(error) => {
                 eprintln!("sourcefed-core: stdin: {error}");
@@ -415,6 +448,8 @@ fn read_input(
         if !send_held(stop, state, sender) {
             return;
         }
+
+        discarded_lines = 0;
     }
 }
 
@@ -444,8 +479,8 @@ fn send_held(
 }
 
 // Reads one line of at most `MAX_INPUT_LINE` bytes before its newline into
-// `line`. A longer line is discarded through its newline, so none of it is
-// read as a command; one that runs past the discard bound is endless.
+// `line`. A longer line is discarded through its newline or up to the
+// discard bound. If it runs past the bound, the caller skips the rest.
 fn read_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Line> {
     line.clear();
 
@@ -490,6 +525,48 @@ fn discard_line(reader: &mut impl BufRead, chunk: &mut Vec<u8>) -> io::Result<bo
     }
 
     Ok(false)
+}
+
+// Skips an over-long line without copying its tail, checking for shutdown
+// between chunks. A newline within the byte cap, even as its last byte,
+// leaves the next command unread; running past the cap ends stdin reading
+// with an error.
+fn discard_line_remainder(
+    reader: &mut impl BufRead,
+    state: &ReaderState,
+) -> io::Result<()> {
+    let mut left = MAX_TOTAL_DISCARD_BYTES;
+
+    // Allow one iteration per byte for short reads, but never spin at EOF.
+    for _ in 0..MAX_TOTAL_DISCARD_BYTES {
+        if state.is_halted() {
+            return Ok(());
+        }
+
+        let buf = reader.fill_buf()?;
+        let size = buf.len().min(DISCARD_CHUNK_BYTES).min(left);
+
+        if size == 0 {
+            return Ok(());
+        }
+
+        let newline = buf.iter().take(size).position(|&byte| byte == b'\n');
+        let consumed = newline.map_or(size, |index| index.saturating_add(1));
+        reader.consume(consumed);
+        left = left.saturating_sub(consumed);
+
+        if newline.is_some() {
+            return Ok(());
+        }
+
+        if left == 0 {
+            break;
+        }
+    }
+
+    Err(io::Error::other(
+        "discard-total-cap-reached: reading stdin ends",
+    ))
 }
 
 fn parse_input(line: &str) -> Result<Input, String> {
@@ -582,10 +659,15 @@ mod tests {
 
         thread::spawn(move || {
             let result = inputs.finish(&mut engine).map_err(|e| e.to_string());
-            done.send((result, inputs, engine)).unwrap();
+            // After a timeout nobody receives; the assertion below reports it.
+            let _ = done.send((result, inputs, engine));
         });
 
-        let (result, inputs, engine) = finished.recv_timeout(WAIT).unwrap();
+        let received = finished.recv_timeout(WAIT);
+
+        assert!(received.is_ok(), "finish did not return within {WAIT:?}");
+
+        let (result, inputs, engine) = received.unwrap();
 
         assert_eq!(result, Ok(()));
 
@@ -789,6 +871,40 @@ mod tests {
         assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn finish_leaves_an_ack_sent_after_the_drain_window_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = pending_engine(dir.path());
+        let (sender, inputs) = inputs();
+        let (release, gate) = mpsc::channel();
+        let (done, sent) = mpsc::channel();
+
+        // The reader is mid-send, but holds its ack until the test releases
+        // it, after `finish` has stopped draining.
+        assert!(inputs.reader.begin_send());
+
+        thread::spawn(move || {
+            if gate.recv_timeout(WAIT).is_ok() {
+                let _ = done.send(sender.send(ack(ID)));
+            }
+        });
+
+        let started = Instant::now();
+        let (inputs, engine) = finish_within(inputs, engine);
+
+        assert!(started.elapsed() >= DRAIN_WAIT);
+        assert!(inputs.reader.is_halted());
+        assert_eq!(pending_ids(&engine), [ID]);
+
+        release.send(()).unwrap();
+
+        // The late ack reaches the queue only after `finish` returned, so the
+        // event stays pending and is delivered again on the next run.
+        assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
+        assert_eq!(inputs.receiver.try_iter().collect::<Vec<_>>(), [ack(ID)]);
+        assert_eq!(pending_ids(&engine), [ID]);
     }
 
     #[test]
@@ -1060,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn read_input_stops_reading_at_the_discard_bound_of_an_endless_line() {
+    fn read_line_stops_at_the_discard_bound_of_an_endless_line() {
         let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
         let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
         // The first read takes one byte past the limit, and the discard
@@ -1069,18 +1185,154 @@ mod tests {
         let later = "\nstop\nack first\n";
 
         for unread in [later.to_owned(), format!("{}{later}", "x".repeat(limit))] {
+            let lines = format!("{read}{unread}");
+            let mut lines = lines.as_bytes();
+            let mut line = Vec::new();
+
+            assert_eq!(read_line(&mut lines, &mut line).unwrap(), Line::Endless);
+            assert_eq!(lines, unread.as_bytes());
+        }
+    }
+
+    #[test]
+    fn read_input_processes_stop_and_ack_after_the_discard_bound() {
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let pad = "x".repeat(limit.saturating_add(1).saturating_add(bound));
+
+        // The over-long line ends in a fake stop, with or without another
+        // full chunk before it. Only the stop on its own line should arrive.
+        for extra in [0, DISCARD_CHUNK_BYTES] {
             let stop = StopHandle::default();
             let state = ReaderState::default();
             let (sender, receiver) = input_channel();
-            let lines = format!("{read}{unread}");
-            let mut lines = lines.as_bytes();
+            let tail = "x".repeat(extra);
+            let lines = format!("{pad}{tail}stop\nstop\nack first\n");
 
-            read_input(&mut lines, &stop, &state, &sender);
+            read_input(lines.as_bytes(), &stop, &state, &sender);
 
-            assert_eq!(std::str::from_utf8(lines), Ok(unread.as_str()));
-            assert!(!stop.is_stopped());
-            assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+            assert!(stop.is_stopped());
+            assert_eq!(
+                receiver.try_iter().collect::<Vec<_>>(),
+                [Input::Stop, ack("first")]
+            );
         }
+    }
+
+    #[test]
+    fn discard_line_remainder_consumes_bytes_until_eof_without_a_newline() {
+        let mut reader = &b"trailing bytes without a newline"[..];
+        let state = ReaderState::default();
+
+        discard_line_remainder(&mut reader, &state).unwrap();
+
+        assert_eq!(reader.fill_buf().unwrap(), b"");
+    }
+
+    #[test]
+    fn read_input_accepts_commands_after_a_newline_at_the_total_discard_cap() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        // The remainder discard's last allowed byte is the newline.
+        let cap = limit
+            .saturating_add(1)
+            .saturating_add(bound)
+            .saturating_add(MAX_TOTAL_DISCARD_BYTES.saturating_sub(1));
+        let pad = "x".repeat(cap);
+        let lines = format!("{pad}\nstop\nack first\n");
+
+        read_input(lines.as_bytes(), &stop, &state, &sender);
+
+        assert!(stop.is_stopped());
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [Input::Stop, ack("first")]
+        );
+    }
+
+    #[test]
+    fn read_input_ends_at_the_total_discard_cap() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let cap = limit
+            .saturating_add(1)
+            .saturating_add(bound)
+            .saturating_add(MAX_TOTAL_DISCARD_BYTES);
+        let pad = "x".repeat(cap);
+        let lines = format!("{pad}x\nstop\nack first\n");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, b"x\nstop\nack first\n");
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
+    fn read_input_ends_at_the_discarded_line_budget() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let over = limit.saturating_add(1);
+        let line = format!("{}\n", "x".repeat(over));
+        let group = line.repeat(MAX_INPUTS_PER_POLL.saturating_sub(1));
+        // The last discard also crosses the first discard bound.
+        let last = "x".repeat(over.saturating_add(bound));
+        let unread = format!("{line}stop\n");
+        let lines = format!("{group}{last}\n{unread}");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, unread.as_bytes());
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
+    fn read_input_does_not_reset_the_discarded_line_budget_on_invalid_input() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let pair = format!("{}\nbogus\n", "x".repeat(limit.saturating_add(1)));
+        let group = pair.repeat(MAX_INPUTS_PER_POLL);
+        let lines = format!("{group}stop\n");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, b"bogus\nstop\n");
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
+    fn read_input_resets_the_discarded_line_budget_after_an_ack() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let line = format!("{}\n", "x".repeat(limit.saturating_add(1)));
+        let group = line.repeat(MAX_INPUTS_PER_POLL.saturating_sub(1));
+        let lines = format!("{group}ack first\n{group}stop\n");
+
+        read_input(lines.as_bytes(), &stop, &state, &sender);
+
+        assert!(stop.is_stopped());
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [ack("first"), Input::Stop]
+        );
     }
 
     #[test]

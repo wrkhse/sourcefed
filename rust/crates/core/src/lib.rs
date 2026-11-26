@@ -11,7 +11,15 @@
 //! through the poll engine, prints each normalized event as one NDJSON line,
 //! and reads ack and stop lines on stdin. Each poll reads a bounded number of
 //! input lines, and a line over 512 bytes is discarded with a diagnostic.
-//! If it runs 65536 bytes further, the reader stops reading stdin.
+//! If it runs another 65536 bytes without a newline, the reader logs
+//! `discard-bound-exceeded` and discards the remainder in bounded chunks.
+//! A newline within the remainder discard's first mebibyte lets later
+//! ack and stop lines reach the reader unless the discarded-line budget is
+//! exhausted. The byte cap ends stdin reading with
+//! `discard-total-cap-reached`. The reader also logs
+//! `discard-line-budget-exhausted` and stops after discarding 64 over-long
+//! lines without sending an input. A successful input send resets the count;
+//! an invalid input does not.
 //!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.
