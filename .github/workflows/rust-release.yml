@@ -593,8 +593,8 @@ jobs:
 
           # The exported GIF is the primary proof that the holds survived
           # export: its duration must cover every edit-plan clip hold plus
-          # the final tail. Allow 0.5 s for frame rounding.
-          expected_ms=$((holds_ms + export_tail[1]))
+          # a tail for each take. Allow 0.5 s for frame rounding.
+          expected_ms=$((holds_ms + ${#takes[@]} * export_tail[1]))
           gif_duration=$(ffprobe -v error -show_entries format=duration \
             -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
           if [[ ! $gif_duration =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
@@ -605,7 +605,7 @@ jobs:
           if ! awk -v d="$gif_duration" -v ms="$expected_ms" \
             'BEGIN { exit !(d + 0.5 >= ms / 1000) }'; then
             echo "::error::demo.gif lasts ${gif_duration}s, below the edit"
-            echo "::error::holds plus final hold of ${minimum}s"
+            echo "::error::holds plus a tail per take of ${minimum}s"
             exit 1
           fi
           echo "demo.gif lasts ${gif_duration}s, minimum ${minimum}s"
