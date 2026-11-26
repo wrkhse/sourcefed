@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn schedule_tracks_a_queued_ack() {
-        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
         let mut inputs = Inputs::new();
 
         inputs.schedule(&mut seed, &[event("e1")], 2);
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn next_input_records_an_applied_ack() {
-        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
         let pending = event("e1");
         let id = pending.id().clone();
         let mut inputs = Inputs::new();
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn next_input_reports_a_stop_without_an_ack() {
-        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
         let mut inputs = Inputs::new();
         let mut engine = engine();
         inputs.schedule(&mut seed, &[], 1);
