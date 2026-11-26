@@ -12,6 +12,7 @@ use sourcefed_core::{
 };
 use sourcefed_sim::{MemoryStore, Seed, SimClock};
 
+use crate::check::Trace;
 use crate::input::ScriptedInputs;
 
 const NO_PENDING: &str = "sim: missing pending queue";
@@ -35,12 +36,24 @@ pub struct Summary {
     pub outcome: Outcome,
 }
 
+/// A run's summary together with the observations it produced.
+#[derive(Debug)]
+pub struct Run {
+    pub summary: Summary,
+    pub trace: Trace,
+}
+
 /// Builds a real engine over a timer, the virtual clock and memory store.
 ///
 /// # Errors
 /// Returns the validation error when the monitor, interval or engine cannot
 /// be built.
+#[cfg(test)]
 pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
+    build_engine()
+}
+
+fn build_engine() -> Result<PollEngine<MemoryStore>, String> {
     let source = TimerSource::new("sim".into(), 1).map_err(|e| e.to_string())?;
     let config = MonitorConfig {
         id: MonitorId::new("sim".into()).map_err(|e| e.to_string())?,
@@ -57,14 +70,28 @@ pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
 ///
 /// # Errors
 /// Returns the engine, store, serialisation or output error that ends the run.
+#[cfg(test)]
 pub fn simulate(
     seed: Seed,
     steps: u32,
     out: &mut impl Write,
 ) -> Result<Summary, Box<dyn Error>> {
-    let mut engine = engine()?;
+    Ok(simulate_with_trace(seed, steps, out)?.summary)
+}
+
+/// Runs the simulation and records what delivery can inspect.
+///
+/// # Errors
+/// Returns the engine, store, serialisation or output error that ends the run.
+pub fn simulate_with_trace(
+    seed: Seed,
+    steps: u32,
+    out: &mut impl Write,
+) -> Result<Run, Box<dyn Error>> {
+    let mut engine = build_engine()?;
     let mut inputs = ScriptedInputs::new();
     let mut printed = HashSet::new();
+    let mut trace = Trace::default();
     let mut draw = seed;
     let mut events = 0_usize;
     let mut taken = 0_u32;
@@ -85,10 +112,13 @@ pub fn simulate(
         let queued = engine.pending();
         let had_pending = queued.is_some();
         let pending: Vec<_> = pending_or_error(queued, index)?.into();
+        record_emitted(&mut trace, &pending);
 
         if had_pending {
-            let fresh = print_new(&engine, &mut printed, out)?;
-            events = events.saturating_add(fresh);
+            let fresh = fresh_ids(&pending, &printed);
+            let count = print_new(&engine, &mut printed, out)?;
+            events = events.saturating_add(count);
+            trace.printed.extend(fresh);
         }
 
         inputs.schedule(&mut draw, &pending, left);
@@ -99,6 +129,7 @@ pub fn simulate(
             inputs.apply_next(&mut engine)?
         };
 
+        record_acked(&mut trace, &engine);
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -107,11 +138,49 @@ pub fn simulate(
         }
     }
 
-    Ok(Summary {
-        steps: taken,
-        events,
-        outcome,
+    Ok(Run {
+        summary: Summary {
+            steps: taken,
+            events,
+            outcome,
+        },
+        trace,
     })
+}
+
+// IDs in this pending snapshot that have not been printed yet.
+fn fresh_ids(pending: &[Event], printed: &HashSet<EventId>) -> Vec<String> {
+    pending
+        .iter()
+        .filter(|event| !printed.contains(event.id()))
+        .map(|event| String::from(event.id().as_str()))
+        .collect()
+}
+
+// Records each pending ID the first time the engine exposes it.
+fn record_emitted(trace: &mut Trace, pending: &[Event]) {
+    for event in pending {
+        let id = String::from(event.id().as_str());
+
+        if !trace.emitted.contains(&id) {
+            trace.emitted.push(id);
+        }
+    }
+}
+
+// An emitted ID no longer queued has been acknowledged.
+fn record_acked(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
+    let Some(pending) = engine.pending() else {
+        return;
+    };
+    let present: HashSet<&str> =
+        pending.iter().map(|event| event.id().as_str()).collect();
+
+    for id in &trace.emitted {
+        if !present.contains(id.as_str()) && !trace.acked.contains(id) {
+            trace.acked.push(id.clone());
+        }
+    }
 }
 
 fn pending_or_error(

@@ -1,6 +1,7 @@
 //! `sourcefed-sim` runs a scripted simulation through the real poll engine.
 
 mod args;
+mod check;
 mod driver;
 mod input;
 
@@ -9,6 +10,7 @@ use std::io;
 use std::process::ExitCode;
 
 use crate::args::Args;
+use crate::check::Checker;
 
 const PREFIX: &str = "sourcefed-sim:";
 const NON_UTF8: &str = "argument is not valid UTF-8";
@@ -25,13 +27,31 @@ fn main() -> ExitCode {
 
     let mut out = io::stdout().lock();
 
-    match driver::simulate(parsed.seed, parsed.steps, &mut out) {
-        Ok(summary) => {
-            eprintln!("{PREFIX} {summary:?}");
-            ExitCode::SUCCESS
-        }
+    match driver::simulate_with_trace(parsed.seed, parsed.steps, &mut out) {
+        Ok(run) => report(parsed.seed, &run),
         Err(error) => fail(&error.to_string()),
     }
+}
+
+fn report(seed: sourcefed_sim::Seed, run: &driver::Run) -> ExitCode {
+    let violations = Checker::check(&run.trace);
+    let commit = commit();
+
+    for violation in &violations {
+        eprintln!("{PREFIX} seed={seed} commit={commit} violation={violation}");
+    }
+
+    if violations.is_empty() {
+        eprintln!("{PREFIX} {:?}", run.summary);
+
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn commit() -> String {
+    std::env::var("SOURCEFED_COMMIT").unwrap_or_else(|_| String::from("local"))
 }
 
 fn fail(message: &str) -> ExitCode {
