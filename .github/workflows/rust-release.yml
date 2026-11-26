@@ -308,6 +308,9 @@ jobs:
           fi
           printf 'unacknowledged:\n%s\n' "$unacked"
           mapfile -t pending_ids <<< "$unacked"
+          # The Export step is a separate shell, so hand it an ID that only
+          # the restart prints, for its GIF frame assertion.
+          echo "PENDING_ID=${pending_ids[-1]}" >> "$GITHUB_ENV"
 
           termctrl send run text:stop enter
           termctrl wait run "sourcefed-core exited with" --timeout 10000
@@ -544,13 +547,32 @@ jobs:
           # still on screen, and three quarters in, the restart's delivered
           # events are. The footer, whose captions name timer.fired, is
           # cropped off, so OCR must find the text in the recorded terminal.
-          # Whitespace OCR inserts inside a word is dropped; either frame
-          # without timer.fired fails the job with a named error.
+          # Whitespace OCR inserts inside a word is dropped. The run's frame
+          # must show timer.fired; the restart's must show a pending event ID
+          # that only the restart prints, so a leaked run frame cannot pass.
           duration=$(ffprobe -v error -show_entries format=duration \
             -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
+          # ffprobe reports N/A or nothing for a format without a duration;
+          # multiplying either into a sample time would seek to time zero.
+          if ! awk -v d="$duration" \
+            'BEGIN { exit !(d ~ /^[0-9]+([.][0-9]+)?$/ && d > 0) }'; then
+            echo "::error::demo.gif has no numeric duration: '$duration'"
+            exit 1
+          fi
+          if [[ -z $PENDING_ID ]]; then
+            echo "::error::no pending event ID for the GIF restart frame"
+            exit 1
+          fi
           for sample in 0.25:run 0.75:restart; do
             fraction=${sample%%:*}
             label=${sample#*:}
+            # The run shows timer.fired; the restart must print a pending
+            # event that only its own take can show.
+            if [[ $label == restart ]]; then
+              expected=$PENDING_ID
+            else
+              expected=timer.fired
+            fi
             at=$(awk -v d="$duration" -v f="$fraction" \
               'BEGIN { printf "%.3f", d * f }')
             frame="artifacts/gif-$label.png"
@@ -566,8 +588,8 @@ jobs:
             text=$(tesseract "$frame" stdout)
             printf -- '--- OCR of demo.gif at %s s (%s take) ---\n%s\n' \
               "$at" "$label" "$text"
-            if [[ $(tr -d '[:space:]' <<< "$text") != *timer.fired* ]]; then
-              echo "::error::demo.gif at $at s ($label take) shows no timer.fired"
+            if [[ $(tr -d '[:space:]' <<< "$text") != *"$expected"* ]]; then
+              echo "::error::demo.gif at $at s ($label take) shows no $expected"
               exit 1
             fi
           done
