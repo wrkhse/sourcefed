@@ -202,11 +202,24 @@ jobs:
           cmd=(./sourcefed-core follow --job demo --every 1 --state-dir state
             --max-polls "$1")
           echo "\$ ${cmd[*]}"
-          if [[ -n ${2:-} ]]; then
-            echo "$2"
+          token=${2:-}
+          if [[ -n $token ]]; then
+            # The restart's marker follows the first delivered event, so
+            # OCR of the marker proves output, not just that the take began.
+            shown=
+            "${cmd[@]}" | while IFS= read -r line; do
+              printf '%s\n' "$line"
+              if [[ -z $shown && $line == *timer.fired* ]]; then
+                echo "$token"
+                shown=1
+              fi
+            done
+            status=${PIPESTATUS[0]}
+          else
+            "${cmd[@]}"
+            status=$?
           fi
-          "${cmd[@]}"
-          echo "sourcefed-core exited with $?"
+          echo "sourcefed-core exited with $status"
           read -r _
           SH
 
@@ -357,7 +370,12 @@ jobs:
           }
 
           # The last pending ID waited for is on screen when delivered is
-          # marked; earlier ones may have scrolled off the 16 rows.
+          # marked; earlier ones may have scrolled off the 16 rows. An empty
+          # ID would match every frame, so fail instead of a false pass.
+          if (( ${#pending_ids[@]} == 0 )) || [[ -z ${pending_ids[-1]:-} ]]; then
+            echo "::error::no pending event ID to check in the restart's frame"
+            exit 1
+          fi
           frame_shows artifacts/restart.termctrl delivered "${pending_ids[-1]}"
           [[ "$restart" != *"$id"* ]] || {
             echo "::error::the restart delivered the acked $id again"
@@ -722,9 +740,23 @@ jobs:
               echo "deleting the stale asset $name"
               gh release delete-asset "$TAG" "$name" --yes
             done <<< "$stale"
+
+            # A dispatch can rebuild a tag published before the GIF existed,
+            # whose notes name the raw videos. Only those stale notes are
+            # replaced; curated notes on other releases stay untouched.
+            if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+              body=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+                --jq '.body') || {
+                echo "::error::dispatch cannot read the notes of $TAG"
+                exit 1
+              }
+              if [[ $body == *demo-run.mp4* || $body == *demo-restart.mp4* ]]; then
+                echo "updating stale release notes on $TAG"
+                gh release edit "$TAG" --notes "$notes"
+              fi
+            fi
           else
             gh release create "$TAG" --prerelease --latest=false --verify-tag \
               --title "sourcefed-core $TAG" --notes "$notes" \
               -- "${assets[@]}"
           fi
-
