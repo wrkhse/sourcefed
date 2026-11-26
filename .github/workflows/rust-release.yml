@@ -507,7 +507,7 @@ jobs:
             -c:v libx264 -pix_fmt yuv420p artifacts/demo.mp4
 
           # Narrower takes until one fits under 3 MB; none fitting fails.
-          limit=$((3 * 1024 * 1024))
+          limit=$((3 * 1000 * 1000))
           size=$limit
           for width in 1200 1000 800; do
             filter="fps=10,scale='min($width,iw)':-2:flags=lanczos,split[a][b]"
@@ -671,22 +671,13 @@ jobs:
           fi
 
           # A rerun or a dispatch finds the release already made, so it
-          # replaces the assets; only a new release is created, as a
-          # prerelease.
+          # replaces the assets and removes the videos an earlier run
+          # attached; only a new release is created, as a prerelease.
           if gh release view "$TAG" > /dev/null; then
             gh release upload "$TAG" --clobber -- "${assets[@]}"
-          else
-            gh release create "$TAG" --prerelease --latest=false --verify-tag \
-              --title "sourcefed-core $TAG" --notes "$notes" \
-              -- "${assets[@]}"
-          fi
 
-          # A dispatch brings the release in line with what it attaches: the
-          # notes name the GIF, and the videos an earlier run attached go.
-          # Only the notes change, so the release keeps its prerelease kind
-          # and its latest status as published.
-          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-            gh release edit "$TAG" --notes "$notes"
+            # Earlier runs attached the raw takes; demo.gif replaces them,
+            # so the videos must not linger on the release.
             stale=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '
               .assets[].name
               | select(. == "demo-run.mp4" or . == "demo-restart.mp4")')
@@ -698,4 +689,15 @@ jobs:
               echo "deleting the stale asset $name"
               gh release delete-asset "$TAG" "$name" --yes
             done <<< "$stale"
+          else
+            gh release create "$TAG" --prerelease --latest=false --verify-tag \
+              --title "sourcefed-core $TAG" --notes "$notes" \
+              -- "${assets[@]}"
+          fi
+
+          # A dispatch brings the notes in line with the GIF it re-recorded.
+          # Only the notes change, so the release keeps its prerelease kind
+          # and its latest status as published.
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            gh release edit "$TAG" --notes "$notes"
           fi
