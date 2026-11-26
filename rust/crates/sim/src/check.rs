@@ -732,4 +732,156 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn every_violation_reports_its_exact_reason_and_display() {
+        let id = "e1".to_owned();
+        let cases = [
+            (
+                Violation::AtLeastOnceDelivery {
+                    id: id.clone(),
+                    reason: "delivery reason".into(),
+                },
+                "delivery reason",
+                "at-least-once delivery: delivery reason",
+            ),
+            (
+                Violation::NoAckLostBeforeHalt {
+                    id,
+                    reason: "ack reason".into(),
+                },
+                "ack reason",
+                "no ack lost before halt: ack reason",
+            ),
+            (
+                Violation::ClockFaultsFailClosed {
+                    fault: ClockFault::Past,
+                    reason: "clock reason".into(),
+                },
+                "clock reason",
+                "clock faults fail closed: clock reason",
+            ),
+            (
+                Violation::PollsOnTimeInSimulatedTime {
+                    reason: "poll reason".into(),
+                },
+                "poll reason",
+                "polls on time in simulated time: poll reason",
+            ),
+            (
+                Violation::RedeliveryAfterRestart {
+                    reason: "restart reason".into(),
+                },
+                "restart reason",
+                "redelivery after restart: restart reason",
+            ),
+        ];
+
+        for (violation, reason, rendered) in cases {
+            assert_eq!(violation.reason(), reason);
+            assert_eq!(violation.to_string(), rendered);
+        }
+    }
+
+    #[test]
+    fn only_the_unprinted_emitted_id_violates_delivery() {
+        let printed = event("p1");
+        let missing = event("m1");
+        let mut trace = Trace::default();
+        trace.emit(printed.id());
+        trace.emit(missing.id());
+        trace.print(printed.id());
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::AtLeastOnceDelivery {
+                id: "m1".into(),
+                reason: "emitted event was neither printed nor acked".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn only_the_unacked_emitted_id_violates_delivery() {
+        let acked = event("a1");
+        let missing = event("m1");
+        let mut trace = Trace::default();
+        trace.emit(acked.id());
+        trace.emit(missing.id());
+        trace.ack(acked.id());
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::AtLeastOnceDelivery {
+                id: "m1".into(),
+                reason: "emitted event was neither printed nor acked".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_print_at_the_ack_tick_is_not_a_replay() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+        trace.printed.push((id.clone(), 7));
+        trace.acked.push((id, 7));
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_later_print_of_another_id_is_not_a_replay() {
+        let acked = event("a1").id().clone();
+        let later = event("b1").id().clone();
+        let mut trace = Trace::default();
+        trace.acked.push((acked, 1));
+        trace.printed.push((later, 2));
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_poll_exactly_at_its_due_time_is_on_time() {
+        let clock = clock();
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 10);
+        trace.polls = 1;
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_poll_exactly_at_the_slack_limit_is_on_time() {
+        let clock = clock();
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 10);
+        let limit = MAX_WAIT_SECS.saturating_mul(31);
+
+        for _ in 0..31 {
+            clock.sleep(Duration::from_secs(MAX_WAIT_SECS));
+            trace.sleeps.push(Duration::from_secs(MAX_WAIT_SECS));
+        }
+
+        trace.polls = 1;
+        let expected = Timestamp::UNIX_EPOCH
+            .checked_add(Duration::from_secs(limit))
+            .unwrap();
+
+        assert_eq!(clock.virtual_now(), expected);
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
 }

@@ -215,4 +215,50 @@ mod tests {
         assert_eq!(inputs.acked(), &[id]);
         assert!(!inputs.has_pending_ack());
     }
+
+    #[test]
+    fn front_is_ack_requires_an_ack_at_the_front() {
+        let mut stop_first = Inputs::new();
+        stop_first.queue.push_back(Input::Stop);
+        stop_first
+            .queue
+            .push_back(Input::Ack(event("e1").id().clone()));
+        stop_first.pending_acks = 2;
+
+        assert!(!stop_first.front_is_ack());
+
+        let mut ack_first = Inputs::new();
+        ack_first
+            .queue
+            .push_back(Input::Ack(event("e2").id().clone()));
+        ack_first.queue.push_back(Input::Stop);
+        ack_first.pending_acks = 2;
+
+        assert!(ack_first.front_is_ack());
+    }
+
+    #[test]
+    fn schedule_with_steps_left_never_queues_a_stop() {
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
+        let mut inputs = Inputs::new();
+
+        inputs.schedule(&mut seed, &[], 2);
+
+        assert!(inputs.queue.is_empty());
+    }
+
+    #[test]
+    fn schedule_queues_a_stop_only_on_an_even_draw() {
+        let mut even = Seed::from_hex("0000000000000002").unwrap();
+        let mut stop = Inputs::new();
+        stop.schedule(&mut even, &[], 1);
+
+        assert_eq!(stop.queue, VecDeque::from(vec![Input::Stop]));
+
+        let mut odd = Seed::from_hex("0000000000000001").unwrap();
+        let mut none = Inputs::new();
+        none.schedule(&mut odd, &[], 1);
+
+        assert!(none.queue.is_empty());
+    }
 }

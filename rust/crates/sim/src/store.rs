@@ -305,7 +305,7 @@ impl StateStore for MemoryStore {
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
-    use sourcefed_core::store::MAX_POSITIONS;
+    use sourcefed_core::store::{MAX_POSITIONS, MAX_SEEN_IDS};
     use sourcefed_core::{
         EventId, EventKind, EventSubject, MonitorId, Position, SourceName,
     };
@@ -448,5 +448,107 @@ mod tests {
         assert!(matches!(result, Err(StoreError::TooMany { limit: 1000 })));
         assert_eq!(store.control().commits(), 0);
         assert!(!store.is_pending(event("e0000").id()));
+    }
+
+    fn trait_seen<S: StateStore>(
+        store: &S,
+        key: &PositionKey,
+        id: &EventId,
+    ) -> bool {
+        store.is_seen(key, id)
+    }
+
+    #[test]
+    fn fault_count_starts_at_zero_and_counts_each_fault() {
+        let mut store = MemoryStore::new();
+        let control = store.control();
+
+        assert_eq!(control.fault_count(), 0);
+
+        control.fail_next_commit();
+        let first = store.commit(key("sim"), position("1"), &[]);
+
+        assert!(matches!(first, Err(StoreError::Write { .. })));
+        assert_eq!(control.fault_count(), 1);
+
+        control.fail_next_ack();
+        let second = store.ack_pending(&key("sim"), &[event("e1").id().clone()]);
+
+        assert!(matches!(second, Err(StoreError::Write { .. })));
+        assert_eq!(control.fault_count(), 2);
+    }
+
+    #[test]
+    fn the_state_store_trait_reports_unknown_ids_as_unseen() {
+        let mut store = MemoryStore::new();
+        let key = key("sim");
+        let known = event("e1");
+        let unknown = event("e2");
+
+        assert_eq!(
+            store
+                .commit(key.clone(), position("1"), std::slice::from_ref(&known))
+                .unwrap(),
+            1
+        );
+
+        assert!(trait_seen(&store, &key, known.id()));
+        assert!(!trait_seen(&store, &key, unknown.id()));
+    }
+
+    #[test]
+    fn refresh_moves_repeated_ids_to_the_newest_end() {
+        let ids: Vec<EventId> = ["e1", "e2", "e3"]
+            .iter()
+            .map(|id| EventId::new((*id).into()).unwrap())
+            .collect();
+        let mut state = KeyState {
+            seen: ids.iter().cloned().collect(),
+            pending: VecDeque::new(),
+        };
+
+        MemoryStore::refresh(&mut state, std::slice::from_ref(&ids[0]));
+
+        let expected: VecDeque<EventId> =
+            [ids[1].clone(), ids[2].clone(), ids[0].clone()]
+                .into_iter()
+                .collect();
+
+        assert_eq!(state.seen, expected);
+    }
+
+    #[test]
+    fn evict_removes_the_oldest_id_that_is_not_pending() {
+        let ids: Vec<EventId> = (0..MAX_SEEN_IDS)
+            .map(|index| EventId::new(format!("e{index:04}")).unwrap())
+            .collect();
+        let mut state = KeyState {
+            seen: ids.iter().cloned().collect(),
+            pending: VecDeque::from(vec![event("e0000")]),
+        };
+
+        MemoryStore::evict(&mut state, 1).unwrap();
+
+        let mut expected: VecDeque<EventId> = VecDeque::new();
+        expected.push_back(ids[0].clone());
+        expected.extend(ids.iter().skip(2).cloned());
+
+        assert_eq!(state.seen, expected);
+    }
+
+    #[test]
+    fn evict_fails_when_every_seen_id_is_pending() {
+        let id = EventId::new("e1".into()).unwrap();
+        let mut state = KeyState {
+            seen: VecDeque::from(vec![id]),
+            pending: VecDeque::from(vec![event("e1")]),
+        };
+
+        assert!(matches!(
+            MemoryStore::evict(&mut state, MAX_SEEN_IDS),
+            Err(StoreError::TooMany {
+                limit: MAX_SEEN_IDS
+            })
+        ));
     }
 }

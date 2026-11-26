@@ -117,22 +117,24 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
 
         inputs.schedule(&mut seed, &fresh, left);
 
-        let ack_fault = script.ack(step) && inputs.front_is_ack();
+        let ack_fault = ack_fault_due(script.ack(step), inputs.front_is_ack());
 
         apply_inputs(&mut inputs, &mut engine, &control, &mut trace, ack_fault)?;
 
-        if state != EngineState::Running {
+        if run_is_over(state) {
             break;
         }
     }
 
     let before = pending_ids(&engine);
     let store = engine.into_store();
+    // The restart shares the clock but must not spend the run's step budget.
+    let sleeps = clock.sleep_log();
     let (store, mut violations) =
         restart(&config, &clock, store, &before, &mut trace)?;
 
     trace.polls = counter.poll_count();
-    trace.sleeps = clock.sleep_log();
+    trace.sleeps = sleeps;
     violations.extend(Checker::check(&trace, &clock, &store));
 
     if violations.is_empty() {
@@ -145,6 +147,16 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
             violations,
         })
     }
+}
+
+// A scripted ack fault applies only to an ack waiting at the front.
+const fn ack_fault_due(scripted: bool, queued: bool) -> bool {
+    scripted && queued
+}
+
+// A halted engine leaves the poll loop.
+fn run_is_over(state: EngineState) -> bool {
+    state != EngineState::Running
 }
 
 // Only the armed scripted write fault leaves the engine on its schedule.
@@ -461,7 +473,12 @@ fn commit() -> String {
 
 #[cfg(test)]
 mod tests {
-    use sourcefed_core::StateStore;
+    use std::time::Duration;
+
+    use sourcefed_core::{
+        ClockError, EventKind, EventSubject, Position, PositionKey, SourceName,
+        StateStore,
+    };
 
     use super::*;
 
@@ -479,6 +496,62 @@ mod tests {
         let clock: Arc<dyn Clock> = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
 
         PollEngine::new(config, Arc::new(source), store, clock).unwrap()
+    }
+
+    fn key() -> PositionKey {
+        PositionKey {
+            monitor: MonitorId::new(MONITOR.to_owned()).unwrap(),
+            source: SourceName::new("timer".into()).unwrap(),
+        }
+    }
+
+    fn sample_event(id: &str) -> Event {
+        let source = SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "deploy".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
+    fn store_with(events: &[Event]) -> MemoryStore {
+        let mut store = MemoryStore::new();
+        let saved = store
+            .commit(key(), Position::new("1".into()).unwrap(), events)
+            .unwrap();
+
+        assert_eq!(saved, events.len());
+
+        store
+    }
+
+    fn script() -> Script {
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
+
+        Script::new(&mut seed, 6)
+    }
+
+    fn ack_inputs(event: &Event) -> Inputs {
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
+        let mut inputs = Inputs::new();
+
+        inputs.schedule(&mut seed, std::slice::from_ref(event), 2);
+
+        inputs
+    }
+
+    fn stop_inputs() -> Inputs {
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
+        let mut inputs = Inputs::new();
+
+        inputs.schedule(&mut seed, &[], 1);
+
+        inputs
     }
 
     #[test]
@@ -627,5 +700,357 @@ mod tests {
             Seed::from_hex("00000000000000gg").err(),
             Some("seed must be 16 hexadecimal digits".to_owned())
         );
+    }
+
+    #[test]
+    fn script_new_draws_each_fault_from_the_seed() {
+        let script = script();
+
+        assert_eq!(script.future, 4);
+        assert_eq!(script.past, 5);
+        assert_eq!(script.ok, 2);
+        assert_eq!(script.advance, 3);
+        assert_eq!(script.commit, 0);
+        assert_eq!(script.ack, 1);
+        assert_eq!(script.advance_secs, 4);
+    }
+
+    #[test]
+    fn clock_scripts_each_fault_at_its_step() {
+        let script = script();
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        let mut trace = Trace::default();
+
+        assert!(!script.clock(1, &clock, &mut trace));
+        assert_eq!(trace.clock_faults, Vec::new());
+
+        assert!(script.clock(4, &clock, &mut trace));
+        assert_eq!(clock.now(), Err(ClockError::Future));
+
+        assert!(script.clock(5, &clock, &mut trace));
+        assert_eq!(clock.now(), Err(ClockError::Past));
+
+        assert!(script.clock(2, &clock, &mut trace));
+        assert_eq!(clock.now(), Ok(Timestamp::UNIX_EPOCH));
+
+        let marks = vec![
+            ClockMark {
+                fault: ClockFault::Future,
+                polls_before: 0,
+                polls_after: 0,
+                stopped: false,
+            },
+            ClockMark {
+                fault: ClockFault::Past,
+                polls_before: 0,
+                polls_after: 0,
+                stopped: false,
+            },
+            ClockMark {
+                fault: ClockFault::Ok,
+                polls_before: 0,
+                polls_after: 0,
+                stopped: false,
+            },
+        ];
+
+        assert_eq!(trace.clock_faults, marks);
+    }
+
+    #[test]
+    fn advance_moves_time_only_on_its_step() {
+        let script = script();
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        let mut trace = Trace::default();
+
+        script.advance(2, &clock, &mut trace);
+
+        assert_eq!(trace.advance_secs, 0);
+        assert_eq!(clock.virtual_now(), Timestamp::UNIX_EPOCH);
+
+        script.advance(3, &clock, &mut trace);
+        let expected = Timestamp::UNIX_EPOCH
+            .checked_add(Duration::from_secs(4))
+            .unwrap();
+
+        assert_eq!(trace.advance_secs, 4);
+        assert_eq!(clock.virtual_now(), expected);
+    }
+
+    #[test]
+    fn commit_arms_a_fault_only_on_its_step() {
+        let script = script();
+        let mut store = MemoryStore::new();
+        let control = store.control();
+        let mut trace = Trace::default();
+
+        assert!(!script.commit(1, &control, &mut trace));
+        assert_eq!(control.fault_count(), 0);
+        assert_eq!(trace.store_faults, Vec::new());
+
+        assert!(script.commit(0, &control, &mut trace));
+        assert_eq!(trace.store_faults, vec![StoreFaultKind::Commit]);
+
+        let result = store.commit(key(), Position::new("1".into()).unwrap(), &[]);
+
+        assert!(matches!(
+            result,
+            Err(StoreError::Write { source, .. })
+                if source.to_string() == COMMIT_FAULT
+        ));
+        assert_eq!(control.fault_count(), 1);
+    }
+
+    #[test]
+    fn ack_matches_only_its_step() {
+        let script = script();
+
+        assert!(!script.ack(0));
+        assert!(script.ack(1));
+        assert!(!script.ack(5));
+    }
+
+    #[test]
+    fn an_ack_fault_needs_both_the_script_and_a_queued_ack() {
+        assert!(!ack_fault_due(false, false));
+        assert!(!ack_fault_due(false, true));
+        assert!(!ack_fault_due(true, false));
+        assert!(ack_fault_due(true, true));
+    }
+
+    #[test]
+    fn only_a_halted_engine_ends_the_run() {
+        assert!(!run_is_over(EngineState::Running));
+        assert!(run_is_over(EngineState::Stopped));
+        assert!(run_is_over(EngineState::Ended));
+    }
+
+    #[test]
+    fn finish_mark_records_polls_and_stop() {
+        let mut trace = Trace::default();
+        trace.polls = 7;
+        trace.clock_faults.push(ClockMark {
+            fault: ClockFault::Ok,
+            polls_before: 2,
+            polls_after: 0,
+            stopped: false,
+        });
+
+        finish_mark(&mut trace, EngineState::Stopped);
+
+        assert_eq!(
+            trace.clock_faults,
+            vec![ClockMark {
+                fault: ClockFault::Ok,
+                polls_before: 2,
+                polls_after: 7,
+                stopped: true,
+            }]
+        );
+
+        finish_mark(&mut trace, EngineState::Running);
+
+        assert_eq!(
+            trace.clock_faults,
+            vec![ClockMark {
+                fault: ClockFault::Ok,
+                polls_before: 2,
+                polls_after: 7,
+                stopped: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn record_emissions_drains_the_recorder() {
+        let event = sample_event("e1");
+        let recorded = Arc::new(Mutex::new(vec![event.clone()]));
+        let mut trace = Trace::default();
+
+        record_emissions(&recorded, &mut trace);
+
+        assert_eq!(trace.emitted, vec![event.id().clone()]);
+        assert_eq!(*recorded.lock().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn collect_prints_each_pending_event_once() {
+        let event = sample_event("e1");
+        let engine = test_engine(store_with(std::slice::from_ref(&event)));
+        let mut printed = HashSet::new();
+        let mut trace = Trace::default();
+
+        let fresh = collect(&engine, &mut printed, &mut trace).unwrap();
+
+        assert_eq!(fresh, vec![event.clone()]);
+        assert_eq!(trace.printed, vec![(event.id().clone(), 1)]);
+        assert!(printed.contains(event.id()));
+
+        let again = collect(&engine, &mut printed, &mut trace).unwrap();
+
+        assert_eq!(again, Vec::new());
+        assert_eq!(trace.printed, vec![(event.id().clone(), 1)]);
+    }
+
+    #[test]
+    fn summary_reports_exact_counts_and_commit() {
+        let seed = Seed::from_hex("0000000000000001").unwrap();
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.script(ClockFault::Future);
+        assert_eq!(clock.now(), Err(ClockError::Future));
+
+        let mut store = MemoryStore::new();
+        let control = store.control();
+        let saved = store
+            .commit(key(), Position::new("1".into()).unwrap(), &[])
+            .unwrap();
+
+        assert_eq!(saved, 0);
+
+        control.fail_next_commit();
+        let refused = store.commit(key(), Position::new("2".into()).unwrap(), &[]);
+
+        assert!(matches!(refused, Err(StoreError::Write { .. })));
+
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 3, 7);
+        trace.emit(sample_event("e1").id());
+        trace.emit(sample_event("e2").id());
+        trace.sleeps.push(Duration::from_secs(3));
+        trace.sleeps.push(Duration::from_secs(4));
+
+        let expected = format!(
+            concat!(
+                "sourcefed-sim: seed=0000000000000001 commit={} ",
+                "every=7 polls=1 events=2 faults=2 sleeps=7s"
+            ),
+            commit()
+        );
+
+        assert_eq!(summary(&seed, 7, &trace, &clock, &control), expected);
+    }
+
+    #[test]
+    fn poll_once_accepts_its_own_scripted_commit_fault() {
+        let store = MemoryStore::new();
+        let control = store.control();
+        control.fail_next_commit();
+        let mut engine = test_engine(store);
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut trace = Trace::default();
+
+        let state = poll_once(&mut engine, &recorded, &mut trace, true).unwrap();
+
+        assert_eq!(state, EngineState::Running);
+        assert_eq!(control.fault_count(), 1);
+        assert_eq!(trace.emitted, Vec::new());
+        assert_eq!(*recorded.lock().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn poll_once_reports_a_commit_fault_it_did_not_arm() {
+        let store = MemoryStore::new();
+        let control = store.control();
+        control.fail_next_commit();
+        let mut engine = test_engine(store);
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut trace = Trace::default();
+
+        let error =
+            poll_once(&mut engine, &recorded, &mut trace, false).unwrap_err();
+        let write = error.downcast_ref::<EngineError>().is_some_and(|cause| {
+            matches!(
+                cause,
+                EngineError::Store(StoreError::Write { source, .. })
+                    if source.to_string() == COMMIT_FAULT
+            )
+        });
+
+        assert!(write);
+        assert_eq!(control.fault_count(), 1);
+        assert_eq!(trace.emitted, Vec::new());
+    }
+
+    #[test]
+    fn apply_inputs_swallows_its_own_ack_fault() {
+        let event = sample_event("e1");
+        let store = store_with(std::slice::from_ref(&event));
+        let control = store.control();
+        let mut engine = test_engine(store);
+        let mut inputs = ack_inputs(&event);
+        let mut trace = Trace::default();
+
+        assert!(inputs.front_is_ack());
+
+        apply_inputs(&mut inputs, &mut engine, &control, &mut trace, true).unwrap();
+
+        let pending: Vec<EventId> = engine
+            .pending()
+            .unwrap()
+            .iter()
+            .map(Event::id)
+            .cloned()
+            .collect();
+
+        assert_eq!(trace.store_faults, vec![StoreFaultKind::Ack]);
+        assert_eq!(trace.acked, Vec::new());
+        assert_eq!(control.fault_count(), 1);
+        assert_eq!(pending, vec![event.id().clone()]);
+    }
+
+    #[test]
+    fn apply_inputs_reports_an_ack_fault_it_did_not_arm() {
+        let event = sample_event("e1");
+        let store = store_with(std::slice::from_ref(&event));
+        let control = store.control();
+        let mut engine = test_engine(store);
+        let mut inputs = ack_inputs(&event);
+        let mut trace = Trace::default();
+        control.fail_next_ack();
+
+        let error =
+            apply_inputs(&mut inputs, &mut engine, &control, &mut trace, false)
+                .unwrap_err();
+        let write = error.downcast_ref::<StoreError>().is_some_and(|cause| {
+            matches!(
+                cause,
+                StoreError::Write { source, .. }
+                    if source.to_string() == ACK_FAULT
+            )
+        });
+
+        assert!(write);
+        assert_eq!(trace.store_faults, Vec::new());
+        assert_eq!(trace.acked, Vec::new());
+    }
+
+    #[test]
+    fn apply_inputs_stops_on_a_queued_stop() {
+        let store = store_with(&[]);
+        let control = store.control();
+        let mut engine = test_engine(store);
+        let mut inputs = stop_inputs();
+        let mut trace = Trace::default();
+
+        apply_inputs(&mut inputs, &mut engine, &control, &mut trace, false).unwrap();
+
+        assert!(engine.handle().is_stopped());
+        assert_eq!(trace.store_faults, Vec::new());
+        assert_eq!(trace.acked, Vec::new());
+    }
+
+    #[test]
+    fn apply_inputs_records_a_saved_ack() {
+        let event = sample_event("e1");
+        let store = store_with(std::slice::from_ref(&event));
+        let control = store.control();
+        let mut engine = test_engine(store);
+        let mut inputs = ack_inputs(&event);
+        let mut trace = Trace::default();
+
+        apply_inputs(&mut inputs, &mut engine, &control, &mut trace, false).unwrap();
+
+        assert_eq!(trace.acked, vec![(event.id().clone(), 1)]);
+        assert_eq!(inputs.acked(), std::slice::from_ref(event.id()));
+        assert_eq!(engine.pending().unwrap().len(), 0);
     }
 }

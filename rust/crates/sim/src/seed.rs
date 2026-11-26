@@ -67,3 +67,24 @@ impl fmt::Display for Seed {
         write!(formatter, "{:016x}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn below_returns_the_exact_drawn_value() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+
+        assert_eq!(seed.below(10), 5);
+    }
+
+    #[test]
+    fn pick_index_handles_empty_single_and_large_collections() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+
+        assert_eq!(seed.pick_index(0), None);
+        assert_eq!(seed.pick_index(1), Some(0));
+        assert_eq!(seed.pick_index(6), Some(5));
+    }
+}
