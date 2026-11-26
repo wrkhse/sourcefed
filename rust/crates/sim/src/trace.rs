@@ -582,8 +582,13 @@ mod tests {
             hasher.finish()
         };
 
+        assert_eq!(finish(|h| h.write_u8(0xAB)), 0xAF64_264C_8602_6A4A);
         assert_eq!(finish(|h| h.write_u16(0x1234)), 0x07EE_9E07_B4B1_C883);
         assert_eq!(finish(|h| h.write_u32(0x1234_5678)), 0xCCCF_D053_E47C_3365);
+        assert_eq!(
+            finish(|h| h.write_u64(0x0123_4567_89AB_CDEF)),
+            0x37EB_3F33_4776_1C55
+        );
         assert_eq!(
             finish(|h| h.write_u128(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF)),
             0xB536_2734_0C64_A305
@@ -591,6 +596,11 @@ mod tests {
         assert_eq!(finish(|h| h.write_usize(0x1234)), 0x07B3_2D0D_C6FD_F72B);
         assert_eq!(finish(|h| h.write_i8(-5)), 0xAF64_764C_8602_F23A);
         assert_eq!(finish(|h| h.write_i16(-1234)), 0x07D9_C507_B49F_AEBE);
+        assert_eq!(finish(|h| h.write_i32(-12345)), 0x0201_C6AA_FFF0_30B9);
+        assert_eq!(
+            finish(|h| h.write_i64(-1_234_567_890_123)),
+            0x69BD_DEA1_FCE0_82B3
+        );
         assert_eq!(finish(|h| h.write_i128(-5)), 0x9124_1FDF_D789_5751);
         assert_eq!(finish(|h| h.write_isize(-5)), 0x714E_D5A0_3C1C_29B9);
     }
