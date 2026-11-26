@@ -6,6 +6,12 @@
 //! changing the position or forgetting those IDs. A full pending queue
 //! refuses fresh events until pending events are acknowledged.
 //!
+//! The crate ships one source, [`TimerSource`], which fires a named job every
+//! interval. The `sourcefed-core` binary's `follow` command runs a source
+//! through the poll engine, prints each normalized event as one NDJSON line,
+//! and reads ack and stop lines on stdin. Each poll reads a bounded number of
+//! input lines, and a line over 512 bytes is discarded with a diagnostic.
+//!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.
 
@@ -19,6 +25,8 @@ pub mod poll;
 pub mod position;
 /// The [`Source`] contract and the request and outcome of one poll.
 pub mod source;
+/// The sources sourcefed ships with.
+pub mod sources;
 /// Saved positions, remembered event IDs, and pending event queues.
 pub mod store;
 
@@ -30,6 +38,7 @@ pub use poll::{
 };
 pub use position::Position;
 pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};
+pub use sources::timer::TimerSource;
 pub use store::{PositionKey, Store, StoreError};
 
 /// Maximum length in bytes of an event ID or a subject key.
