@@ -13,7 +13,7 @@
 //! input lines, and a line over 512 bytes is discarded with a diagnostic.
 //! If it runs another 65536 bytes without a newline, the reader logs
 //! `discard-bound-exceeded` and discards the remainder in bounded chunks.
-//! A newline before the remainder discard reaches one mebibyte lets later
+//! A newline within the remainder discard's first mebibyte lets later
 //! ack and stop lines reach the reader unless the discarded-line budget is
 //! exhausted. The byte cap ends stdin reading with
 //! `discard-total-cap-reached`. The reader also logs
