@@ -216,12 +216,14 @@ while the run is stopping may be lost, and its event is delivered again.
 Files: `rust/crates/cli/src/main.rs`.
 
 ```sh
-printf 'ack timer:deploy:2026-11-26T09:00:05Z\nstop\n' |
+printf 'ack timer:deploy:2026-11-26T09:00:10Z\n' |
   sourcefed-core follow --job deploy --every 5 \
     --state-dir ./state --max-polls 20
 ```
 
-The run prints `ack …: 1 event(s) removed` on stderr and exits 0.
+When that firing is pending, the run prints
+`sourcefed-core: ack timer:deploy:2026-11-26T09:00:10Z: 1 event(s) removed`
+on stderr, and exits 0 after 20 polls.
 
 **Structure.** The binary has one subcommand.
 
