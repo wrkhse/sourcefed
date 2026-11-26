@@ -389,14 +389,12 @@ mod tests {
         let initial_ids = ids(&initial);
         let fresh = events(cap..cap.saturating_add(1));
         store.commit(key(1), cursor(), &initial).unwrap();
-        let pending_room = MAX_PENDING_EVENTS.saturating_sub(initial.len());
-        let expected = limit_for(pending_room, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store
                 .commit(key(1), Position::new("next".into()).unwrap(), &fresh)
                 .unwrap_err(),
-            expected,
+            MAX_PENDING_EVENTS,
         );
         assert_eq!(store.position(&key(1)), Some(cursor()));
         assert_eq!(store.pending(&key(1)), Some(VecDeque::from(initial)));
@@ -409,12 +407,10 @@ mod tests {
     fn an_oversized_batch_refuses_without_changing_state() {
         let mut store = MemoryStore::new();
         let batch = events(0..MAX_SEEN_IDS + 1);
-        let expected =
-            limit_for(MAX_PENDING_EVENTS, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store.commit(key(1), cursor(), &batch).unwrap_err(),
-            expected,
+            MAX_PENDING_EVENTS.min(MAX_SEEN_IDS),
         );
         assert_eq!(store.position(&key(1)), None);
         assert_eq!(store.pending(&key(1)), None);
@@ -444,12 +440,10 @@ mod tests {
         let initial = events(0..cap);
         let fresh = events(cap..cap.saturating_add(1));
         store.commit(key(1), cursor(), &initial).unwrap();
-        let pending_room = MAX_PENDING_EVENTS.saturating_sub(initial.len());
-        let expected = limit_for(pending_room, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store.commit(key(1), cursor(), &fresh).unwrap_err(),
-            expected,
+            MAX_PENDING_EVENTS,
         );
         assert!(store.is_seen(&key(1), initial[0].id()));
         assert_eq!(
