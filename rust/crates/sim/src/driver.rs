@@ -210,6 +210,18 @@ mod tests {
     }
 
     #[test]
+    fn different_seeds_can_end_a_run_differently() {
+        let mut even_out = Vec::new();
+        let mut odd_out = Vec::new();
+        let even = simulate(Seed::from_u64(125), 1, &mut even_out).unwrap();
+        let odd = simulate(Seed::from_u64(119), 1, &mut odd_out).unwrap();
+
+        assert_eq!(even.outcome, Outcome::Stopped);
+        assert_eq!(odd.outcome, Outcome::Budget);
+        assert_ne!(even.outcome, odd.outcome);
+    }
+
+    #[test]
     fn every_polled_event_is_printed_before_inputs_are_applied() {
         let mut first = Vec::new();
         let mut other = Vec::new();
