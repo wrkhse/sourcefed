@@ -606,14 +606,12 @@ mod tests {
     fn finish_within(
         mut inputs: Inputs,
         mut engine: PollEngine,
+        expected_stop: bool,
     ) -> (Inputs, PollEngine) {
         let (done, finished) = mpsc::channel();
 
         thread::spawn(move || {
-            let result = inputs
-                .finish(&mut engine)
-                .map(|_| ())
-                .map_err(|e| e.to_string());
+            let result = inputs.finish(&mut engine).map_err(|e| e.to_string());
             // After a timeout nobody receives; the assertion below reports it.
             let _ = done.send((result, inputs, engine));
         });
@@ -624,7 +622,7 @@ mod tests {
 
         let (result, inputs, engine) = received.unwrap();
 
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(expected_stop));
 
         (inputs, engine)
     }
@@ -721,15 +719,18 @@ mod tests {
         let (sender, mut inputs) = inputs();
 
         sender.send(ack("timer:deploy:other")).unwrap();
-        inputs.apply(&mut engine).unwrap();
+        assert!(!inputs.apply(&mut engine).unwrap());
 
         assert_eq!(pending_ids(&engine), [ID]);
 
         sender.send(ack(ID)).unwrap();
-        inputs.apply(&mut engine).unwrap();
+        assert!(!inputs.apply(&mut engine).unwrap());
 
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
         assert!(!inputs.stopped);
+
+        sender.send(Input::Stop).unwrap();
+        assert!(inputs.apply(&mut engine).unwrap());
     }
 
     #[test]
@@ -762,7 +763,7 @@ mod tests {
 
         sender.send(ack(ID)).unwrap();
         sender.send(Input::Stop).unwrap();
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, true);
 
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
         assert!(inputs.stopped);
@@ -774,7 +775,7 @@ mod tests {
         let engine = pending_engine(dir.path());
         let (_sender, inputs) = inputs();
 
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert_eq!(pending_ids(&engine), [ID]);
         assert!(!inputs.stopped);
@@ -808,7 +809,7 @@ mod tests {
 
         assert_eq!(read.recv_timeout(WAIT), Ok(()));
 
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
@@ -834,7 +835,7 @@ mod tests {
             done.send(sender.send(ack(ID))).unwrap();
         });
 
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert_eq!(sent.recv_timeout(WAIT), Ok(Ok(())));
         assert!(inputs.reader.is_halted());
@@ -860,7 +861,7 @@ mod tests {
         });
 
         let started = Instant::now();
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert!(started.elapsed() >= DRAIN_WAIT);
         assert!(inputs.reader.is_halted());
@@ -901,7 +902,7 @@ mod tests {
             inputs.reader.phase.load(Ordering::SeqCst) == ReaderState::SENDING
         }));
 
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert_eq!(read.recv_timeout(WAIT), Ok(()));
         assert!(inputs.reader.is_halted());
@@ -926,7 +927,7 @@ mod tests {
         assert_eq!(inputs.receiver.try_iter().collect::<Vec<_>>(), []);
         assert_eq!(pending_ids(&engine), [ID]);
 
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
@@ -965,7 +966,7 @@ mod tests {
         let (done, finished) = mpsc::channel();
 
         thread::spawn(move || {
-            inputs.finish(&mut engine).unwrap();
+            assert!(!inputs.finish(&mut engine).unwrap());
             done.send(engine).unwrap();
         });
 
@@ -995,7 +996,7 @@ mod tests {
 
         // The reader read to the end and holds no claim, so `finish` has
         // nothing to wait for and applies the ack after the bad line.
-        let (inputs, engine) = finish_within(inputs, engine);
+        let (inputs, engine) = finish_within(inputs, engine, false);
 
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
