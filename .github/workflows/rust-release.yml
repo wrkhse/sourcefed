@@ -234,13 +234,16 @@ jobs:
           id_pattern='timer:demo:[0-9T:.-]+Z'
 
           # Prints the recording's screen at the marker and fails unless it
-          # shows the text, rows joined so a wrapped ID still matches. A take
-          # whose frames lack the output it filmed stops the job.
+          # shows the text; rows join with a space and whitespace is
+          # normalized on both sides, so a wrap at a space still matches.
+          # A take whose frames lack the output it filmed stops the job.
           frame_shows() {
-            local recording=$1 marker=$2 expected=$3 frame
+            local recording=$1 marker=$2 expected=$3 frame norm_frame norm_expected
             frame=$(termctrl show --recording "$recording" --at-marker "$marker")
             printf -- '--- %s at %s ---\n%s\n' "$recording" "$marker" "$frame"
-            if [[ $(tr -d '\n' <<< "$frame") != *"$expected"* ]]; then
+            norm_frame=$(tr '\n' ' ' <<< "$frame" | tr -s '[:space:]' ' ')
+            norm_expected=$(printf '%s' "$expected" | tr -s '[:space:]' ' ')
+            if [[ $norm_frame != *"$norm_expected"* ]]; then
               echo "::error::$recording at $marker does not show $expected"
               return 1
             fi
@@ -474,12 +477,14 @@ jobs:
           }
           JSON
 
-          # One tail setting feeds both the export command and its guard.
+          # One tail setting feeds both the export command and the
+          # exported-GIF duration guard below.
           export_tail=(--tail-ms 3500)
 
-          # The GIF carries its timing settings into the release. Prove
-          # two takes have edit plans, every step holds for 2.5 seconds,
-          # and the command adds the 3.5 second tail: the final hold.
+          # The edit plans carry the timing settings into the release.
+          # Prove two takes have plans and every step holds for 2.5
+          # seconds; the exported GIF's duration is the primary proof
+          # that these holds survive export.
           plans=(artifacts/*-edit.json)
           takes=(artifacts/*.termctrl)
           if (( ${#plans[@]} != 2 || ${#takes[@]} != 2 )); then
@@ -487,6 +492,7 @@ jobs:
             echo "::error::${#takes[@]} takes and ${#plans[@]} plans"
             exit 1
           fi
+          holds_ms=0
           for plan in "${plans[@]}"; do
             clips=$(jq -e '.clips | length' "$plan") || {
               echo "::error::$plan has no clips array"
@@ -501,11 +507,12 @@ jobs:
               echo "::error::$plan has a clip without hold_ms 2500"
               exit 1
             fi
+            plan_holds=$(jq '[.clips[].hold_ms] | add' "$plan") || {
+              echo "::error::cannot sum hold_ms in $plan"
+              exit 1
+            }
+            holds_ms=$((holds_ms + plan_holds))
           done
-          if [[ ${export_tail[*]} != "--tail-ms 3500" ]]; then
-            echo "::error::export tail is ${export_tail[*]}, not 3500 ms"
-            exit 1
-          fi
 
           for take in run restart; do
             termctrl video "artifacts/$take.termctrl" \
@@ -584,6 +591,25 @@ jobs:
             exit 1
           fi
 
+          # The exported GIF is the primary proof that the holds survived
+          # export: its duration must cover every edit-plan clip hold plus
+          # the final tail. Allow 0.5 s for frame rounding.
+          expected_ms=$((holds_ms + export_tail[1]))
+          gif_duration=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
+          if [[ ! $gif_duration =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::demo.gif duration is not numeric: '$gif_duration'"
+            exit 1
+          fi
+          minimum=$(awk -v ms="$expected_ms" 'BEGIN { printf "%.1f", ms / 1000 }')
+          if ! awk -v d="$gif_duration" -v ms="$expected_ms" \
+            'BEGIN { exit !(d + 0.5 >= ms / 1000) }'; then
+            echo "::error::demo.gif lasts ${gif_duration}s, below the edit"
+            echo "::error::holds plus final hold of ${minimum}s"
+            exit 1
+          fi
+          echo "demo.gif lasts ${gif_duration}s, minimum ${minimum}s"
+
           # The blank-GIF guard reads the exported GIF itself, not the mp4s
           # or their footers. Every frame is extracted at 1 fps into a temp
           # folder, OCRed with the footer cropped and concatenated. The run
@@ -623,13 +649,15 @@ jobs:
           fi
           rm -rf -- "$gif_frames"
 
-          # Secondary guard: the final hold shows the restart's output. A
-          # frame of text measures about 0.04 or more in grayscale standard
-          # deviation (0 to 1); a dark frame with only a cursor, about 0.01.
-          # Below 0.02 the GIF rendered no glyphs. This does not replace the
-          # OCR check above.
+          # Secondary guard: the final frame is cropped to the top three
+          # quarters so the footer cannot mask a blank terminal, then its
+          # grayscale standard deviation (0 to 1) is measured. A frame of
+          # text measures about 0.04 or more; a dark frame with only a
+          # cursor, about 0.01. Below 0.02 the GIF rendered no glyphs.
+          # This does not replace the OCR check above.
           ffmpeg -hide_banner -loglevel error -y -sseof -1 \
-            -i artifacts/demo.gif -frames:v 1 artifacts/demo-last.png
+            -i artifacts/demo.gif -frames:v 1 \
+            -vf 'crop=iw:ih*3/4:0:0' artifacts/demo-last.png
           deviation=$(convert artifacts/demo-last.png -colorspace Gray \
             -format '%[fx:standard_deviation]' info:)
           echo "demo.gif final frame grayscale deviation: $deviation"
@@ -741,19 +769,18 @@ jobs:
               gh release delete-asset "$TAG" "$name" --yes
             done <<< "$stale"
 
-            # A dispatch can rebuild a tag published before the GIF existed,
-            # whose notes name the raw videos. Only those stale notes are
-            # replaced; curated notes on other releases stay untouched.
-            if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-              body=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
-                --jq '.body') || {
-                echo "::error::dispatch cannot read the notes of $TAG"
-                exit 1
-              }
-              if [[ $body == *demo-run.mp4* || $body == *demo-restart.mp4* ]]; then
-                echo "updating stale release notes on $TAG"
-                gh release edit "$TAG" --notes "$notes"
-              fi
+            # A tag published before the GIF existed has notes naming the
+            # raw videos. Only those stale notes are replaced; curated notes
+            # stay untouched. Edit changes the body only, never the
+            # prerelease or latest flags.
+            body=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+              --jq '.body') || {
+              echo "::error::cannot read the notes of $TAG"
+              exit 1
+            }
+            if [[ $body == *demo-run.mp4* || $body == *demo-restart.mp4* ]]; then
+              echo "updating stale release notes on $TAG"
+              gh release edit "$TAG" --notes "$notes"
             fi
           else
             gh release create "$TAG" --prerelease --latest=false --verify-tag \
