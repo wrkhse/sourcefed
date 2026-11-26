@@ -187,21 +187,24 @@ impl Checker {
     ) -> Vec<Violation> {
         let mut violations = Vec::new();
 
+        // An acknowledged ID that reappears in the printed set was redelivered.
+        for id in acked {
+            if printed.contains(id) {
+                trace.replay(id);
+                violations.push(Violation::RedeliveryAfterRestart {
+                    reason: "acked event was redelivered after restart".into(),
+                });
+            }
+        }
+
+        // Unacknowledged IDs pending before the restart must be printed again.
         for id in before {
-            let redelivered = printed.contains(id);
-
+            // Acked IDs were handled above; they are not pending redeliveries.
             if acked.contains(id) {
-                if redelivered {
-                    trace.replay(id);
-                    violations.push(Violation::RedeliveryAfterRestart {
-                        reason: "acked event was redelivered after restart".into(),
-                    });
-                }
-
                 continue;
             }
 
-            if !redelivered {
+            if !printed.contains(id) {
                 violations.push(Violation::RedeliveryAfterRestart {
                     reason: "pending event absent after restart".into(),
                 });
