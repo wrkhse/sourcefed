@@ -5,22 +5,33 @@ name: rust-release
 # against the package version, builds the binary and smoke-tests its tarball;
 # `recording` films the packed binary delivering, acknowledging and not
 # redelivering an event across a restart; `release` attaches the tarball, the
-# two videos and their SHA256SUMS to a GitHub prerelease that is never latest.
+# demo GIF and their SHA256SUMS to a GitHub prerelease that is never latest.
+#
+# A dispatch names an existing tag and runs the same jobs against it, so a
+# release's assets are rebuilt and replaced without a new tag or release.
 
 on:
   push:
     tags: ["core-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing tag to rebuild, such as core-v0.1.0-rc.1
+        required: true
+        type: string
 
 # Each job asks for what it needs; only `release` writes.
 permissions:
   contents: read
 
 concurrency:
-  group: rust-release-${{ github.ref }}
+  group: rust-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: true
 
 env:
-  TAG: ${{ github.ref_name }}
+  TAG: >-
+    ${{ github.event_name == 'workflow_dispatch' && inputs.tag
+    || github.ref_name }}
   TARGET: x86_64-unknown-linux-gnu
 
 jobs:
@@ -31,8 +42,11 @@ jobs:
       run:
         working-directory: rust
     steps:
+      # A dispatch runs on a branch, so the tag is checked out by name; a
+      # tag that does not exist fails here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
@@ -97,8 +111,8 @@ jobs:
 
   # Films the packed binary end to end in two sessions that share one state
   # directory: `run` prints a timer.fired event, acks it and stops; `restart`
-  # follows again and must not print the acked ID. The videos are release
-  # assets only; they are never committed.
+  # follows again and must not print the acked ID. The two takes join into
+  # one GIF, a release asset only; it is never committed.
   recording:
     needs: build
     runs-on: ubuntu-24.04
@@ -125,12 +139,22 @@ jobs:
           echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
-      - name: Install termctrl 1.2.1 and ffmpeg
+      # The runner has no monospace font, and a video rendered without one
+      # shows no glyphs, so the font the videos name is installed and found.
+      # ImageMagick measures the exported GIF; Tesseract reads each take.
+      - name: Install termctrl 1.2.1, ffmpeg, ImageMagick, Tesseract and DejaVu
         run: |
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg fontconfig fonts-dejavu-core imagemagick \
+            tesseract-ocr tesseract-ocr-eng
+          family=$(fc-match -f '%{family}' 'DejaVu Sans Mono')
+          [[ "$family" == *"DejaVu Sans Mono"* ]] || {
+            echo "::error::fontconfig matched '$family' for DejaVu Sans Mono"
+            exit 1
+          }
           cargo +1.100.0 install terminal-control --version 1.2.1 --locked
           termctrl --version
       - name: Record a run that acks an event, then a restart
@@ -140,6 +164,9 @@ jobs:
           work=$(mktemp -d)
           run_live=
           restart_live=
+          # The restart alone prints this marker, so the GIF can prove
+          # the second take is present without OCR of a long event ID.
+          restart_token=RESTART-TAKE
 
           # A command that fails in an EXIT trap leaves the step's result as
           # it was. cleanup returns the incoming status, or 1 when a live
@@ -175,8 +202,24 @@ jobs:
           cmd=(./sourcefed-core follow --job demo --every 1 --state-dir state
             --max-polls "$1")
           echo "\$ ${cmd[*]}"
-          "${cmd[@]}"
-          echo "sourcefed-core exited with $?"
+          token=${2:-}
+          if [[ -n $token ]]; then
+            # The restart's marker follows the first delivered event, so
+            # OCR of the marker proves output, not just that the take began.
+            shown=
+            "${cmd[@]}" | while IFS= read -r line; do
+              printf '%s\n' "$line"
+              if [[ -z $shown && $line == *timer.fired* ]]; then
+                echo "$token"
+                shown=1
+              fi
+            done
+            status=${PIPESTATUS[0]}
+          else
+            "${cmd[@]}"
+            status=$?
+          fi
+          echo "sourcefed-core exited with $status"
           read -r _
           SH
 
@@ -189,6 +232,22 @@ jobs:
           # An event ID ends at its instant's Z, so the colon after the ID in
           # the ack log line is never part of a match.
           id_pattern='timer:demo:[0-9T:.-]+Z'
+
+          # Prints the recording's screen at the marker and fails unless it
+          # shows the text; rows join with a space and whitespace is
+          # normalized on both sides, so a wrap at a space still matches.
+          # A take whose frames lack the output it filmed stops the job.
+          frame_shows() {
+            local recording=$1 marker=$2 expected=$3 frame norm_frame norm_expected
+            frame=$(termctrl show --recording "$recording" --at-marker "$marker")
+            printf -- '--- %s at %s ---\n%s\n' "$recording" "$marker" "$frame"
+            norm_frame=$(tr '\n' ' ' <<< "$frame" | tr -s '[:space:]' ' ')
+            norm_expected=$(printf '%s' "$expected" | tr -s '[:space:]' ' ')
+            if [[ $norm_frame != *"$norm_expected"* ]]; then
+              echo "::error::$recording at $marker does not show $expected"
+              return 1
+            fi
+          }
 
           # Prints each distinct event ID in stdin, sorted. awk and sort
           # succeed when nothing matches.
@@ -282,6 +341,8 @@ jobs:
             echo "::error::the run did not exit cleanly"
             exit 1
           }
+          frame_shows artifacts/run.termctrl fired timer.fired
+          frame_shows artifacts/run.termctrl acked "1 event(s) removed"
 
           # Downtime: the run saved the next due instant, at most a second
           # ahead, so firings come due while no CLI runs.
@@ -291,7 +352,8 @@ jobs:
           # The same poll budget as the run, so every pending event can
           # return; the first poll prints them all, then stop ends it.
           termctrl start restart --record artifacts/restart.termctrl \
-            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 30
+            --cols 120 --rows 16 --cwd "$work" -- \
+            bash ./follow.sh 30 "$restart_token"
           restart_live=1
           termctrl mark restart start
           for pending in "${pending_ids[@]}"; do
@@ -309,6 +371,15 @@ jobs:
             echo "::error::the restart did not exit cleanly"
             exit 1
           }
+
+          # The last pending ID waited for is on screen when delivered is
+          # marked; earlier ones may have scrolled off the 16 rows. An empty
+          # ID would match every frame, so fail instead of a false pass.
+          if (( ${#pending_ids[@]} == 0 )) || [[ -z ${pending_ids[-1]:-} ]]; then
+            echo "::error::no pending event ID to check in the restart's frame"
+            exit 1
+          fi
+          frame_shows artifacts/restart.termctrl delivered "${pending_ids[-1]}"
           [[ "$restart" != *"$id"* ]] || {
             echo "::error::the restart delivered the acked $id again"
             exit 1
@@ -350,9 +421,16 @@ jobs:
           fi
           echo "downtime firing $downtime"
 
+          # The Export step is a separate shell, so hand it the marker
+          # that only the restart prints; the run never shows it.
+          echo "RESTART_TOKEN=$restart_token" >> "$GITHUB_ENV"
+
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
-      - name: Export the videos
+      # Each take exports with its captions and holds, the two join into one
+      # clip, and the clip becomes a GIF of at most 1200 pixels wide and
+      # 3 MB. The restart's 3.5 second tail is the GIF's final hold.
+      - name: Export the demo GIF
         run: |
           set -euo pipefail
 
@@ -399,17 +477,199 @@ jobs:
           }
           JSON
 
+          # One tail setting feeds both the export command and the
+          # exported-GIF duration guard below.
+          export_tail=(--tail-ms 3500)
+
+          # The edit plans carry the timing settings into the release.
+          # Prove two takes have plans and every step holds for 2.5
+          # seconds; the exported GIF's duration is the primary proof
+          # that these holds survive export.
+          plans=(artifacts/*-edit.json)
+          takes=(artifacts/*.termctrl)
+          if (( ${#plans[@]} != 2 || ${#takes[@]} != 2 )); then
+            echo "::error::expected two takes and two edit plans, found"
+            echo "::error::${#takes[@]} takes and ${#plans[@]} plans"
+            exit 1
+          fi
+          holds_ms=0
+          for plan in "${plans[@]}"; do
+            clips=$(jq -e '.clips | length' "$plan") || {
+              echo "::error::$plan has no clips array"
+              exit 1
+            }
+            if (( clips == 0 )); then
+              echo "::error::$plan has no clips"
+              exit 1
+            fi
+            if ! jq -e 'all(.clips[]; .hold_ms == 2500)' \
+              "$plan" > /dev/null; then
+              echo "::error::$plan has a clip without hold_ms 2500"
+              exit 1
+            fi
+            plan_holds=$(jq '[.clips[].hold_ms] | add' "$plan") || {
+              echo "::error::cannot sum hold_ms in $plan"
+              exit 1
+            }
+            holds_ms=$((holds_ms + plan_holds))
+          done
+
           for take in run restart; do
             termctrl video "artifacts/$take.termctrl" \
-              --edit "artifacts/$take-edit.json" --footer --fps 10 \
-              --tail-ms 3000 --out "artifacts/demo-$take.mp4"
+              --edit "artifacts/$take-edit.json" "${export_tail[@]}" \
+              --footer --fps 10 --font-family "DejaVu Sans Mono" \
+              --out "artifacts/demo-$take.mp4"
           done
           ls -l artifacts/*.mp4
+
+          # OCR reads every frame of each exported take at 1 fps with the
+          # footer cropped, then concatenates the text. Both takes must show
+          # timer.fired in their recorded terminal, so a take that filmed no
+          # output fails without assuming when a marker lands. Whitespace
+          # OCR inserts inside a word is dropped.
+          for take in run restart; do
+            frames_dir=$(mktemp -d)
+            ffmpeg -hide_banner -loglevel error -y \
+              -i "artifacts/demo-$take.mp4" \
+              -vf 'fps=1,crop=iw:ih*3/4:0:0,format=gray,negate' \
+              "$frames_dir/frame-%05d.png"
+            shopt -s nullglob
+            frames=("$frames_dir"/*.png)
+            shopt -u nullglob
+            if (( ${#frames[@]} == 0 )); then
+              echo "::error::demo-$take.mp4 yielded no frames for OCR"
+              exit 1
+            fi
+
+            text=
+            for frame in "${frames[@]}"; do
+              text+=$(tesseract "$frame" stdout)$'\n'
+            done
+            printf -- '--- OCR of demo-%s.mp4 frames ---\n%s\n' "$take" "$text"
+            if [[ $(tr -d '[:space:]' <<< "$text") != *timer.fired* ]]; then
+              echo "::error::OCR finds no timer.fired in demo-$take.mp4"
+              exit 1
+            fi
+            rm -rf -- "$frames_dir"
+          done
+
+          # Both takes have the same terminal size, so their frames match.
+          ffmpeg -hide_banner -loglevel error -y \
+            -i artifacts/demo-run.mp4 -i artifacts/demo-restart.mp4 \
+            -filter_complex '[0:v][1:v]concat=n=2:v=1:a=0[v]' -map '[v]' \
+            -c:v libx264 -pix_fmt yuv420p artifacts/demo.mp4
+
+          # Narrower takes until one fits under 3 MB; none fitting fails.
+          limit=$((3 * 1000 * 1000))
+          size=$limit
+          for width in 1200 1000 800; do
+            filter="fps=10,scale='min($width,iw)':-2:flags=lanczos,split[a][b]"
+            filter+=";[a]palettegen=stats_mode=diff[p]"
+            filter+=";[b][p]paletteuse=dither=bayer:bayer_scale=5"
+            filter+=":diff_mode=rectangle"
+            ffmpeg -hide_banner -loglevel error -y -i artifacts/demo.mp4 \
+              -filter_complex "$filter" -loop 0 artifacts/demo.gif
+            size=$(stat -c %s artifacts/demo.gif)
+            echo "demo.gif at most $width pixels wide: $size bytes"
+            if (( size < limit )); then
+              break
+            fi
+          done
+
+          if (( size >= limit )); then
+            echo "::error::demo.gif is $size bytes even at 800 pixels wide"
+            exit 1
+          fi
+
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height:format=duration \
+            -of default=noprint_wrappers=1 artifacts/demo.gif
+          gif_width=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width -of csv=p=0 artifacts/demo.gif)
+          if (( gif_width > 1200 )); then
+            echo "::error::demo.gif is $gif_width pixels wide"
+            exit 1
+          fi
+
+          # The exported GIF is the primary proof that the holds survived
+          # export: its duration must cover every edit-plan clip hold plus
+          # a tail for each take. Allow 0.5 s for frame rounding.
+          expected_ms=$((holds_ms + ${#takes[@]} * export_tail[1]))
+          gif_duration=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
+          if [[ ! $gif_duration =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::demo.gif duration is not numeric: '$gif_duration'"
+            exit 1
+          fi
+          minimum=$(awk -v ms="$expected_ms" 'BEGIN { printf "%.1f", ms / 1000 }')
+          if ! awk -v d="$gif_duration" -v ms="$expected_ms" \
+            'BEGIN { exit !(d + 0.5 >= ms / 1000) }'; then
+            echo "::error::demo.gif lasts ${gif_duration}s, below the edit"
+            echo "::error::holds plus a tail per take of ${minimum}s"
+            exit 1
+          fi
+          echo "demo.gif lasts ${gif_duration}s, minimum ${minimum}s"
+
+          # The blank-GIF guard reads the exported GIF itself, not the mp4s
+          # or their footers. Every frame is extracted at 1 fps into a temp
+          # folder, OCRed with the footer cropped and concatenated. The run
+          # take shows timer.fired and the restart shows a short marker, so
+          # finding both proves the two takes are present without assuming
+          # balanced lengths or sample times. Whitespace OCR inserts inside
+          # a word is dropped.
+          if [[ -z ${RESTART_TOKEN:-} ]]; then
+            echo "::error::no restart marker for the GIF assertion"
+            exit 1
+          fi
+          gif_frames=$(mktemp -d)
+          ffmpeg -hide_banner -loglevel error -y -i artifacts/demo.gif \
+            -vf 'fps=1,crop=iw:ih*3/4:0:0,format=gray,negate' \
+            "$gif_frames/frame-%05d.png"
+          shopt -s nullglob
+          frames=("$gif_frames"/*.png)
+          shopt -u nullglob
+          if (( ${#frames[@]} == 0 )); then
+            echo "::error::demo.gif yielded no frames for OCR"
+            exit 1
+          fi
+
+          gif_text=
+          for frame in "${frames[@]}"; do
+            gif_text+=$(tesseract "$frame" stdout)$'\n'
+          done
+          printf -- '--- OCR of demo.gif frames ---\n%s\n' "$gif_text"
+          flat=$(tr -d '[:space:]' <<< "$gif_text")
+          if [[ $flat != *timer.fired* ]]; then
+            echo "::error::OCR finds no timer.fired in demo.gif"
+            exit 1
+          fi
+          if [[ $flat != *"$RESTART_TOKEN"* ]]; then
+            echo "::error::OCR finds no restart marker $RESTART_TOKEN in demo.gif"
+            exit 1
+          fi
+          rm -rf -- "$gif_frames"
+
+          # Secondary guard: the final frame is cropped to the top three
+          # quarters so the footer cannot mask a blank terminal, then its
+          # grayscale standard deviation (0 to 1) is measured. A frame of
+          # text measures about 0.04 or more; a dark frame with only a
+          # cursor, about 0.01. Below 0.02 the GIF rendered no glyphs.
+          # This does not replace the OCR check above.
+          ffmpeg -hide_banner -loglevel error -y -sseof -1 \
+            -i artifacts/demo.gif -frames:v 1 \
+            -vf 'crop=iw:ih*3/4:0:0' artifacts/demo-last.png
+          deviation=$(convert artifacts/demo-last.png -colorspace Gray \
+            -format '%[fx:standard_deviation]' info:)
+          echo "demo.gif final frame grayscale deviation: $deviation"
+          if ! awk -v d="$deviation" 'BEGIN { exit !(d >= 0.02) }'; then
+            echo "::error::demo.gif's final frame is blank (deviation $deviation)"
+            exit 1
+          fi
       - uses: >- # v7.0.2
           actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: demo-recordings
-          path: artifacts/*.mp4
+          name: demo-recording
+          path: artifacts/demo.gif
           if-no-files-found: error
 
   release:
@@ -427,14 +687,44 @@ jobs:
       - uses: >- # v4.3.0
           actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: demo-recordings
+          name: demo-recording
           path: ${{ runner.temp }}/release
+      # A dispatch keeps the published tarball, so the rebuilt one gives way
+      # to the release's own copy and the sums cover what is attached. A
+      # dispatch on a tag with no release, or no tarball, fails here.
       - name: Write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          sha256sum -- *.tar.gz demo-run.mp4 demo-restart.mp4 > SHA256SUMS
+          tarballs=(*.tar.gz)
+          if (( ${#tarballs[@]} != 1 )); then
+            echo "::error::expected one tarball, found ${tarballs[*]}"
+            exit 1
+          fi
+          tarball=${tarballs[0]}
+
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            # Prove the rerun path before rewriting checksums or assets:
+            # gh must see the release and the tarball it already carries.
+            names=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+              --jq '.assets[].name') || {
+              echo "::error::dispatch cannot view release $TAG"
+              exit 1
+            }
+            if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
+              echo "::error::release $TAG has no asset $tarball"
+              exit 1
+            fi
+
+            rm -- "$tarball"
+            gh release download "$TAG" --pattern "$tarball" --dir .
+          fi
+
+          sha256sum -- "$tarball" demo.gif > SHA256SUMS
           cat SHA256SUMS
       - name: Publish the GitHub prerelease
         working-directory: ${{ runner.temp }}/release
@@ -446,16 +736,52 @@ jobs:
 
           notes="A release candidate of sourcefed-core, the Rust core, for x86_64"
           notes+=" Linux. Check the tarball against SHA256SUMS, unpack it and run"
-          notes+=" sourcefed-core --version. demo-run.mp4 shows this binary"
-          notes+=" printing a timer.fired event and acking it; demo-restart.mp4"
-          notes+=" shows a restart on the same state that never delivers it again."
+          notes+=" sourcefed-core --version. demo.gif shows this binary"
+          notes+=" printing a timer.fired event and acking it, then a restart"
+          notes+=" on the same state that never delivers it again."
 
-          assets=(*.tar.gz SHA256SUMS demo-run.mp4 demo-restart.mp4)
+          # A dispatch re-records the demo of a published tag, so it replaces
+          # the GIF and the SHA256SUMS that covers it, and leaves the tarball
+          # as it was.
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            assets=(SHA256SUMS demo.gif)
+          else
+            assets=(*.tar.gz SHA256SUMS demo.gif)
+          fi
 
-          # A rerun finds the release already made, so it replaces the
-          # assets; only a new release is created, as a prerelease.
+          # A rerun or a dispatch finds the release already made, so it
+          # replaces the assets and removes the videos an earlier run
+          # attached; only a new release is created, as a prerelease.
           if gh release view "$TAG" > /dev/null; then
             gh release upload "$TAG" --clobber -- "${assets[@]}"
+
+            # Earlier runs attached the raw takes; demo.gif replaces them,
+            # so the videos must not linger on the release.
+            stale=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '
+              .assets[].name
+              | select(. == "demo-run.mp4" or . == "demo-restart.mp4")')
+            while IFS= read -r name; do
+              if [[ -z $name ]]; then
+                continue
+              fi
+
+              echo "deleting the stale asset $name"
+              gh release delete-asset "$TAG" "$name" --yes
+            done <<< "$stale"
+
+            # A tag published before the GIF existed has notes naming the
+            # raw videos. Only those stale notes are replaced; curated notes
+            # stay untouched. Edit changes the body only, never the
+            # prerelease or latest flags.
+            body=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+              --jq '.body') || {
+              echo "::error::cannot read the notes of $TAG"
+              exit 1
+            }
+            if [[ $body == *demo-run.mp4* || $body == *demo-restart.mp4* ]]; then
+              echo "updating stale release notes on $TAG"
+              gh release edit "$TAG" --notes "$notes"
+            fi
           else
             gh release create "$TAG" --prerelease --latest=false --verify-tag \
               --title "sourcefed-core $TAG" --notes "$notes" \
