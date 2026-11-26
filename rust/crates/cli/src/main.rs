@@ -1231,6 +1231,24 @@ mod tests {
     }
 
     #[test]
+    fn read_input_does_not_reset_the_discarded_line_budget_on_invalid_input() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let pair = format!("{}\nbogus\n", "x".repeat(limit.saturating_add(1)));
+        let group = pair.repeat(MAX_INPUTS_PER_POLL);
+        let lines = format!("{group}stop\n");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, b"bogus\nstop\n");
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
     fn read_input_resets_the_discarded_line_budget_after_an_ack() {
         let stop = StopHandle::default();
         let state = ReaderState::default();
