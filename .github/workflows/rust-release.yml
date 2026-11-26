@@ -17,6 +17,7 @@ permissions:
 
 concurrency:
   group: rust-release-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   TAG: ${{ github.ref_name }}
@@ -200,16 +201,22 @@ jobs:
             }' | sort -u
           }
 
-          # The ID of the firing one interval after $1. Firings fall whole
-          # seconds apart, so only the seconds change and the fraction stays
-          # as printed.
-          next_id() {
-            local instant=${1#timer:demo:}
-            local seconds=${instant%%[.Z]*}
-            local epoch next
-            epoch=$(date -u -d "${seconds}Z" +%s) || return
-            next=$(date -u -d "@$((epoch + 1))" +%Y-%m-%dT%H:%M:%S) || return
-            echo "timer:demo:$next${instant#"$seconds"}"
+          # Prints the first event ID other than $1 in the run's output,
+          # checking every 0.2 seconds for at most ten seconds.
+          another_id() {
+            local ids other
+            for _ in {1..50}; do
+              ids=$(joined run | event_ids) || return
+              other=$(awk -v first="$1" '$0 != first' <<< "$ids" | sed -n 1p)
+              if [[ -n $other ]]; then
+                echo "$other"
+                return 0
+              fi
+
+              sleep 0.2
+            done
+
+            return 1
           }
 
           # How often $1 occurs in $2. grep exits 1 when nothing matches,
@@ -242,10 +249,13 @@ jobs:
             exit 1
           fi
 
-          # The next firing prints before the ack is sent, so the run keeps
+          # Another firing prints before the ack is sent, so the run keeps
           # an event it never acks without waiting on a later poll.
-          second=$(next_id "$id")
-          termctrl wait run "$second" --timeout 10000
+          if ! second=$(another_id "$id"); then
+            echo "::error::no second event ID on the run's screen"
+            exit 1
+          fi
+          echo "second event $second"
           printed=$(joined run | event_ids)
           echo "acking $id"
 
@@ -272,6 +282,11 @@ jobs:
             echo "::error::the run did not exit cleanly"
             exit 1
           }
+
+          # Downtime: the run saved the next due instant, at most a second
+          # ahead, so firings come due while no CLI runs.
+          sleep 3
+          restart_started=$(date -u +%Y-%m-%dT%H:%M:%S)
 
           # The same poll budget as the run, so every pending event can
           # return; the first poll prints them all, then stop ends it.
@@ -311,6 +326,29 @@ jobs:
               exit 1
             fi
           done
+
+          # A firing from the downtime is an ID the run never printed whose
+          # instant is before the restart started; a timer.missed event
+          # carries the same ID form.
+          run_ids=$(event_ids <<< "$run")
+          restart_ids=$(event_ids <<< "$restart")
+          downtime=
+          while IFS= read -r fresh; do
+            if [[ $'\n'$run_ids$'\n' == *$'\n'"$fresh"$'\n'* ]]; then
+              continue
+            fi
+
+            if [[ ${fresh#timer:demo:} < "$restart_started" ]]; then
+              downtime=$fresh
+              break
+            fi
+          done <<< "$restart_ids"
+
+          if [[ -z $downtime ]]; then
+            echo "::error::the restart delivered no firing from the downtime"
+            exit 1
+          fi
+          echo "downtime firing $downtime"
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
@@ -412,6 +450,14 @@ jobs:
           notes+=" printing a timer.fired event and acking it; demo-restart.mp4"
           notes+=" shows a restart on the same state that never delivers it again."
 
-          gh release create "$TAG" --prerelease --latest=false --verify-tag \
-            --title "sourcefed-core $TAG" --notes "$notes" \
-            -- *.tar.gz SHA256SUMS demo-run.mp4 demo-restart.mp4
+          assets=(*.tar.gz SHA256SUMS demo-run.mp4 demo-restart.mp4)
+
+          # A rerun finds the release already made, so it replaces the
+          # assets; only a new release is created, as a prerelease.
+          if gh release view "$TAG" > /dev/null; then
+            gh release upload "$TAG" --clobber -- "${assets[@]}"
+          else
+            gh release create "$TAG" --prerelease --latest=false --verify-tag \
+              --title "sourcefed-core $TAG" --notes "$notes" \
+              -- "${assets[@]}"
+          fi
