@@ -43,6 +43,8 @@ enum Command {
     /// reads a bounded number of ack and stop lines from stdin; a line over
     /// 512 bytes is discarded with a diagnostic, and one that runs 65536
     /// bytes further ends the reading of stdin.
+    /// An ack sent while sourcefed-core is stopping may be ignored; its event
+    /// is delivered again on the next run.
     Follow(Follow),
 }
 
