@@ -5,22 +5,33 @@ name: rust-release
 # against the package version, builds the binary and smoke-tests its tarball;
 # `recording` films the packed binary delivering, acknowledging and not
 # redelivering an event across a restart; `release` attaches the tarball, the
-# two videos and their SHA256SUMS to a GitHub prerelease that is never latest.
+# demo GIF and their SHA256SUMS to a GitHub prerelease that is never latest.
+#
+# A dispatch names an existing tag and runs the same jobs against it, so a
+# release's assets are rebuilt and replaced without a new tag or release.
 
 on:
   push:
     tags: ["core-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing tag to rebuild, such as core-v0.1.0-rc.1
+        required: true
+        type: string
 
 # Each job asks for what it needs; only `release` writes.
 permissions:
   contents: read
 
 concurrency:
-  group: rust-release-${{ github.ref }}
+  group: rust-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: true
 
 env:
-  TAG: ${{ github.ref_name }}
+  TAG: >-
+    ${{ github.event_name == 'workflow_dispatch' && inputs.tag
+    || github.ref_name }}
   TARGET: x86_64-unknown-linux-gnu
 
 jobs:
@@ -31,8 +42,11 @@ jobs:
       run:
         working-directory: rust
     steps:
+      # A dispatch runs on a branch, so the tag is checked out by name; a
+      # tag that does not exist fails here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
@@ -97,8 +111,8 @@ jobs:
 
   # Films the packed binary end to end in two sessions that share one state
   # directory: `run` prints a timer.fired event, acks it and stops; `restart`
-  # follows again and must not print the acked ID. The videos are release
-  # assets only; they are never committed.
+  # follows again and must not print the acked ID. The two takes join into
+  # one GIF, a release asset only; it is never committed.
   recording:
     needs: build
     runs-on: ubuntu-24.04
@@ -125,12 +139,20 @@ jobs:
           echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
-      - name: Install termctrl 1.2.1 and ffmpeg
+      # The runner has no monospace font, and a video rendered without one
+      # shows no glyphs, so the font the videos name is installed and found.
+      - name: Install termctrl 1.2.1, ffmpeg and DejaVu Sans Mono
         run: |
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg fontconfig fonts-dejavu-core
+          family=$(fc-match -f '%{family}' 'DejaVu Sans Mono')
+          [[ "$family" == *"DejaVu Sans Mono"* ]] || {
+            echo "::error::fontconfig matched '$family' for DejaVu Sans Mono"
+            exit 1
+          }
           cargo +1.100.0 install terminal-control --version 1.2.1 --locked
           termctrl --version
       - name: Record a run that acks an event, then a restart
@@ -189,6 +211,19 @@ jobs:
           # An event ID ends at its instant's Z, so the colon after the ID in
           # the ack log line is never part of a match.
           id_pattern='timer:demo:[0-9T:.-]+Z'
+
+          # Prints the recording's screen at the marker and fails unless it
+          # shows the text, rows joined so a wrapped ID still matches. A take
+          # whose frames lack the output it filmed stops the job.
+          frame_shows() {
+            local recording=$1 marker=$2 expected=$3 frame
+            frame=$(termctrl show --recording "$recording" --at-marker "$marker")
+            printf -- '--- %s at %s ---\n%s\n' "$recording" "$marker" "$frame"
+            if [[ $(tr -d '\n' <<< "$frame") != *"$expected"* ]]; then
+              echo "::error::$recording at $marker does not show $expected"
+              return 1
+            fi
+          }
 
           # Prints each distinct event ID in stdin, sorted. awk and sort
           # succeed when nothing matches.
@@ -282,6 +317,8 @@ jobs:
             echo "::error::the run did not exit cleanly"
             exit 1
           }
+          frame_shows artifacts/run.termctrl fired timer.fired
+          frame_shows artifacts/run.termctrl acked "1 event(s) removed"
 
           # Downtime: the run saved the next due instant, at most a second
           # ahead, so firings come due while no CLI runs.
@@ -309,6 +346,10 @@ jobs:
             echo "::error::the restart did not exit cleanly"
             exit 1
           }
+
+          # The last pending ID waited for is on screen when delivered is
+          # marked; earlier ones may have scrolled off the 16 rows.
+          frame_shows artifacts/restart.termctrl delivered "${pending_ids[-1]}"
           [[ "$restart" != *"$id"* ]] || {
             echo "::error::the restart delivered the acked $id again"
             exit 1
@@ -352,7 +393,10 @@ jobs:
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
-      - name: Export the videos
+      # Each take exports with its captions and holds, the two join into one
+      # clip, and the clip becomes a GIF of at most 1200 pixels wide and
+      # 3 MB. The restart's 3 second tail is the GIF's final hold.
+      - name: Export the demo GIF
         run: |
           set -euo pipefail
 
@@ -402,14 +446,53 @@ jobs:
           for take in run restart; do
             termctrl video "artifacts/$take.termctrl" \
               --edit "artifacts/$take-edit.json" --footer --fps 10 \
+              --font-family "DejaVu Sans Mono" \
               --tail-ms 3000 --out "artifacts/demo-$take.mp4"
           done
           ls -l artifacts/*.mp4
+
+          # Both takes have the same terminal size, so their frames match.
+          ffmpeg -hide_banner -loglevel error -y \
+            -i artifacts/demo-run.mp4 -i artifacts/demo-restart.mp4 \
+            -filter_complex '[0:v][1:v]concat=n=2:v=1:a=0[v]' -map '[v]' \
+            -c:v libx264 -pix_fmt yuv420p artifacts/demo.mp4
+
+          # Narrower takes until one fits under 3 MB; none fitting fails.
+          limit=$((3 * 1024 * 1024))
+          size=$limit
+          for width in 1200 1000 800; do
+            filter="fps=10,scale='min($width,iw)':-2:flags=lanczos,split[a][b]"
+            filter+=";[a]palettegen=stats_mode=diff[p]"
+            filter+=";[b][p]paletteuse=dither=bayer:bayer_scale=5"
+            filter+=":diff_mode=rectangle"
+            ffmpeg -hide_banner -loglevel error -y -i artifacts/demo.mp4 \
+              -filter_complex "$filter" -loop 0 artifacts/demo.gif
+            size=$(stat -c %s artifacts/demo.gif)
+            echo "demo.gif at most $width pixels wide: $size bytes"
+            if (( size < limit )); then
+              break
+            fi
+          done
+
+          if (( size >= limit )); then
+            echo "::error::demo.gif is $size bytes even at 800 pixels wide"
+            exit 1
+          fi
+
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height:format=duration \
+            -of default=noprint_wrappers=1 artifacts/demo.gif
+          gif_width=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width -of csv=p=0 artifacts/demo.gif)
+          if (( gif_width > 1200 )); then
+            echo "::error::demo.gif is $gif_width pixels wide"
+            exit 1
+          fi
       - uses: >- # v7.0.2
           actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: demo-recordings
-          path: artifacts/*.mp4
+          name: demo-recording
+          path: artifacts/demo.gif
           if-no-files-found: error
 
   release:
@@ -427,14 +510,32 @@ jobs:
       - uses: >- # v4.3.0
           actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: demo-recordings
+          name: demo-recording
           path: ${{ runner.temp }}/release
+      # A dispatch keeps the published tarball, so the rebuilt one gives way
+      # to the release's own copy and the sums cover what is attached. A
+      # dispatch on a tag with no release, or no tarball, fails here.
       - name: Write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          sha256sum -- *.tar.gz demo-run.mp4 demo-restart.mp4 > SHA256SUMS
+          tarballs=(*.tar.gz)
+          if (( ${#tarballs[@]} != 1 )); then
+            echo "::error::expected one tarball, found ${tarballs[*]}"
+            exit 1
+          fi
+          tarball=${tarballs[0]}
+
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            rm -- "$tarball"
+            gh release download "$TAG" --pattern "$tarball" --dir .
+          fi
+
+          sha256sum -- "$tarball" demo.gif > SHA256SUMS
           cat SHA256SUMS
       - name: Publish the GitHub prerelease
         working-directory: ${{ runner.temp }}/release
@@ -446,14 +547,22 @@ jobs:
 
           notes="A release candidate of sourcefed-core, the Rust core, for x86_64"
           notes+=" Linux. Check the tarball against SHA256SUMS, unpack it and run"
-          notes+=" sourcefed-core --version. demo-run.mp4 shows this binary"
-          notes+=" printing a timer.fired event and acking it; demo-restart.mp4"
-          notes+=" shows a restart on the same state that never delivers it again."
+          notes+=" sourcefed-core --version. demo.gif shows this binary"
+          notes+=" printing a timer.fired event and acking it, then a restart"
+          notes+=" on the same state that never delivers it again."
 
-          assets=(*.tar.gz SHA256SUMS demo-run.mp4 demo-restart.mp4)
+          # A dispatch re-records the demo of a published tag, so it replaces
+          # the GIF and the SHA256SUMS that covers it, and leaves the tarball
+          # as it was.
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            assets=(SHA256SUMS demo.gif)
+          else
+            assets=(*.tar.gz SHA256SUMS demo.gif)
+          fi
 
-          # A rerun finds the release already made, so it replaces the
-          # assets; only a new release is created, as a prerelease.
+          # A rerun or a dispatch finds the release already made, so it
+          # replaces the assets; only a new release is created, as a
+          # prerelease.
           if gh release view "$TAG" > /dev/null; then
             gh release upload "$TAG" --clobber -- "${assets[@]}"
           else
