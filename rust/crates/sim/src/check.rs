@@ -1,5 +1,6 @@
 //! The guarantees a simulation run must satisfy.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
@@ -176,24 +177,31 @@ impl Checker {
         violations
     }
 
-    /// Compares pending IDs across a restart and records reappearing acks.
+    /// Compares IDs pending before a restart with what the restart printed.
     #[must_use]
     pub fn check_restart(
         before: &[EventId],
-        after: &[EventId],
+        printed: &HashSet<EventId>,
         acked: &[EventId],
         trace: &mut Trace,
     ) -> Vec<Violation> {
         let mut violations = Vec::new();
 
-        for id in after {
-            if acked.contains(id) {
-                trace.replay(id);
-            }
-        }
-
         for id in before {
-            if !acked.contains(id) && !after.contains(id) {
+            let redelivered = printed.contains(id);
+
+            if acked.contains(id) {
+                if redelivered {
+                    trace.replay(id);
+                    violations.push(Violation::RedeliveryAfterRestart {
+                        reason: "acked event was redelivered after restart".into(),
+                    });
+                }
+
+                continue;
+            }
+
+            if !redelivered {
                 violations.push(Violation::RedeliveryAfterRestart {
                     reason: "pending event absent after restart".into(),
                 });
@@ -493,6 +501,36 @@ mod tests {
     }
 
     #[test]
+    fn an_ok_reading_produces_no_clock_violation() {
+        let mut trace = Trace::default();
+        trace.clock_faults.push(ClockMark {
+            fault: ClockFault::Ok,
+            polls_before: 1,
+            polls_after: 2,
+            stopped: false,
+        });
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn an_event_printed_then_acked_produces_no_violation() {
+        let emitted = event("e1");
+        let mut trace = Trace::default();
+        trace.emit(emitted.id());
+        trace.print(emitted.id());
+        trace.ack(emitted.id());
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
     fn a_past_reading_that_keeps_running_fails_the_clock_check() {
         let mut trace = Trace::default();
         trace.clock_faults.push(ClockMark {
@@ -647,11 +685,20 @@ mod tests {
         let id = event("e1").id().clone();
         let mut trace = Trace::default();
 
-        let after = std::slice::from_ref(&id);
-        let violations = Checker::check_restart(&[], after, after, &mut trace);
+        let printed = HashSet::from([id.clone()]);
+        let violations = Checker::check_restart(
+            &[],
+            &printed,
+            std::slice::from_ref(&id),
+            &mut trace,
+        );
 
-        let expected: Vec<Violation> = Vec::new();
-        assert_eq!(violations, expected);
+        assert_eq!(
+            violations,
+            vec![Violation::RedeliveryAfterRestart {
+                reason: "acked event was redelivered after restart".into(),
+            }]
+        );
         assert_eq!(trace.replayed, vec![id]);
     }
 
@@ -660,7 +707,8 @@ mod tests {
         let id = event("e1").id().clone();
         let mut trace = Trace::default();
 
-        let violations = Checker::check_restart(&[id], &[], &[], &mut trace);
+        let violations =
+            Checker::check_restart(&[id], &HashSet::new(), &[], &mut trace);
 
         assert_eq!(
             violations,
@@ -677,7 +725,8 @@ mod tests {
         let mut trace = Trace::default();
 
         let before = std::slice::from_ref(&id);
-        let violations = Checker::check_restart(before, &[], before, &mut trace);
+        let violations =
+            Checker::check_restart(before, &HashSet::new(), before, &mut trace);
 
         let expected: Vec<Violation> = Vec::new();
         assert_eq!(violations, expected);
@@ -688,12 +737,56 @@ mod tests {
         let id = event("e1").id().clone();
         let mut trace = Trace::default();
 
-        let before = std::slice::from_ref(&id);
-        let after = std::slice::from_ref(&id);
-        let violations = Checker::check_restart(before, after, &[], &mut trace);
+        let printed = HashSet::from([id.clone()]);
+        let violations = Checker::check_restart(
+            std::slice::from_ref(&id),
+            &printed,
+            &[],
+            &mut trace,
+        );
 
         let expected: Vec<Violation> = Vec::new();
         assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn every_unacked_pending_id_must_appear_in_the_restart_printed_set() {
+        let first = event("e1").id().clone();
+        let second = event("e2").id().clone();
+        let mut trace = Trace::default();
+        let printed = HashSet::from([first.clone()]);
+
+        let violations =
+            Checker::check_restart(&[first, second], &printed, &[], &mut trace);
+
+        assert_eq!(
+            violations,
+            vec![Violation::RedeliveryAfterRestart {
+                reason: "pending event absent after restart".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_acked_id_in_the_restart_printed_set_violates_redelivery() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+        let printed = HashSet::from([id.clone()]);
+
+        let violations = Checker::check_restart(
+            &[],
+            &printed,
+            std::slice::from_ref(&id),
+            &mut trace,
+        );
+
+        assert_eq!(
+            violations,
+            vec![Violation::RedeliveryAfterRestart {
+                reason: "acked event was redelivered after restart".into(),
+            }]
+        );
+        assert_eq!(trace.replayed, vec![id]);
     }
 
     #[test]

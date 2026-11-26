@@ -38,6 +38,11 @@ impl StoreControl {
         self.commit_fault.store(true, Ordering::Relaxed);
     }
 
+    /// Disarms a commit fault that no commit attempted.
+    pub fn disarm_commit(&self) {
+        self.commit_fault.store(false, Ordering::Relaxed);
+    }
+
     /// Arms one ack fault; the next acknowledgement fails without changes.
     pub fn fail_next_ack(&self) {
         self.ack_fault.store(true, Ordering::Relaxed);
@@ -375,6 +380,18 @@ mod tests {
         assert_eq!(control.commits(), 0);
         assert_eq!(store.position(&key("sim")), None);
         assert!(!store.is_pending(pending.id()));
+    }
+
+    #[test]
+    fn a_disarmed_commit_fault_never_fires() {
+        let mut store = MemoryStore::new();
+        let control = store.control();
+        control.fail_next_commit();
+        control.disarm_commit();
+
+        assert_eq!(store.commit(key("sim"), position("1"), &[]).unwrap(), 0);
+        assert_eq!(control.fault_count(), 0);
+        assert_eq!(control.commits(), 1);
     }
 
     #[test]

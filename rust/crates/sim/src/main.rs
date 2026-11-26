@@ -104,7 +104,8 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
         script.advance(step, &clock, &mut trace);
         let armed_commit = script.commit(step, &control, &mut trace);
 
-        let state = poll_once(&mut engine, &recorded, &mut trace, armed_commit)?;
+        let state =
+            poll_once(&mut engine, &recorded, &control, &mut trace, armed_commit)?;
 
         trace.polls = counter.poll_count();
 
@@ -163,27 +164,37 @@ fn run_is_over(state: EngineState) -> bool {
 fn poll_once(
     engine: &mut PollEngine<MemoryStore>,
     recorded: &Arc<Mutex<Vec<Event>>>,
+    control: &StoreControl,
     trace: &mut Trace,
     armed_commit: bool,
 ) -> Result<EngineState, Box<dyn Error>> {
+    let commits = control.commits();
+
     match engine.run(1) {
         Ok(state) => {
             record_emissions(recorded, trace);
+            disarm_if_unused(control, armed_commit, commits);
 
             Ok(state)
         }
         Err(EngineError::Store(StoreError::Write { source, .. }))
             if armed_commit && source.to_string() == COMMIT_FAULT =>
         {
-            // A refused commit saves no event, so none was emitted.
-            recorded
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clear();
+            // A correct retry re-polls the event, so a duplicate print is
+            // harmless; dropping it here would erase the only evidence of an
+            // at-least-once failure.
+            record_emissions(recorded, trace);
 
             Ok(engine.state())
         }
         Err(error) => Err(Box::new(error)),
+    }
+}
+
+// A step that never committed must not leave its fault for a later step.
+fn disarm_if_unused(control: &StoreControl, armed: bool, commits: usize) {
+    if armed && control.commits() == commits {
+        control.disarm_commit();
     }
 }
 
@@ -205,21 +216,28 @@ fn restart(
     before: &[EventId],
     trace: &mut Trace,
 ) -> Result<(MemoryStore, Vec<Violation>), Box<dyn Error>> {
-    let source = TimerSource::new(JOB.to_owned(), config.poll_interval.as_secs())?;
+    let timer = TimerSource::new(JOB.to_owned(), config.poll_interval.as_secs())?;
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let source = RecordingSource::new(timer, recorded.clone());
     let shared: Arc<dyn Clock> = clock.clone();
     let mut engine =
         PollEngine::new(config.clone(), Arc::new(source), store, shared)?;
 
     engine.run(1)?;
 
-    let after = pending_ids(&engine);
+    record_emissions(&recorded, trace);
+
+    // A fresh set makes the restarted engine's own output visible.
+    let mut printed = HashSet::new();
+    collect(&engine, &mut printed, trace)?;
+
     let acked: Vec<EventId> = trace.acked.iter().map(|(id, _)| id.clone()).collect();
-    let violations = Checker::check_restart(before, &after, &acked, trace);
+    let violations = Checker::check_restart(before, &printed, &acked, trace);
 
     Ok((engine.into_store(), violations))
 }
 
-// Every event a successful run returned from the source was committed.
+// Records each event a poll returned, whether or not its commit succeeded.
 fn record_emissions(recorded: &Arc<Mutex<Vec<Event>>>, trace: &mut Trace) {
     for event in recorded
         .lock()
@@ -445,14 +463,16 @@ fn summary(
         .sleeps
         .iter()
         .fold(0_u64, |sum, sleep| sum.saturating_add(sleep.as_secs()));
-    let faults = clock.fault_count().saturating_add(control.fault_count());
+    let store_faults = control.fault_count();
+    let faults = clock.fault_count().saturating_add(store_faults);
     let events = trace.emitted.len();
     let polls = control.commits();
 
     format!(
         concat!(
             "sourcefed-sim: seed={seed} commit={commit} every={every} ",
-            "polls={polls} events={events} faults={faults} sleeps={sleeps}s"
+            "polls={polls} events={events} faults={faults} ",
+            "store_faults={store_faults} sleeps={sleeps}s"
         ),
         seed = seed,
         commit = commit(),
@@ -460,6 +480,7 @@ fn summary(
         polls = polls,
         events = events,
         faults = faults,
+        store_faults = store_faults,
         sleeps = sleeps,
     )
 }
@@ -921,7 +942,7 @@ mod tests {
         let expected = format!(
             concat!(
                 "sourcefed-sim: seed=0000000000000001 commit={} ",
-                "every=7 polls=1 events=2 faults=2 sleeps=7s"
+                "every=7 polls=1 events=2 faults=2 store_faults=1 sleeps=7s"
             ),
             commit()
         );
@@ -931,18 +952,20 @@ mod tests {
 
     #[test]
     fn poll_once_accepts_its_own_scripted_commit_fault() {
+        let event = sample_event("e1");
         let store = MemoryStore::new();
         let control = store.control();
         control.fail_next_commit();
         let mut engine = test_engine(store);
-        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::new(Mutex::new(vec![event.clone()]));
         let mut trace = Trace::default();
 
-        let state = poll_once(&mut engine, &recorded, &mut trace, true).unwrap();
+        let state =
+            poll_once(&mut engine, &recorded, &control, &mut trace, true).unwrap();
 
         assert_eq!(state, EngineState::Running);
         assert_eq!(control.fault_count(), 1);
-        assert_eq!(trace.emitted, Vec::new());
+        assert_eq!(trace.emitted, vec![event.id().clone()]);
         assert_eq!(*recorded.lock().unwrap(), Vec::new());
     }
 
@@ -955,8 +978,8 @@ mod tests {
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let mut trace = Trace::default();
 
-        let error =
-            poll_once(&mut engine, &recorded, &mut trace, false).unwrap_err();
+        let error = poll_once(&mut engine, &recorded, &control, &mut trace, false)
+            .unwrap_err();
         let write = error.downcast_ref::<EngineError>().is_some_and(|cause| {
             matches!(
                 cause,
@@ -968,6 +991,60 @@ mod tests {
         assert!(write);
         assert_eq!(control.fault_count(), 1);
         assert_eq!(trace.emitted, Vec::new());
+    }
+
+    #[test]
+    fn poll_once_disarms_a_fault_no_commit_attempted() {
+        let store = MemoryStore::new();
+        let control = store.control();
+        control.fail_next_commit();
+        let mut engine = test_engine(store);
+        engine.handle().stop();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut trace = Trace::default();
+
+        let state =
+            poll_once(&mut engine, &recorded, &control, &mut trace, true).unwrap();
+
+        assert_eq!(state, EngineState::Stopped);
+        assert_eq!(control.fault_count(), 0);
+
+        let mut store = engine.into_store();
+        let position = Position::new("1".into()).unwrap();
+
+        assert_eq!(store.commit(key(), position, &[]).unwrap(), 0);
+        assert_eq!(control.fault_count(), 0);
+        assert_eq!(control.commits(), 1);
+    }
+
+    #[test]
+    fn restart_prints_the_events_the_source_redelivers() {
+        let event = sample_event("e1");
+        let mut store = MemoryStore::new();
+        let position = Position::new("1970-01-01T00:00:02Z".into()).unwrap();
+
+        assert_eq!(
+            store
+                .commit(key(), position, std::slice::from_ref(&event))
+                .unwrap(),
+            1
+        );
+
+        let config = MonitorConfig {
+            id: MonitorId::new(MONITOR.to_owned()).unwrap(),
+            source: SourceName::new("timer".into()).unwrap(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let before = vec![event.id().clone()];
+        let mut trace = Trace::default();
+
+        let (_, violations) =
+            restart(&config, &clock, store, &before, &mut trace).unwrap();
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+        assert_eq!(trace.printed, vec![(event.id().clone(), 1)]);
     }
 
     #[test]
