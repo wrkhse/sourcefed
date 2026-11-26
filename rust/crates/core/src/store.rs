@@ -504,6 +504,88 @@ impl Store {
     }
 }
 
+/// The store contract the poll engine needs.
+///
+/// An implementation must keep the same limits and atomicity rules as
+/// [`Store`]: each key has its own bounded seen ID and pending event queues,
+/// a commit saves the position and events together, and an acknowledgement
+/// removes pending events without forgetting their IDs.
+pub trait StateStore: Send + Sync {
+    /// Returns a copy of the saved position for the key, if one exists.
+    #[must_use]
+    fn position(&self, key: &PositionKey) -> Option<Position>;
+
+    /// Returns whether the event ID is among the key's remembered IDs.
+    #[must_use]
+    fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool;
+
+    /// Returns a copy of the key's saved events, oldest first, or `None`
+    /// if the key has no queue.
+    #[must_use]
+    fn pending(&self, key: &PositionKey) -> Option<VecDeque<Event>>;
+
+    /// Removes pending events with matching IDs from the key's queue.
+    ///
+    /// Returns the number of events removed and saves the state atomically.
+    /// Unknown IDs are ignored and other keys are unchanged.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Write`] or [`StoreError::TooLarge`] if the
+    /// removal cannot be saved, leaving the state unchanged.
+    fn ack_pending(
+        &mut self,
+        key: &PositionKey,
+        ids: &[EventId],
+    ) -> Result<usize, StoreError>;
+
+    /// Saves the position, seen IDs and fresh events together.
+    ///
+    /// Returns the count of distinct IDs not already remembered for the key.
+    /// Fresh events are appended to the key's pending queue in input order.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::TooMany`], [`StoreError::TooLarge`] or
+    /// [`StoreError::Write`] when the state cannot be saved, with the same
+    /// guarantees as [`Store::commit`].
+    fn commit(
+        &mut self,
+        key: PositionKey,
+        position: Position,
+        events: &[Event],
+    ) -> Result<usize, StoreError>;
+}
+
+impl StateStore for Store {
+    fn position(&self, key: &PositionKey) -> Option<Position> {
+        Self::position(self, key).cloned()
+    }
+
+    fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool {
+        Self::is_seen(self, key, id)
+    }
+
+    fn pending(&self, key: &PositionKey) -> Option<VecDeque<Event>> {
+        Self::pending(self, key).cloned()
+    }
+
+    fn ack_pending(
+        &mut self,
+        key: &PositionKey,
+        ids: &[EventId],
+    ) -> Result<usize, StoreError> {
+        Self::ack_pending(self, key, ids)
+    }
+
+    fn commit(
+        &mut self,
+        key: PositionKey,
+        position: Position,
+        events: &[Event],
+    ) -> Result<usize, StoreError> {
+        Self::commit(self, key, position, events)
+    }
+}
+
 // Best effort: a stray or unreadable entry must never stop a healthy store
 // from opening, so every I/O failure here is ignored. Returns how many raw
 // directory entries were examined, at most `MAX_TEMP_SCAN`.
@@ -752,6 +834,27 @@ mod tests {
             ),
             (true, false)
         );
+    }
+
+    fn trait_seen<S: StateStore>(
+        store: &S,
+        key: &PositionKey,
+        id: &EventId,
+    ) -> bool {
+        store.is_seen(key, id)
+    }
+
+    #[test]
+    fn the_state_store_trait_delegates_is_seen_to_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let key = key(1);
+        let known = [event("known".into())];
+        let unknown = EventId::new("unknown".into()).unwrap();
+
+        assert_eq!(store.commit(key.clone(), cursor(), &known).unwrap(), 1);
+        assert!(trait_seen(&store, &key, known[0].id()));
+        assert!(!trait_seen(&store, &key, &unknown));
     }
 
     #[test]
