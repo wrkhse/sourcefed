@@ -200,6 +200,24 @@ mod tests {
     }
 
     #[test]
+    fn an_odd_final_stop_draw_leaves_the_budget_as_the_outcome() {
+        let mut out = Vec::new();
+        let seed = Seed::from_u64(1);
+        let steps = 2;
+
+        let summary = simulate(seed, steps, &mut out).unwrap();
+
+        assert_eq!(
+            summary,
+            Summary {
+                steps,
+                events: 1,
+                outcome: Outcome::Budget,
+            }
+        );
+    }
+
+    #[test]
     fn final_step_events_are_printed_before_the_stop() {
         let mut out = Vec::new();
         let seed = Seed::from_u64(0x3C6E_F372_FE94_F82B);
@@ -268,12 +286,28 @@ mod tests {
         assert_eq!(print_new(&one, &mut seen, &mut out).unwrap(), 1);
         assert_eq!(out.as_slice(), first_line.as_bytes());
 
-        let both = engine_with_pending(&[first, second]);
+        let both = engine_with_pending(&[first.clone(), second.clone()]);
 
         assert_eq!(print_new(&both, &mut seen, &mut out).unwrap(), 1);
         assert_eq!(
             out.as_slice(),
             format!("{first_line}{second_line}").as_bytes()
+        );
+
+        let second_only = engine_with_pending(std::slice::from_ref(&second));
+
+        assert_eq!(print_new(&second_only, &mut seen, &mut out).unwrap(), 0);
+        assert_eq!(
+            out.as_slice(),
+            format!("{first_line}{second_line}").as_bytes()
+        );
+
+        let first_again = engine_with_pending(std::slice::from_ref(&first));
+
+        assert_eq!(print_new(&first_again, &mut seen, &mut out).unwrap(), 1);
+        assert_eq!(
+            out.as_slice(),
+            format!("{first_line}{second_line}{first_line}").as_bytes()
         );
     }
 }

@@ -170,11 +170,8 @@ mod tests {
         assert!(inputs.queued.iter().all(|i| *i != Input::Stop));
 
         let mut final_inputs = ScriptedInputs::new();
-        let mut seed = Seed::from_u64(1);
-        let _ = seed.next_u64();
-        let _ = seed.next_u64();
 
-        final_inputs.schedule(&mut seed, &events, 1);
+        final_inputs.schedule(&mut Seed::from_u64(125), &events, 1);
 
         assert_eq!(final_inputs.queued.len(), MAX_QUEUED);
         assert_eq!(final_inputs.queued.back(), Some(&Input::Stop));
