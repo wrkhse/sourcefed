@@ -26,7 +26,8 @@ const DISCARD_CHUNK_BYTES: usize = 512;
 // The remainder discard has its own byte budget after read_line's discard.
 const MAX_TOTAL_DISCARD_BYTES: usize = 1_048_576;
 // At most this many inputs apply between two polls, so a fast writer on stdin
-// cannot hold polling back; the rest wait for the next poll.
+// cannot hold polling back; the rest wait for the next poll. The reader also
+// stops if it discards this many over-long lines without sending an input.
 const MAX_INPUTS_PER_POLL: usize = 64;
 // At most this many inputs wait between the stdin reader and the polls; once
 // full, the reader blocks rather than growing memory.
@@ -47,8 +48,11 @@ enum Command {
     /// bytes without a newline, the reader logs discard-bound-exceeded and
     /// discards the remainder in bounded chunks. A newline before the
     /// remainder discard reaches one mebibyte lets later ack and stop lines
-    /// reach the reader. At the cap it logs discard-total-cap-reached and
-    /// ends stdin reading.
+    /// reach the reader unless the discarded-line budget is exhausted. The
+    /// byte cap ends stdin reading with discard-total-cap-reached. The
+    /// reader also logs discard-line-budget-exhausted and stops after
+    /// discarding 64 over-long lines without sending an input. A successful
+    /// input send resets the count; an invalid input does not.
     /// An ack sent while sourcefed-core is stopping may be ignored; its event
     /// is delivered again on the next run.
     Follow(Follow),
@@ -376,26 +380,39 @@ fn read_input(
     sender: &SyncSender<Input>,
 ) {
     let mut line = Vec::new();
+    let mut discarded_lines = 0_usize;
 
     while !state.is_halted() {
         match read_line(&mut reader, &mut line) {
             Ok(Line::End) => return,
             Ok(Line::Read) => {}
-            Ok(Line::TooLong) => {
-                eprintln!(
-                    "sourcefed-core: input line exceeds {MAX_INPUT_LINE} bytes"
-                );
+            Ok(discarded_line @ (Line::TooLong | Line::Endless)) => {
+                if discarded_line == Line::Endless {
+                    eprintln!(
+                        "sourcefed-core: discard-bound-exceeded: input line runs \
+                         {MAX_DISCARD_BYTES} bytes past the \
+                         {MAX_INPUT_LINE}-byte limit"
+                    );
 
-                continue;
-            }
-            Ok(Line::Endless) => {
-                eprintln!(
-                    "sourcefed-core: discard-bound-exceeded: input line runs \
-                     {MAX_DISCARD_BYTES} bytes past the {MAX_INPUT_LINE}-byte limit"
-                );
+                    if let Err(error) = discard_line_remainder(&mut reader, state) {
+                        eprintln!("sourcefed-core: stdin: {error}");
 
-                if let Err(error) = discard_line_remainder(&mut reader, state) {
-                    eprintln!("sourcefed-core: stdin: {error}");
+                        return;
+                    }
+                } else {
+                    eprintln!(
+                        "sourcefed-core: input line exceeds {MAX_INPUT_LINE} bytes"
+                    );
+                }
+
+                discarded_lines = discarded_lines.saturating_add(1);
+
+                if discarded_lines == MAX_INPUTS_PER_POLL {
+                    eprintln!(
+                        "sourcefed-core: discard-line-budget-exhausted: discarded \
+                         {MAX_INPUTS_PER_POLL} over-long lines without sending an \
+                         input; reading stdin ends"
+                    );
 
                     return;
                 }
@@ -427,6 +444,8 @@ fn read_input(
         if !send_held(stop, state, sender) {
             return;
         }
+
+        discarded_lines = 0;
     }
 }
 
@@ -1186,6 +1205,48 @@ mod tests {
         assert_eq!(reader, b"x\nstop\nack first\n");
         assert!(!stop.is_stopped());
         assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
+    fn read_input_ends_at_the_discarded_line_budget() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let bound = usize::try_from(MAX_DISCARD_BYTES).unwrap();
+        let over = limit.saturating_add(1);
+        let line = format!("{}\n", "x".repeat(over));
+        let group = line.repeat(MAX_INPUTS_PER_POLL.saturating_sub(1));
+        // The last discard also crosses the first discard bound.
+        let last = "x".repeat(over.saturating_add(bound));
+        let unread = format!("{line}stop\n");
+        let lines = format!("{group}{last}\n{unread}");
+        let mut reader = lines.as_bytes();
+
+        read_input(&mut reader, &stop, &state, &sender);
+
+        assert_eq!(reader, unread.as_bytes());
+        assert!(!stop.is_stopped());
+        assert_eq!(receiver.try_iter().collect::<Vec<_>>(), []);
+    }
+
+    #[test]
+    fn read_input_resets_the_discarded_line_budget_after_an_ack() {
+        let stop = StopHandle::default();
+        let state = ReaderState::default();
+        let (sender, receiver) = input_channel();
+        let limit = usize::try_from(MAX_INPUT_LINE).unwrap();
+        let line = format!("{}\n", "x".repeat(limit.saturating_add(1)));
+        let group = line.repeat(MAX_INPUTS_PER_POLL.saturating_sub(1));
+        let lines = format!("{group}ack first\n{group}stop\n");
+
+        read_input(lines.as_bytes(), &stop, &state, &sender);
+
+        assert!(stop.is_stopped());
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [ack("first"), Input::Stop]
+        );
     }
 
     #[test]

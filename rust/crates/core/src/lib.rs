@@ -14,8 +14,12 @@
 //! If it runs another 65536 bytes without a newline, the reader logs
 //! `discard-bound-exceeded` and discards the remainder in bounded chunks.
 //! A newline before the remainder discard reaches one mebibyte lets later
-//! ack and stop lines reach the reader. At the cap it logs
-//! `discard-total-cap-reached` and ends stdin reading.
+//! ack and stop lines reach the reader unless the discarded-line budget is
+//! exhausted. The byte cap ends stdin reading with
+//! `discard-total-cap-reached`. The reader also logs
+//! `discard-line-budget-exhausted` and stops after discarding 64 over-long
+//! lines without sending an input. A successful input send resets the count;
+//! an invalid input does not.
 //!
 //! The store refuses version 1 files. This project is pre-production and
 //! provides no migration for those files.
