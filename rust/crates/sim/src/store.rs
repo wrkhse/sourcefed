@@ -11,6 +11,11 @@ use sourcefed_core::{
     Event, EventId, Position, PositionKey, StateStore, StoreError,
 };
 
+/// The message on a scripted commit write fault.
+pub const COMMIT_FAULT: &str = "simulated commit fault";
+/// The message on a scripted acknowledgement write fault.
+pub const ACK_FAULT: &str = "simulated ack fault";
+
 /// One key's remembered IDs and pending events.
 #[derive(Clone, Debug, Default)]
 struct KeyState {
@@ -248,7 +253,7 @@ impl StateStore for MemoryStore {
         ids: &[EventId],
     ) -> Result<usize, StoreError> {
         if self.control.take_ack() {
-            return Err(StoreControl::fault("simulated ack fault"));
+            return Err(StoreControl::fault(ACK_FAULT));
         }
 
         if ids.is_empty() {
@@ -279,7 +284,7 @@ impl StateStore for MemoryStore {
         events: &[Event],
     ) -> Result<usize, StoreError> {
         if self.control.take_commit() {
-            return Err(StoreControl::fault("simulated commit fault"));
+            return Err(StoreControl::fault(COMMIT_FAULT));
         }
 
         if self.positions.len() == MAX_POSITIONS

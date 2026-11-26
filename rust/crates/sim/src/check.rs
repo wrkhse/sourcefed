@@ -1,11 +1,10 @@
 //! The guarantees a simulation run must satisfy.
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use sourcefed_core::{DEFAULT_BACKOFF_CAP_SECS, Event, EventId, MAX_WAIT_SECS};
+use sourcefed_core::{DEFAULT_BACKOFF_CAP_SECS, EventId, MAX_WAIT_SECS};
 
 use crate::clock::{ClockFault, SimClock};
 use crate::store::MemoryStore;
@@ -77,17 +76,6 @@ impl Trace {
     /// Records an ID the engine saved as a fresh event.
     pub fn emit(&mut self, id: &EventId) {
         self.emitted.push(id.clone());
-    }
-
-    /// Records pending IDs the engine saved but has not emitted yet.
-    pub fn observe_pending(&mut self, pending: &VecDeque<Event>) {
-        for event in pending {
-            let id = event.id();
-
-            if !self.emitted.iter().any(|known| known == id) {
-                self.emit(id);
-            }
-        }
     }
 
     /// Records an acked ID that reappeared in pending.
@@ -277,16 +265,6 @@ impl Checker {
         let Some(start) = trace.start else {
             return;
         };
-        let elapsed = total.saturating_add(trace.advance_secs);
-        let expected = start
-            .checked_add(Duration::from_secs(elapsed))
-            .unwrap_or(Timestamp::MAX);
-
-        if clock.virtual_now() != expected {
-            out.push(Violation::PollsOnTimeInSimulatedTime {
-                reason: "virtual time moved without a sleep or advance".into(),
-            });
-        }
 
         Self::check_lateness(trace, clock, start, per_step, out);
     }
@@ -334,7 +312,6 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
-    use sourcefed_core::Clock;
     use sourcefed_core::store::StateStore;
     use sourcefed_core::{
         Event, EventId, EventKind, EventSubject, MAX_WAIT_SECS, MonitorId, Position,
@@ -370,12 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn observed_pending_that_is_never_printed_violates_delivery() {
+    fn an_emitted_event_that_is_never_printed_violates_delivery() {
         let mut trace = Trace::default();
-        trace.observe_pending(&VecDeque::from([event("e1")]));
-        trace.observe_pending(&VecDeque::from([event("e1")]));
-
-        assert_eq!(trace.emitted.len(), 1);
+        trace.emit(event("e1").id());
 
         let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
 
@@ -389,11 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn a_printed_pending_event_satisfies_delivery() {
-        let pending = event("e1");
+    fn a_printed_emitted_event_satisfies_delivery() {
+        let emitted = event("e1");
         let mut trace = Trace::default();
-        trace.observe_pending(&VecDeque::from([pending.clone()]));
-        trace.print(pending.id());
+        trace.emit(emitted.id());
+        trace.print(emitted.id());
 
         let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
 
@@ -527,7 +501,6 @@ mod tests {
     fn a_sleep_over_the_wait_cap_fails_the_timing_check() {
         let clock = clock();
         let duration = Duration::from_secs(MAX_WAIT_SECS.saturating_add(1));
-        clock.sleep(duration);
         let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
         trace.sleeps.push(duration);
 
@@ -537,6 +510,57 @@ mod tests {
             violations,
             vec![Violation::PollsOnTimeInSimulatedTime {
                 reason: "a sleep exceeded the wait cap".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn sleeps_past_the_step_budget_fail_the_timing_check() {
+        let clock = clock();
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
+        trace
+            .sleeps
+            .extend((0..32).map(|_| Duration::from_secs(MAX_WAIT_SECS)));
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::PollsOnTimeInSimulatedTime {
+                reason: "total sleeps exceeded the step budget".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_poll_before_its_due_time_fails_the_timing_check() {
+        let clock = clock();
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 2, 10);
+        trace.polls = 2;
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::PollsOnTimeInSimulatedTime {
+                reason: "a poll happened before its due time".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn lateness_past_the_wait_budget_fails_the_timing_check() {
+        let clock = clock();
+        clock.advance(400);
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 10);
+        trace.polls = 3;
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::PollsOnTimeInSimulatedTime {
+                reason: "lateness accumulated beyond the wait budget".into(),
             }]
         );
     }

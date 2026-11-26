@@ -85,8 +85,14 @@ jobs:
         env:
           SOURCEFED_SIM_COMMIT: ${{ github.sha }}
         run: |
+          set -euo pipefail
+
           for seed in 0000000000000023 0000000000000031; do
-            cargo run --locked -p sourcefed-sim -- --seed "$seed" --steps 20
+            cargo run --locked -p sourcefed-sim -- \
+              --seed "$seed" --steps 20 > "$RUNNER_TEMP/$seed.first"
+            cargo run --locked -p sourcefed-sim -- \
+              --seed "$seed" --steps 20 > "$RUNNER_TEMP/$seed.second"
+            cmp "$RUNNER_TEMP/$seed.first" "$RUNNER_TEMP/$seed.second"
           done
 
   # Every viable mutant in the lines a pull request changes must be caught; an

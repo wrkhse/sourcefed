@@ -4,6 +4,7 @@ mod check;
 mod clock;
 mod input;
 mod seed;
+mod source;
 mod store;
 
 use std::collections::HashSet;
@@ -11,7 +12,7 @@ use std::env;
 use std::error::Error;
 use std::io::{self, Write};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use jiff::Timestamp;
 use sourcefed_core::{
@@ -23,7 +24,8 @@ use crate::check::{Checker, ClockMark, StoreFaultKind, Trace, Violation};
 use crate::clock::{ClockFault, SimClock};
 use crate::input::Inputs;
 use crate::seed::Seed;
-use crate::store::{MemoryStore, StoreControl};
+use crate::source::RecordingSource;
+use crate::store::{ACK_FAULT, COMMIT_FAULT, MemoryStore, StoreControl};
 
 const JOB: &str = "deploy";
 const MONITOR: &str = "sim";
@@ -80,7 +82,9 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     let clock = Arc::new(SimClock::new(start));
     let store = MemoryStore::new();
     let control = store.control();
-    let source = TimerSource::new(JOB.to_owned(), every)?;
+    let timer = TimerSource::new(JOB.to_owned(), every)?;
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let source = RecordingSource::new(timer, recorded.clone());
     let config = MonitorConfig {
         id: MonitorId::new(MONITOR.to_owned())?,
         source: source.name().clone(),
@@ -100,8 +104,20 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
 
         // Only a scripted write fault leaves the schedule unchanged.
         let state = match engine.run(1) {
-            Ok(state) => state,
-            Err(EngineError::Store(StoreError::Write { .. })) if armed_commit => {
+            Ok(state) => {
+                record_emissions(&recorded, &mut trace);
+
+                state
+            }
+            Err(EngineError::Store(StoreError::Write { source, .. }))
+                if armed_commit && source.to_string() == COMMIT_FAULT =>
+            {
+                // A refused commit saves no event, so none was emitted.
+                recorded
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+
                 engine.state()
             }
             Err(error) => return Err(Box::new(error)),
@@ -118,7 +134,7 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
 
         inputs.schedule(&mut seed, &fresh, left);
 
-        let ack_fault = script.ack(step) && inputs.has_pending_ack();
+        let ack_fault = script.ack(step) && inputs.front_is_ack();
 
         apply_inputs(&mut inputs, &mut engine, &control, &mut trace, ack_fault)?;
 
@@ -146,6 +162,16 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     }
 }
 
+// Every event a successful run returned from the source was committed.
+fn record_emissions(recorded: &Arc<Mutex<Vec<Event>>>, trace: &mut Trace) {
+    for event in recorded
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .drain(..)
+    {
+        trace.emit(event.id());
+    }
+}
 /// Applies one input, records its ack tick, and watches for a replay.
 ///
 /// # Errors
@@ -169,9 +195,10 @@ fn apply_inputs(
         Ok(true) => engine.handle().stop(),
         Ok(false) => {}
         Err(error) => {
-            let write = error
-                .downcast_ref::<StoreError>()
-                .is_some_and(|cause| matches!(cause, StoreError::Write { .. }));
+            let write = error.downcast_ref::<StoreError>().is_some_and(|cause| {
+                matches!(cause, StoreError::Write { source, .. }
+                    if source.to_string() == ACK_FAULT)
+            });
 
             if !ack_fault || !write {
                 return Err(error);
@@ -329,8 +356,6 @@ fn collect(
     let Some(pending) = engine.pending() else {
         return Ok(Vec::new());
     };
-
-    trace.observe_pending(&pending);
 
     let mut fresh = Vec::new();
     let mut out = io::stdout().lock();

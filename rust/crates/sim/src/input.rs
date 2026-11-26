@@ -30,6 +30,12 @@ impl Inputs {
         self.pending_acks > 0
     }
 
+    /// Returns whether the input at the front is an acknowledgement.
+    #[must_use]
+    pub fn front_is_ack(&self) -> bool {
+        self.has_pending_ack() && matches!(self.queue.front(), Some(Input::Ack(_)))
+    }
+
     /// Queues acks for some new events and, at the end, maybe a stop.
     pub fn schedule(&mut self, seed: &mut Seed, events: &[Event], left: u32) {
         for event in events {
@@ -60,7 +66,19 @@ impl Inputs {
             Input::Stop => None,
         };
 
-        let stopped = apply_input(engine, input)?;
+        let attempt = match &input {
+            Input::Ack(id) => Input::Ack(id.clone()),
+            Input::Stop => Input::Stop,
+        };
+        let stopped = match apply_input(engine, attempt) {
+            Ok(stopped) => stopped,
+            Err(error) => {
+                // A failed input keeps its place at the front for a retry.
+                self.queue.push_front(input);
+
+                return Err(error);
+            }
+        };
 
         if let Some(id) = id {
             self.acked.push(id);
@@ -84,11 +102,12 @@ mod tests {
     use jiff::Timestamp;
     use sourcefed_core::{
         Clock, EventKind, EventSubject, MonitorConfig, MonitorId, PollInterval,
-        Source, TimerSource,
+        Source, StoreError, TimerSource,
     };
 
     use super::*;
     use crate::clock::SimClock;
+    use crate::store::StoreControl;
 
     fn event(id: &str) -> Event {
         let source = sourcefed_core::SourceName::new("timer".into()).unwrap();
@@ -105,6 +124,10 @@ mod tests {
     }
 
     fn engine() -> PollEngine<MemoryStore> {
+        engine_with_control().0
+    }
+
+    fn engine_with_control() -> (PollEngine<MemoryStore>, Arc<StoreControl>) {
         let source = TimerSource::new("deploy".into(), 1).unwrap();
         let config = MonitorConfig {
             id: MonitorId::new("sim".into()).unwrap(),
@@ -112,9 +135,12 @@ mod tests {
             poll_interval: PollInterval::from_secs(1).unwrap(),
         };
         let shared: Arc<dyn Clock> = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let store = MemoryStore::new();
+        let control = store.control();
+        let engine =
+            PollEngine::new(config, Arc::new(source), store, shared).unwrap();
 
-        PollEngine::new(config, Arc::new(source), MemoryStore::new(), shared)
-            .unwrap()
+        (engine, control)
     }
 
     #[test]
@@ -161,6 +187,32 @@ mod tests {
         assert!(inputs.next_input(&mut engine).unwrap());
         let expected: Vec<EventId> = Vec::new();
         assert_eq!(inputs.acked(), expected);
+        assert!(!inputs.has_pending_ack());
+    }
+
+    #[test]
+    fn a_failed_ack_is_requeued_and_succeeds_on_a_second_call() {
+        let mut seed = Seed::from_hex("0000000000000002").unwrap();
+        let pending = event("e1");
+        let id = pending.id().clone();
+        let mut inputs = Inputs::new();
+        let (mut engine, control) = engine_with_control();
+        inputs.schedule(&mut seed, &[pending], 2);
+
+        control.fail_next_ack();
+        let error = inputs.next_input(&mut engine).unwrap_err();
+        let write = error
+            .downcast_ref::<StoreError>()
+            .is_some_and(|cause| matches!(cause, StoreError::Write { .. }));
+
+        assert!(write);
+        assert!(inputs.front_is_ack());
+        assert!(inputs.has_pending_ack());
+        let expected: Vec<EventId> = Vec::new();
+        assert_eq!(inputs.acked(), expected);
+
+        assert!(!inputs.next_input(&mut engine).unwrap());
+        assert_eq!(inputs.acked(), &[id]);
         assert!(!inputs.has_pending_ack());
     }
 }
