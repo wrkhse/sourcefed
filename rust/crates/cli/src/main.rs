@@ -163,7 +163,7 @@ fn print_new(
 
     let mut out = io::stdout().lock();
 
-    for event in pending {
+    for event in &pending {
         if printed.insert(event.id().clone()) {
             writeln!(out, "{}", serde_json::to_string(event)?)?;
         }
@@ -737,12 +737,12 @@ mod tests {
         }
     }
 
-    fn pending_ids(engine: &PollEngine) -> Vec<&str> {
+    fn pending_ids(engine: &PollEngine) -> Vec<String> {
         engine
             .pending()
             .into_iter()
             .flatten()
-            .map(|event| event.id().as_str())
+            .map(|event| event.id().as_str().to_owned())
             .collect()
     }
 

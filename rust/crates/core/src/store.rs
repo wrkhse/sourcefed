@@ -511,18 +511,18 @@ impl Store {
 /// a commit saves the position and events together, and an acknowledgement
 /// removes pending events without forgetting their IDs.
 pub trait StateStore: Send + Sync {
-    /// Returns the saved position for the key, if one exists.
+    /// Returns a copy of the saved position for the key, if one exists.
     #[must_use]
-    fn position(&self, key: &PositionKey) -> Option<&Position>;
+    fn position(&self, key: &PositionKey) -> Option<Position>;
 
     /// Returns whether the event ID is among the key's remembered IDs.
     #[must_use]
     fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool;
 
-    /// Returns a read-only view of the key's saved events, oldest first,
-    /// or `None` if the key has no queue.
+    /// Returns a copy of the key's saved events, oldest first, or `None`
+    /// if the key has no queue.
     #[must_use]
-    fn pending(&self, key: &PositionKey) -> Option<&VecDeque<Event>>;
+    fn pending(&self, key: &PositionKey) -> Option<VecDeque<Event>>;
 
     /// Removes pending events with matching IDs from the key's queue.
     ///
@@ -556,16 +556,16 @@ pub trait StateStore: Send + Sync {
 }
 
 impl StateStore for Store {
-    fn position(&self, key: &PositionKey) -> Option<&Position> {
-        Self::position(self, key)
+    fn position(&self, key: &PositionKey) -> Option<Position> {
+        Self::position(self, key).cloned()
     }
 
     fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool {
         Self::is_seen(self, key, id)
     }
 
-    fn pending(&self, key: &PositionKey) -> Option<&VecDeque<Event>> {
-        Self::pending(self, key)
+    fn pending(&self, key: &PositionKey) -> Option<VecDeque<Event>> {
+        Self::pending(self, key).cloned()
     }
 
     fn ack_pending(

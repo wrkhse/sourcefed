@@ -265,10 +265,10 @@ impl<S: StateStore> PollEngine<S> {
         }
     }
 
-    /// Returns the store-owned queue for this engine's key, oldest first,
-    /// or `None` if absent. The returned queue is read-only.
+    /// Returns a copy of the queue for this engine's key, oldest first,
+    /// or `None` if absent.
     #[must_use]
-    pub fn pending(&self) -> Option<&VecDeque<Event>> {
+    pub fn pending(&self) -> Option<VecDeque<Event>> {
         self.store.pending(&self.key)
     }
 
@@ -375,7 +375,7 @@ impl<S: StateStore> PollEngine<S> {
     fn poll(&mut self, now: Timestamp) -> Result<(), StoreError> {
         let request = PollRequest {
             now,
-            position: self.store.position(&self.key).cloned(),
+            position: self.store.position(&self.key),
         };
 
         if let Ok(outcome) = self.source.poll(request) {
@@ -862,7 +862,7 @@ mod tests {
             }]
         );
         assert_eq!(f.engine.state(), EngineState::Running);
-        assert_eq!(f.engine.pending(), Some(&VecDeque::from(initial)));
+        assert_eq!(f.engine.pending(), Some(VecDeque::from(initial)));
         assert_eq!(
             (
                 f.engine.store.position(&key()),
@@ -902,7 +902,7 @@ mod tests {
         assert_eq!(f.engine.run(2).unwrap(), EngineState::Ended);
         let expected = VecDeque::from([first, third, second]);
 
-        assert_eq!(f.engine.pending(), Some(&expected));
+        assert_eq!(f.engine.pending(), Some(expected));
     }
 
     #[test]
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(f.engine.ack(&[unknown]).unwrap(), 0);
         assert_eq!(f.engine.ack(&duplicate_ids).unwrap(), 1);
         assert_eq!(f.engine.ack(std::slice::from_ref(shared.id())).unwrap(), 0);
-        assert_eq!(f.engine.pending(), Some(&VecDeque::from([first, last])));
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([first, last])));
         assert_eq!(f.engine.store.position(&key()), Some(&cursor()));
         assert!(f.engine.store.is_seen(&key(), shared.id()));
         assert_eq!(
@@ -968,7 +968,7 @@ mod tests {
         assert_eq!(f.engine.state(), EngineState::Running);
         assert!(matches!(f.engine.schedule, Schedule::Due(due) if due == at(0)));
         assert_eq!(f.engine.backoff, backoff);
-        assert_eq!(f.engine.pending(), Some(&VecDeque::from(initial)));
+        assert_eq!(f.engine.pending(), Some(VecDeque::from(initial)));
         assert_eq!(
             (
                 f.engine.store.position(&key()),
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     impl StateStore for CountingStore {
-        fn position(&self, key: &PositionKey) -> Option<&Position> {
+        fn position(&self, key: &PositionKey) -> Option<Position> {
             StateStore::position(&self.inner, key)
         }
 
@@ -1036,7 +1036,7 @@ mod tests {
             StateStore::is_seen(&self.inner, key, id)
         }
 
-        fn pending(&self, key: &PositionKey) -> Option<&VecDeque<Event>> {
+        fn pending(&self, key: &PositionKey) -> Option<VecDeque<Event>> {
             StateStore::pending(&self.inner, key)
         }
 
@@ -1089,11 +1089,11 @@ mod tests {
         assert_eq!(engine.run(1).unwrap(), EngineState::Ended);
         assert_eq!(commits.load(Ordering::Relaxed), 1);
         assert_eq!(acks.load(Ordering::Relaxed), 0);
-        assert_eq!(engine.pending(), Some(&VecDeque::from([fired.clone()])));
+        assert_eq!(engine.pending(), Some(VecDeque::from([fired.clone()])));
 
         assert_eq!(engine.ack(std::slice::from_ref(fired.id())).unwrap(), 1);
         assert_eq!(commits.load(Ordering::Relaxed), 1);
         assert_eq!(acks.load(Ordering::Relaxed), 1);
-        assert_eq!(engine.pending(), Some(&VecDeque::new()));
+        assert_eq!(engine.pending(), Some(VecDeque::new()));
     }
 }
