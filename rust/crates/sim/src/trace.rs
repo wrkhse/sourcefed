@@ -14,10 +14,15 @@ use sourcefed_core::{
     PositionKey, SourceName, StateStore,
 };
 
-use crate::{ClockFault, MemoryStore, Seed, SimClock};
+use crate::{ClockFault, MemoryStore, Seed, SimClock, StoreControl};
 
 const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
 const FNV_PRIME: u64 = 1_099_511_628_211;
+
+// Long replays arm both scripted store writes at fixed steps. The ack step
+// is a multiple of three, so an acknowledgement follows that commit.
+const COMMIT_FAULT_STEP: u32 = 6;
+const ACK_FAULT_STEP: u32 = 9;
 
 // `DefaultHasher` may change its algorithm between Rust releases, so traces
 // use FNV-1a to keep recorded hashes stable across builds.
@@ -275,6 +280,10 @@ fn replay_with(
         let position = Position::new(position_text.clone())
             .map_err(|_| ReplayError::Position)?;
 
+        if index == COMMIT_FAULT_STEP {
+            store.script(StoreControl::CommitFault);
+        }
+
         let commit = match store.commit(
             key.clone(),
             position,
@@ -289,6 +298,10 @@ fn replay_with(
         trace.push(commit);
 
         if index.checked_rem(3).unwrap_or(0) == 0 {
+            if index == ACK_FAULT_STEP {
+                store.script(StoreControl::AckFault);
+            }
+
             let ack = match store.ack_pending(&key, std::slice::from_ref(event.id()))
             {
                 Ok(removed) => Step::Ack {
@@ -447,6 +460,100 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    // Reading, sleep and commit precede each step; every third step also
+    // acknowledges, so earlier acks shift the position of a later fault.
+    fn fault_offset(index: u32, ack: bool) -> usize {
+        let earlier = usize::try_from(index).unwrap_or_default();
+        let before = earlier
+            .saturating_mul(3)
+            .saturating_add(earlier.div_ceil(3));
+
+        before.saturating_add(if ack { 3 } else { 2 })
+    }
+
+    #[test]
+    fn scripted_store_faults_are_recorded_at_deterministic_steps() {
+        let trace = replay(Seed::from_u64(3), 10).unwrap();
+        let steps = trace.steps();
+        let commit_at = fault_offset(COMMIT_FAULT_STEP, false);
+        let ack_at = fault_offset(ACK_FAULT_STEP, true);
+        let count = |variant: fn(&Step) -> bool| {
+            steps.iter().filter(|step| variant(step)).count()
+        };
+
+        assert_eq!(
+            steps[commit_at],
+            Step::CommitFault(String::from(
+                "could not write sim: scripted commit fault"
+            ))
+        );
+        assert_eq!(
+            steps[ack_at],
+            Step::AckFault(String::from("could not write sim: scripted ack fault"))
+        );
+        assert_eq!(
+            steps
+                .iter()
+                .position(|step| matches!(step, Step::CommitFault(_))),
+            Some(commit_at)
+        );
+        assert_eq!(
+            steps
+                .iter()
+                .position(|step| matches!(step, Step::AckFault(_))),
+            Some(ack_at)
+        );
+        assert_eq!(steps.len(), 34);
+        assert_eq!(count(|step| matches!(step, Step::Reading(_))), 10);
+        assert_eq!(count(|step| matches!(step, Step::Sleep(_))), 10);
+        assert_eq!(count(|step| matches!(step, Step::Commit { .. })), 9);
+        assert_eq!(count(|step| matches!(step, Step::Ack { .. })), 3);
+    }
+
+    #[test]
+    fn store_faults_hash_differ_from_successful_steps() {
+        let seed = Seed::from_u64(3);
+        let trace = replay(seed, 10).unwrap();
+        let mut successful = Trace::new(seed);
+
+        for step in trace.steps() {
+            let clean = match step {
+                Step::CommitFault(message) => Step::Commit {
+                    position: message.clone(),
+                    fresh: 1,
+                },
+                Step::AckFault(message) => Step::Ack {
+                    id: message.clone(),
+                    removed: 1,
+                },
+                other => other.clone(),
+            };
+            successful.push(clean);
+        }
+
+        assert_ne!(trace.hash(), successful.hash());
+
+        let message = String::from("could not write sim: scripted commit fault");
+        let mut commit_ok = Trace::new(seed);
+        let mut commit_bad = Trace::new(seed);
+        commit_ok.push(Step::Commit {
+            position: message.clone(),
+            fresh: 1,
+        });
+        commit_bad.push(Step::CommitFault(message));
+        assert_ne!(commit_bad.hash(), commit_ok.hash());
+
+        let message = String::from("could not write sim: scripted ack fault");
+        let mut ack_ok = Trace::new(seed);
+        let mut ack_bad = Trace::new(seed);
+        ack_ok.push(Step::Ack {
+            id: message.clone(),
+            removed: 1,
+        });
+        ack_bad.push(Step::AckFault(message));
+        assert_ne!(ack_bad.hash(), ack_ok.hash());
     }
 
     #[test]

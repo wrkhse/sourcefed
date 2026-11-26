@@ -384,25 +384,24 @@ mod tests {
     #[test]
     fn a_full_pending_queue_refuses_fresh_events() {
         let mut store = MemoryStore::new();
-        let initial = events(0..MAX_PENDING_EVENTS);
-        let fresh = events(MAX_PENDING_EVENTS..MAX_PENDING_EVENTS + 1);
+        let cap = MAX_PENDING_EVENTS.min(MAX_SEEN_IDS);
+        let initial = events(0..cap);
+        let initial_ids = ids(&initial);
+        let fresh = events(cap..cap.saturating_add(1));
         store.commit(key(1), cursor(), &initial).unwrap();
+        let pending_room = MAX_PENDING_EVENTS.saturating_sub(initial.len());
+        let expected = limit_for(pending_room, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store
                 .commit(key(1), Position::new("next".into()).unwrap(), &fresh)
                 .unwrap_err(),
-            MAX_PENDING_EVENTS,
+            expected,
         );
         assert_eq!(store.position(&key(1)), Some(cursor()));
         assert_eq!(store.pending(&key(1)), Some(VecDeque::from(initial)));
         assert!(!store.is_seen(&key(1), fresh[0].id()));
-        assert_eq!(
-            store
-                .ack_pending(&key(1), &ids(&events(0..MAX_PENDING_EVENTS)))
-                .unwrap(),
-            MAX_PENDING_EVENTS
-        );
+        assert_eq!(store.ack_pending(&key(1), &initial_ids).unwrap(), cap);
         assert_eq!(store.commit(key(1), cursor(), &fresh).unwrap(), 1);
     }
 
@@ -410,10 +409,12 @@ mod tests {
     fn an_oversized_batch_refuses_without_changing_state() {
         let mut store = MemoryStore::new();
         let batch = events(0..MAX_SEEN_IDS + 1);
+        let expected =
+            limit_for(MAX_PENDING_EVENTS, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store.commit(key(1), cursor(), &batch).unwrap_err(),
-            MAX_SEEN_IDS,
+            expected,
         );
         assert_eq!(store.position(&key(1)), None);
         assert_eq!(store.pending(&key(1)), None);
@@ -439,18 +440,21 @@ mod tests {
     #[test]
     fn eviction_never_drops_an_id_that_is_still_pending() {
         let mut store = MemoryStore::new();
-        let initial = events(0..MAX_SEEN_IDS);
-        let fresh = events(MAX_SEEN_IDS..MAX_SEEN_IDS + 1);
+        let cap = MAX_PENDING_EVENTS.min(MAX_SEEN_IDS);
+        let initial = events(0..cap);
+        let fresh = events(cap..cap.saturating_add(1));
         store.commit(key(1), cursor(), &initial).unwrap();
+        let pending_room = MAX_PENDING_EVENTS.saturating_sub(initial.len());
+        let expected = limit_for(pending_room, MAX_PENDING_EVENTS, MAX_SEEN_IDS);
 
         assert_too_many(
             &store.commit(key(1), cursor(), &fresh).unwrap_err(),
-            MAX_PENDING_EVENTS,
+            expected,
         );
         assert!(store.is_seen(&key(1), initial[0].id()));
         assert_eq!(
             store.ack_pending(&key(1), &ids(&initial[1..])).unwrap(),
-            MAX_SEEN_IDS - 1
+            cap.saturating_sub(1)
         );
         assert_eq!(store.commit(key(1), cursor(), &fresh).unwrap(), 1);
         assert!(store.is_seen(&key(1), initial[0].id()));
