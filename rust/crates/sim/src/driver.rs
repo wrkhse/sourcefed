@@ -122,7 +122,37 @@ fn print_new(
 
 #[cfg(test)]
 mod tests {
+    use sourcefed_core::{
+        Event, EventKind, EventSubject, Position, PositionKey, SourceName,
+        StateStore,
+    };
+
     use super::*;
+
+    fn engine_with_pending(events: &[Event]) -> PollEngine<MemoryStore> {
+        let source = TimerSource::new("sim".into(), 1).unwrap();
+        let config = MonitorConfig {
+            id: MonitorId::new("sim".into()).unwrap(),
+            source: source.name().clone(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let key = PositionKey {
+            monitor: config.id.clone(),
+            source: config.source.clone(),
+        };
+        let mut store = MemoryStore::new();
+        store
+            .commit(key, Position::new("cursor".into()).unwrap(), events)
+            .unwrap();
+
+        PollEngine::new(
+            config,
+            Arc::new(source),
+            store,
+            Arc::new(SimClock::new(Timestamp::UNIX_EPOCH)),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn the_same_seed_and_steps_print_the_same_events() {
@@ -147,5 +177,44 @@ mod tests {
         simulate(Seed::from_u64(2), 8, &mut other).unwrap();
 
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn a_seen_id_is_dropped_only_when_its_event_leaves_the_pending_queue() {
+        let source = SourceName::new("sim".into()).unwrap();
+        let subject = EventSubject::new(source, "sim".into()).unwrap();
+        let first = Event::new(
+            EventId::new("first".into()).unwrap(),
+            EventKind::TimerFired,
+            subject.clone(),
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let second = Event::new(
+            EventId::new("second".into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let first_line = format!("{}\n", serde_json::to_string(&first).unwrap());
+        let second_line = format!("{}\n", serde_json::to_string(&second).unwrap());
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        let one = engine_with_pending(std::slice::from_ref(&first));
+
+        assert_eq!(print_new(&one, &mut seen, &mut out).unwrap(), 1);
+        assert_eq!(out.as_slice(), first_line.as_bytes());
+
+        let both = engine_with_pending(&[first, second]);
+
+        assert_eq!(print_new(&both, &mut seen, &mut out).unwrap(), 1);
+        assert_eq!(
+            out.as_slice(),
+            format!("{first_line}{second_line}").as_bytes()
+        );
     }
 }
