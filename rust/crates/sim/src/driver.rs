@@ -14,6 +14,8 @@ use sourcefed_sim::{MemoryStore, Seed, SimClock};
 
 use crate::input::ScriptedInputs;
 
+const NO_PENDING: &str = "sim: missing pending queue";
+
 /// Why a simulation run ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
@@ -72,16 +74,33 @@ pub fn simulate(
         taken = index.saturating_add(1);
         let left = steps.saturating_sub(index);
         let state = engine.run(1)?;
-        let pending: Vec<_> = engine.pending().unwrap_or_default().into();
 
-        inputs.schedule(&mut draw, &pending, left);
-
-        if inputs.apply_next(&mut engine)? {
-            outcome = Outcome::Stopped;
-            break;
+        // The first timer poll only sets its position, so no queue exists
+        // yet. A queue missing after that is an error, not an empty run.
+        if engine.pending().is_none() {
+            if index > 0 {
+                return Err(NO_PENDING.into());
+            }
+            continue;
         }
 
         events = events.saturating_add(print_new(&engine, &mut printed, out)?);
+
+        let pending = engine.pending().ok_or(NO_PENDING)?;
+        let pending: Vec<_> = pending.into();
+
+        inputs.schedule(&mut draw, &pending, left);
+
+        let stopped = if left == 1 {
+            inputs.apply_all(&mut engine)?
+        } else {
+            inputs.apply_next(&mut engine)?
+        };
+
+        if stopped {
+            outcome = Outcome::Stopped;
+            break;
+        }
 
         if state != EngineState::Running {
             outcome = Outcome::Ended;
@@ -102,7 +121,7 @@ fn print_new(
     out: &mut impl Write,
 ) -> Result<usize, Box<dyn Error>> {
     let Some(pending) = engine.pending() else {
-        return Ok(0);
+        return Err(NO_PENDING.into());
     };
 
     let mut count = 0_usize;
@@ -169,14 +188,54 @@ mod tests {
     }
 
     #[test]
-    fn a_different_seed_can_print_a_different_event_sequence() {
+    fn every_polled_event_is_printed_before_inputs_are_applied() {
         let mut first = Vec::new();
         let mut other = Vec::new();
 
         simulate(Seed::from_u64(1), 8, &mut first).unwrap();
         simulate(Seed::from_u64(2), 8, &mut other).unwrap();
 
-        assert_ne!(first, other);
+        assert_eq!(first, other);
+        assert_eq!(String::from_utf8(first).unwrap().lines().count(), 7);
+    }
+
+    #[test]
+    fn final_step_events_are_printed_before_the_stop() {
+        let mut out = Vec::new();
+        let seed = Seed::from_u64(0x3C6E_F372_FE94_F82B);
+
+        let summary = simulate(seed, 2, &mut out).unwrap();
+
+        assert_eq!(
+            summary,
+            Summary {
+                steps: 2,
+                events: 1,
+                outcome: Outcome::Stopped,
+            }
+        );
+        let printed = String::from_utf8(out).unwrap();
+        let lines: Vec<_> = printed.lines().collect();
+
+        assert_eq!(lines.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+
+        assert_eq!(event["id"], "timer:sim:1970-01-01T00:00:01Z");
+    }
+
+    #[test]
+    fn a_missing_pending_queue_is_reported_as_an_error() {
+        let engine = engine().unwrap();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        let result = print_new(&engine, &mut seen, &mut out);
+
+        assert_eq!(
+            result.err().map(|error| error.to_string()),
+            Some(String::from("sim: missing pending queue"))
+        );
+        assert_eq!(out, Vec::<u8>::new());
     }
 
     #[test]
