@@ -128,14 +128,14 @@ mod tests {
         let events: Vec<Event> =
             (0..MAX_QUEUED.saturating_add(4)).map(event).collect();
 
-        inputs.schedule(&mut Seed::from_u64(1), &events, 2);
+        inputs.schedule(&mut Seed::from_u64(425), &events, 2);
 
         assert_eq!(inputs.queued.len(), MAX_QUEUED);
         assert!(inputs.queued.iter().all(|i| *i != Input::Stop));
 
         let mut final_inputs = ScriptedInputs::new();
 
-        final_inputs.schedule(&mut Seed::from_u64(119), &events, 1);
+        final_inputs.schedule(&mut Seed::from_u64(425), &events, 1);
 
         assert_eq!(final_inputs.queued.len(), MAX_QUEUED);
         assert_eq!(final_inputs.queued.front(), Some(&Input::Stop));
