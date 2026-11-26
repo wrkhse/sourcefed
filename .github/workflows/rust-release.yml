@@ -538,10 +538,45 @@ jobs:
             exit 1
           fi
 
-          # The final hold shows the restart's output. A frame of text
-          # measures about 0.04 or more in grayscale standard deviation (0 to
-          # 1); a dark frame with only a cursor, about 0.01. Below 0.02 the
-          # GIF rendered no glyphs.
+          # The blank-GIF guard reads the exported GIF itself, not the mp4s
+          # or their footers. A frame from each take is sampled at a fraction
+          # of the GIF's duration: a quarter in, the run's printed event is
+          # still on screen, and three quarters in, the restart's delivered
+          # events are. The footer, whose captions name timer.fired, is
+          # cropped off, so OCR must find the text in the recorded terminal.
+          # Whitespace OCR inserts inside a word is dropped; either frame
+          # without timer.fired fails the job with a named error.
+          duration=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 artifacts/demo.gif)
+          for sample in 0.25:run 0.75:restart; do
+            fraction=${sample%%:*}
+            label=${sample#*:}
+            at=$(awk -v d="$duration" -v f="$fraction" \
+              'BEGIN { printf "%.3f", d * f }')
+            frame="artifacts/gif-$label.png"
+            rm -f -- "$frame"
+            ffmpeg -hide_banner -loglevel error -y -ss "$at" \
+              -i artifacts/demo.gif -frames:v 1 \
+              -vf 'crop=iw:ih*3/4:0:0,format=gray,negate' "$frame"
+            if [[ ! -s $frame ]]; then
+              echo "::error::demo.gif has no frame at $at s ($label take)"
+              exit 1
+            fi
+
+            text=$(tesseract "$frame" stdout)
+            printf -- '--- OCR of demo.gif at %s s (%s take) ---\n%s\n' \
+              "$at" "$label" "$text"
+            if [[ $(tr -d '[:space:]' <<< "$text") != *timer.fired* ]]; then
+              echo "::error::demo.gif at $at s ($label take) shows no timer.fired"
+              exit 1
+            fi
+          done
+
+          # Secondary guard: the final hold shows the restart's output. A
+          # frame of text measures about 0.04 or more in grayscale standard
+          # deviation (0 to 1); a dark frame with only a cursor, about 0.01.
+          # Below 0.02 the GIF rendered no glyphs. This does not replace the
+          # OCR check above.
           ffmpeg -hide_banner -loglevel error -y -sseof -1 \
             -i artifacts/demo.gif -frames:v 1 artifacts/demo-last.png
           deviation=$(convert artifacts/demo-last.png -colorspace Gray \
@@ -594,6 +629,18 @@ jobs:
           tarball=${tarballs[0]}
 
           if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            # Prove the rerun path before rewriting checksums or assets:
+            # gh must see the release and the tarball it already carries.
+            names=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
+              --jq '.assets[].name') || {
+              echo "::error::dispatch cannot view release $TAG"
+              exit 1
+            }
+            if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
+              echo "::error::release $TAG has no asset $tarball"
+              exit 1
+            fi
+
             rm -- "$tarball"
             gh release download "$TAG" --pattern "$tarball" --dir .
           fi
@@ -636,9 +683,10 @@ jobs:
 
           # A dispatch brings the release in line with what it attaches: the
           # notes name the GIF, and the videos an earlier run attached go.
-          # The flags restate the release's kind, so editing keeps it.
+          # Only the notes change, so the release keeps its prerelease kind
+          # and its latest status as published.
           if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-            gh release edit "$TAG" --prerelease --latest=false --notes "$notes"
+            gh release edit "$TAG" --notes "$notes"
             stale=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '
               .assets[].name
               | select(. == "demo-run.mp4" or . == "demo-restart.mp4")')
