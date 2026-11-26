@@ -173,11 +173,7 @@ fn record(
     let pending_room = MAX_PENDING_EVENTS
         .saturating_sub(state.pending.get(key).map_or(0, VecDeque::len));
     let room = pending_room.min(MAX_SEEN_IDS);
-    let limit = if pending_room < MAX_SEEN_IDS {
-        MAX_PENDING_EVENTS
-    } else {
-        MAX_SEEN_IDS
-    };
+    let limit = MAX_PENDING_EVENTS.min(MAX_SEEN_IDS);
 
     for event in events {
         let id = event.id();
@@ -446,6 +442,36 @@ mod tests {
         assert!(store.is_seen(&key(1), initial[0].id()));
         assert!(!store.is_seen(&key(1), initial[1].id()));
         assert!(store.is_seen(&key(1), fresh[0].id()));
+    }
+
+    #[test]
+    fn a_repeated_id_evicts_the_oldest_id_not_the_next_oldest() {
+        let key = key(1);
+        let mut state = State::default();
+        let x = event("x".into());
+        let a = event("a".into());
+        let b = event("b".into());
+        let z = event("z".into());
+
+        {
+            let seen = state.seen.entry(key.clone()).or_default();
+            seen.push_back(x.id().clone());
+            seen.push_back(a.id().clone());
+            seen.push_back(b.id().clone());
+            for index in 3..MAX_SEEN_IDS {
+                seen.push_back(event(format!("filler-{index}")).id().clone());
+            }
+        }
+
+        let batch = [a.clone(), z.clone()];
+        assert_eq!(record(&mut state, &key, &batch).unwrap(), 1);
+
+        let seen = state.seen.get(&key).unwrap();
+        assert_eq!(seen.len(), MAX_SEEN_IDS);
+        assert!(!seen.contains(x.id()));
+        assert!(seen.contains(a.id()));
+        assert!(seen.contains(b.id()));
+        assert_eq!(state.pending.get(&key), Some(&VecDeque::from(vec![z])));
     }
 
     #[test]
