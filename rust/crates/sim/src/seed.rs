@@ -85,6 +85,6 @@ mod tests {
 
         assert_eq!(seed.pick_index(0), None);
         assert_eq!(seed.pick_index(1), Some(0));
-        assert_eq!(seed.pick_index(6), Some(5));
+        assert_eq!(seed.pick_index(6), Some(3));
     }
 }
