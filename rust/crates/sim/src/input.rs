@@ -54,7 +54,7 @@ impl ScriptedInputs {
             }
         }
 
-        if stop && self.queued.len() < MAX_QUEUED {
+        if stop {
             self.queued.push_back(Input::Stop);
         }
     }
@@ -93,21 +93,31 @@ impl ScriptedInputs {
     /// Returns whether a stop was requested. Inputs after a Stop stay queued.
     ///
     /// # Errors
-    /// Returns the store's error if an acknowledgement cannot be saved.
+    /// Returns the store's error if an acknowledgement cannot be saved, or
+    /// if the queue does not drain within one run's input budget.
     pub fn apply_all(
         &mut self,
         engine: &mut PollEngine<MemoryStore>,
     ) -> Result<bool, Box<dyn Error>> {
         let mut stopped = false;
 
-        while !self.is_empty() {
-            if self.apply_next(engine)? {
-                stopped = true;
+        for _ in 0..MAX_QUEUED.saturating_add(1) {
+            if self.is_empty() {
+                return Ok(stopped);
+            }
+
+            stopped = self.apply_next(engine)?;
+
+            if stopped {
                 break;
             }
         }
 
-        Ok(stopped)
+        if stopped {
+            Ok(stopped)
+        } else {
+            Err("input drain budget exhausted".into())
+        }
     }
 }
 
@@ -186,6 +196,31 @@ mod tests {
     }
 
     #[test]
+    fn a_full_ack_queue_leaves_room_for_the_final_stop() {
+        let mut inputs = ScriptedInputs::new();
+
+        for index in 0..MAX_QUEUED.saturating_sub(1) {
+            inputs.queued.push_back(ack(index));
+        }
+
+        let events: Vec<Event> =
+            (0..MAX_QUEUED.saturating_add(4)).map(event).collect();
+
+        inputs.schedule(&mut Seed::from_u64(125), &events, 1);
+
+        assert_eq!(inputs.queued.len(), MAX_QUEUED);
+        assert_eq!(inputs.queued.back(), Some(&Input::Stop));
+        assert_eq!(
+            inputs
+                .queued
+                .iter()
+                .filter(|input| **input == Input::Stop)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn a_trailing_stop_follows_the_queued_acks() {
         let mut engine = engine_with_event();
         let mut inputs = ScriptedInputs::new();
@@ -198,6 +233,31 @@ mod tests {
         assert!(inputs.apply_all(&mut engine).unwrap());
         assert!(inputs.is_empty());
         assert_eq!(engine.pending(), Some(VecDeque::new()));
+    }
+
+    #[test]
+    fn ack_then_stop_drains_the_queue_and_reports_stop() {
+        let mut engine = engine().unwrap();
+        let mut inputs = ScriptedInputs::new();
+
+        inputs.queued.push_back(ack(0));
+        inputs.queued.push_back(Input::Stop);
+
+        assert!(inputs.apply_all(&mut engine).unwrap());
+        assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn a_full_queue_without_a_stop_drains_without_error() {
+        let mut engine = engine().unwrap();
+        let mut inputs = ScriptedInputs::new();
+
+        for index in 0..MAX_QUEUED {
+            inputs.queued.push_back(ack(index));
+        }
+
+        assert!(!inputs.apply_all(&mut engine).unwrap());
+        assert!(inputs.is_empty());
     }
 
     #[test]
