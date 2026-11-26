@@ -111,6 +111,8 @@ pub enum Violation {
     ClockFaultsFailClosed { fault: ClockFault, reason: String },
     /// Simulated sleeps or poll lateness left their bounds.
     PollsOnTimeInSimulatedTime { reason: String },
+    /// An unacknowledged pending event is absent after a restart.
+    RedeliveryAfterRestart { reason: String },
 }
 
 impl Violation {
@@ -124,6 +126,7 @@ impl Violation {
             Self::PollsOnTimeInSimulatedTime { .. } => {
                 "polls on time in simulated time"
             }
+            Self::RedeliveryAfterRestart { .. } => "redelivery after restart",
         }
     }
 
@@ -134,7 +137,8 @@ impl Violation {
             Self::AtLeastOnceDelivery { reason, .. }
             | Self::NoAckLostBeforeHalt { reason, .. }
             | Self::ClockFaultsFailClosed { reason, .. }
-            | Self::PollsOnTimeInSimulatedTime { reason } => reason,
+            | Self::PollsOnTimeInSimulatedTime { reason }
+            | Self::RedeliveryAfterRestart { reason } => reason,
         }
     }
 }
@@ -168,6 +172,33 @@ impl Checker {
         Self::check_delivery(trace, store, &mut violations);
         Self::check_clock(trace, &mut violations);
         Self::check_sleeps(trace, clock, &mut violations);
+
+        violations
+    }
+
+    /// Compares pending IDs across a restart and records reappearing acks.
+    #[must_use]
+    pub fn check_restart(
+        before: &[EventId],
+        after: &[EventId],
+        acked: &[EventId],
+        trace: &mut Trace,
+    ) -> Vec<Violation> {
+        let mut violations = Vec::new();
+
+        for id in after {
+            if acked.contains(id) {
+                trace.replay(id);
+            }
+        }
+
+        for id in before {
+            if !acked.contains(id) && !after.contains(id) {
+                violations.push(Violation::RedeliveryAfterRestart {
+                    reason: "pending event absent after restart".into(),
+                });
+            }
+        }
 
         violations
     }
@@ -266,7 +297,28 @@ impl Checker {
             return;
         };
 
+        Self::check_accounting(trace, clock, start, total, out);
         Self::check_lateness(trace, clock, start, per_step, out);
+    }
+
+    // Virtual time moves only through a logged sleep or a recorded advance.
+    fn check_accounting(
+        trace: &Trace,
+        clock: &SimClock,
+        start: Timestamp,
+        slept: u64,
+        out: &mut Vec<Violation>,
+    ) {
+        let elapsed = slept.saturating_add(trace.advance_secs);
+        let expected = start
+            .checked_add(Duration::from_secs(elapsed))
+            .unwrap_or(Timestamp::MAX);
+
+        if clock.virtual_now() != expected {
+            out.push(Violation::PollsOnTimeInSimulatedTime {
+                reason: "virtual time moved without a sleep or advance".into(),
+            });
+        }
     }
 
     fn check_lateness(
@@ -312,6 +364,7 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
+    use sourcefed_core::Clock;
     use sourcefed_core::store::StateStore;
     use sourcefed_core::{
         Event, EventId, EventKind, EventSubject, MAX_WAIT_SECS, MonitorId, Position,
@@ -502,6 +555,7 @@ mod tests {
         let clock = clock();
         let duration = Duration::from_secs(MAX_WAIT_SECS.saturating_add(1));
         let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
+        clock.sleep(duration);
         trace.sleeps.push(duration);
 
         let violations = Checker::check(&trace, &clock, &MemoryStore::new());
@@ -518,9 +572,11 @@ mod tests {
     fn sleeps_past_the_step_budget_fail_the_timing_check() {
         let clock = clock();
         let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
-        trace
-            .sleeps
-            .extend((0..32).map(|_| Duration::from_secs(MAX_WAIT_SECS)));
+
+        for _ in 0..32 {
+            clock.sleep(Duration::from_secs(MAX_WAIT_SECS));
+            trace.sleeps.push(Duration::from_secs(MAX_WAIT_SECS));
+        }
 
         let violations = Checker::check(&trace, &clock, &MemoryStore::new());
 
@@ -528,6 +584,22 @@ mod tests {
             violations,
             vec![Violation::PollsOnTimeInSimulatedTime {
                 reason: "total sleeps exceeded the step budget".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn virtual_time_without_a_sleep_or_advance_fails_the_timing_check() {
+        let clock = clock();
+        clock.advance(5);
+        let trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::PollsOnTimeInSimulatedTime {
+                reason: "virtual time moved without a sleep or advance".into(),
             }]
         );
     }
@@ -551,9 +623,14 @@ mod tests {
     #[test]
     fn lateness_past_the_wait_budget_fails_the_timing_check() {
         let clock = clock();
-        clock.advance(400);
-        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 10);
-        trace.polls = 3;
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 2, 10);
+
+        for _ in 0..40 {
+            clock.sleep(Duration::from_secs(MAX_WAIT_SECS));
+            trace.sleeps.push(Duration::from_secs(MAX_WAIT_SECS));
+        }
+
+        trace.polls = 1;
 
         let violations = Checker::check(&trace, &clock, &MemoryStore::new());
 
@@ -566,7 +643,61 @@ mod tests {
     }
 
     #[test]
-    fn the_four_proven_guarantees_have_distinct_names() {
+    fn an_ack_that_reappears_after_restart_is_recorded_as_a_replay() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+
+        let after = std::slice::from_ref(&id);
+        let violations = Checker::check_restart(&[], after, after, &mut trace);
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+        assert_eq!(trace.replayed, vec![id]);
+    }
+
+    #[test]
+    fn an_unacked_pending_id_absent_after_restart_violates_redelivery() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+
+        let violations = Checker::check_restart(&[id], &[], &[], &mut trace);
+
+        assert_eq!(
+            violations,
+            vec![Violation::RedeliveryAfterRestart {
+                reason: "pending event absent after restart".into(),
+            }]
+        );
+        assert_eq!(violations[0].reason(), "pending event absent after restart");
+    }
+
+    #[test]
+    fn an_acked_id_absent_after_restart_is_not_a_violation() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+
+        let before = std::slice::from_ref(&id);
+        let violations = Checker::check_restart(before, &[], before, &mut trace);
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_pending_id_still_present_after_restart_is_not_a_violation() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+
+        let before = std::slice::from_ref(&id);
+        let after = std::slice::from_ref(&id);
+        let violations = Checker::check_restart(before, after, &[], &mut trace);
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn the_five_proven_guarantees_have_distinct_names() {
         let id = "e1".to_owned();
         let guarantees = [
             Violation::AtLeastOnceDelivery {
@@ -584,6 +715,9 @@ mod tests {
             Violation::PollsOnTimeInSimulatedTime {
                 reason: String::new(),
             },
+            Violation::RedeliveryAfterRestart {
+                reason: String::new(),
+            },
         ];
         let names: Vec<_> = guarantees.iter().map(Violation::name).collect();
 
@@ -594,6 +728,7 @@ mod tests {
                 "no ack lost before halt",
                 "clock faults fail closed",
                 "polls on time in simulated time",
+                "redelivery after restart",
             ]
         );
     }

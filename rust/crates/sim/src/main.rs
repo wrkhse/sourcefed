@@ -85,13 +85,15 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     let timer = TimerSource::new(JOB.to_owned(), every)?;
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let source = RecordingSource::new(timer, recorded.clone());
+    let counter = source.poll_counter();
     let config = MonitorConfig {
         id: MonitorId::new(MONITOR.to_owned())?,
         source: source.name().clone(),
         poll_interval: PollInterval::from_secs(every)?,
     };
     let shared: Arc<dyn Clock> = clock.clone();
-    let mut engine = PollEngine::new(config, Arc::new(source), store, shared)?;
+    let mut engine =
+        PollEngine::new(config.clone(), Arc::new(source), store, shared)?;
     let mut trace = Trace::new(start, args.steps, every);
     let mut inputs = Inputs::new();
     let mut printed = HashSet::new();
@@ -102,28 +104,9 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
         script.advance(step, &clock, &mut trace);
         let armed_commit = script.commit(step, &control, &mut trace);
 
-        // Only a scripted write fault leaves the schedule unchanged.
-        let state = match engine.run(1) {
-            Ok(state) => {
-                record_emissions(&recorded, &mut trace);
+        let state = poll_once(&mut engine, &recorded, &mut trace, armed_commit)?;
 
-                state
-            }
-            Err(EngineError::Store(StoreError::Write { source, .. }))
-                if armed_commit && source.to_string() == COMMIT_FAULT =>
-            {
-                // A refused commit saves no event, so none was emitted.
-                recorded
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear();
-
-                engine.state()
-            }
-            Err(error) => return Err(Box::new(error)),
-        };
-
-        trace.polls = control.commits();
+        trace.polls = counter.poll_count();
 
         if marked {
             finish_mark(&mut trace, state);
@@ -143,12 +126,14 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
         }
     }
 
+    let before = pending_ids(&engine);
     let store = engine.into_store();
+    let (store, mut violations) =
+        restart(&config, &clock, store, &before, &mut trace)?;
 
-    trace.polls = control.commits();
+    trace.polls = counter.poll_count();
     trace.sleeps = clock.sleep_log();
-
-    let violations = Checker::check(&trace, &clock, &store);
+    violations.extend(Checker::check(&trace, &clock, &store));
 
     if violations.is_empty() {
         Ok(Outcome::Summary(summary(
@@ -160,6 +145,66 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
             violations,
         })
     }
+}
+
+// Only the armed scripted write fault leaves the engine on its schedule.
+fn poll_once(
+    engine: &mut PollEngine<MemoryStore>,
+    recorded: &Arc<Mutex<Vec<Event>>>,
+    trace: &mut Trace,
+    armed_commit: bool,
+) -> Result<EngineState, Box<dyn Error>> {
+    match engine.run(1) {
+        Ok(state) => {
+            record_emissions(recorded, trace);
+
+            Ok(state)
+        }
+        Err(EngineError::Store(StoreError::Write { source, .. }))
+            if armed_commit && source.to_string() == COMMIT_FAULT =>
+        {
+            // A refused commit saves no event, so none was emitted.
+            recorded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+
+            Ok(engine.state())
+        }
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn pending_ids(engine: &PollEngine<MemoryStore>) -> Vec<EventId> {
+    engine
+        .pending()
+        .unwrap_or_default()
+        .iter()
+        .map(Event::id)
+        .cloned()
+        .collect()
+}
+
+// The store and clock survive a restart; the engine and source do not.
+fn restart(
+    config: &MonitorConfig,
+    clock: &Arc<SimClock>,
+    store: MemoryStore,
+    before: &[EventId],
+    trace: &mut Trace,
+) -> Result<(MemoryStore, Vec<Violation>), Box<dyn Error>> {
+    let source = TimerSource::new(JOB.to_owned(), config.poll_interval.as_secs())?;
+    let shared: Arc<dyn Clock> = clock.clone();
+    let mut engine =
+        PollEngine::new(config.clone(), Arc::new(source), store, shared)?;
+
+    engine.run(1)?;
+
+    let after = pending_ids(&engine);
+    let acked: Vec<EventId> = trace.acked.iter().map(|(id, _)| id.clone()).collect();
+    let violations = Checker::check_restart(before, &after, &acked, trace);
+
+    Ok((engine.into_store(), violations))
 }
 
 // Every event a successful run returned from the source was committed.
@@ -244,6 +289,10 @@ where
                 let text = argv.next().ok_or("--steps needs a u32")?;
                 let value =
                     text.parse::<u32>().map_err(|_| "--steps needs a u32")?;
+
+                if value == 0 {
+                    return Err("--steps must be at least 1".into());
+                }
 
                 steps = Some(value);
             }
@@ -386,7 +435,7 @@ fn summary(
         .fold(0_u64, |sum, sleep| sum.saturating_add(sleep.as_secs()));
     let faults = clock.fault_count().saturating_add(control.fault_count());
     let events = trace.emitted.len();
-    let polls = trace.polls;
+    let polls = control.commits();
 
     format!(
         concat!(
@@ -412,10 +461,64 @@ fn commit() -> String {
 
 #[cfg(test)]
 mod tests {
+    use sourcefed_core::StateStore;
+
     use super::*;
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn test_engine(store: MemoryStore) -> PollEngine<MemoryStore> {
+        let source = TimerSource::new(JOB.to_owned(), 1).unwrap();
+        let config = MonitorConfig {
+            id: MonitorId::new(MONITOR.to_owned()).unwrap(),
+            source: source.name().clone(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let clock: Arc<dyn Clock> = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+
+        PollEngine::new(config, Arc::new(source), store, clock).unwrap()
+    }
+
+    #[test]
+    fn pending_ids_reads_the_store_queue() {
+        let empty = test_engine(MemoryStore::new());
+        let expected: Vec<EventId> = Vec::new();
+
+        assert_eq!(pending_ids(&empty), expected);
+
+        let source = sourcefed_core::SourceName::new("timer".into()).unwrap();
+        let subject =
+            sourcefed_core::EventSubject::new(source.clone(), JOB.into()).unwrap();
+        let event = Event::new(
+            EventId::new("e1".into()).unwrap(),
+            sourcefed_core::EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let key = sourcefed_core::PositionKey {
+            monitor: MonitorId::new(MONITOR.to_owned()).unwrap(),
+            source,
+        };
+        let mut store = MemoryStore::new();
+
+        assert_eq!(
+            store
+                .commit(
+                    key,
+                    sourcefed_core::Position::new("1".into()).unwrap(),
+                    std::slice::from_ref(&event),
+                )
+                .unwrap(),
+            1
+        );
+
+        let engine = test_engine(store);
+
+        assert_eq!(pending_ids(&engine), vec![event.id().clone()]);
     }
 
     fn error(words: &[&str]) -> String {
@@ -475,6 +578,14 @@ mod tests {
         assert_eq!(
             error(&["--seed", "0000000000000001", "--steps", "many"]),
             "--steps needs a u32"
+        );
+    }
+
+    #[test]
+    fn rejects_a_zero_step_count() {
+        assert_eq!(
+            error(&["--seed", "0000000000000001", "--steps", "0"]),
+            "--steps must be at least 1"
         );
     }
 
