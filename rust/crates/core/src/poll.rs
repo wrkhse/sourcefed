@@ -8,7 +8,7 @@ use jiff::Timestamp;
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
     Event, EventId, ModelError, MonitorConfig, Next, PollOutcome, PollRequest,
-    PositionKey, Source, Store, StoreError,
+    PositionKey, Source, StateStore, Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -191,17 +191,17 @@ impl Schedule {
 /// The engine exposes a read-only view and removes delivered events by ID.
 /// A successful commit sets the next due time or ends the engine. A source
 /// failure schedules a retry with backoff; it is not returned as an error.
-pub struct PollEngine {
+pub struct PollEngine<S = Store> {
     key: PositionKey,
     source: Arc<dyn Source>,
-    store: Store,
+    store: S,
     clock: Arc<dyn Clock>,
     schedule: Schedule,
     backoff: Backoff,
     stop: StopHandle,
 }
 
-impl PollEngine {
+impl<S: StateStore> PollEngine<S> {
     /// Creates an engine whose first poll is due at the current clock reading.
     ///
     /// The retry base is the poll interval, limited by the default cap.
@@ -216,7 +216,7 @@ impl PollEngine {
     pub fn new(
         config: MonitorConfig,
         source: Arc<dyn Source>,
-        store: Store,
+        store: S,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ModelError> {
         if source.name() != &config.source {
@@ -285,7 +285,7 @@ impl PollEngine {
 
     /// Consumes the engine and returns its store.
     #[must_use]
-    pub fn into_store(self) -> Store {
+    pub fn into_store(self) -> S {
         self.store
     }
 
@@ -415,6 +415,7 @@ impl PollEngine {
 mod tests {
     use std::fs;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
 
     use super::*;
@@ -1018,5 +1019,81 @@ mod tests {
         assert_eq!(backoff.delay(), Duration::MAX);
         backoff.succeed();
         assert_eq!(backoff.delay(), base);
+    }
+
+    struct CountingStore {
+        inner: Store,
+        commits: Arc<AtomicUsize>,
+        acks: Arc<AtomicUsize>,
+    }
+
+    impl StateStore for CountingStore {
+        fn position(&self, key: &PositionKey) -> Option<&Position> {
+            StateStore::position(&self.inner, key)
+        }
+
+        fn is_seen(&self, key: &PositionKey, id: &EventId) -> bool {
+            StateStore::is_seen(&self.inner, key, id)
+        }
+
+        fn pending(&self, key: &PositionKey) -> Option<&VecDeque<Event>> {
+            StateStore::pending(&self.inner, key)
+        }
+
+        fn ack_pending(
+            &mut self,
+            key: &PositionKey,
+            ids: &[EventId],
+        ) -> Result<usize, StoreError> {
+            self.acks.fetch_add(1, Ordering::Relaxed);
+            StateStore::ack_pending(&mut self.inner, key, ids)
+        }
+
+        fn commit(
+            &mut self,
+            key: PositionKey,
+            position: Position,
+            events: &[Event],
+        ) -> Result<usize, StoreError> {
+            self.commits.fetch_add(1, Ordering::Relaxed);
+            StateStore::commit(&mut self.inner, key, position, events)
+        }
+    }
+
+    #[test]
+    fn an_injected_store_receives_commits_and_acknowledgements() {
+        let dir = tempfile::tempdir().unwrap();
+        let commits = Arc::new(AtomicUsize::new(0));
+        let acks = Arc::new(AtomicUsize::new(0));
+        let store = CountingStore {
+            inner: Store::open(dir.path()).unwrap(),
+            commits: commits.clone(),
+            acks: acks.clone(),
+        };
+        let clock = Arc::new(FakeClock::default());
+        let fired = event("fired");
+        let outcome =
+            PollOutcome::new(vec![fired.clone()], cursor(), Next::Done).unwrap();
+        let source = Arc::new(FakeSource {
+            name: timer(),
+            results: Mutex::new(VecDeque::from([Ok(outcome)])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let config = MonitorConfig {
+            id: key().monitor,
+            source: timer(),
+            poll_interval: PollInterval::from_secs(5).unwrap(),
+        };
+        let mut engine = PollEngine::new(config, source, store, clock).unwrap();
+
+        assert_eq!(engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(commits.load(Ordering::Relaxed), 1);
+        assert_eq!(acks.load(Ordering::Relaxed), 0);
+        assert_eq!(engine.pending(), Some(&VecDeque::from([fired.clone()])));
+
+        assert_eq!(engine.ack(std::slice::from_ref(fired.id())).unwrap(), 1);
+        assert_eq!(commits.load(Ordering::Relaxed), 1);
+        assert_eq!(acks.load(Ordering::Relaxed), 1);
+        assert_eq!(engine.pending(), Some(&VecDeque::new()));
     }
 }

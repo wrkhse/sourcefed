@@ -48,7 +48,7 @@ pub use poll::{
 pub use position::Position;
 pub use source::{Next, PollError, PollOutcome, PollRequest, Source, SourceName};
 pub use sources::timer::TimerSource;
-pub use store::{PositionKey, Store, StoreError};
+pub use store::{PositionKey, StateStore, Store, StoreError};
 
 /// Maximum length in bytes of an event ID or a subject key.
 pub const MAX_ID_LEN: usize = 256;
