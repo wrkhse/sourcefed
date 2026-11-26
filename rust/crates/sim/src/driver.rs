@@ -1,13 +1,13 @@
 //! Bounded simulation of the real poll engine with scripted inputs.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use sourcefed_core::{
-    EngineState, EventId, MonitorConfig, MonitorId, PollEngine, PollInterval,
+    EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine, PollInterval,
     Source, TimerSource,
 };
 use sourcefed_sim::{MemoryStore, Seed, SimClock};
@@ -82,15 +82,14 @@ pub fn simulate(
 
         // The first timer poll only sets its position, so no queue exists
         // yet. A queue missing after that is an error, not an empty run.
-        let pending: Vec<_> = match engine.pending() {
-            Some(pending) => {
-                let fresh = print_new(&engine, &mut printed, out)?;
-                events = events.saturating_add(fresh);
-                pending.into()
-            }
-            None if index == 0 => Vec::new(),
-            None => return Err(NO_PENDING.into()),
-        };
+        let queued = engine.pending();
+        let had_pending = queued.is_some();
+        let pending: Vec<_> = pending_or_error(queued, index)?.into();
+
+        if had_pending {
+            let fresh = print_new(&engine, &mut printed, out)?;
+            events = events.saturating_add(fresh);
+        }
 
         inputs.schedule(&mut draw, &pending, left);
 
@@ -113,6 +112,17 @@ pub fn simulate(
         events,
         outcome,
     })
+}
+
+fn pending_or_error(
+    pending: Option<VecDeque<Event>>,
+    index: u32,
+) -> Result<VecDeque<Event>, &'static str> {
+    match pending {
+        Some(pending) => Ok(pending),
+        None if index == 0 => Ok(VecDeque::new()),
+        None => Err(NO_PENDING),
+    }
 }
 
 fn print_new(
@@ -269,6 +279,33 @@ mod tests {
         let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
 
         assert_eq!(event["id"], "timer:sim:1970-01-01T00:00:01Z");
+    }
+
+    #[test]
+    fn pending_or_error_allows_no_queue_on_the_first_step() {
+        assert_eq!(pending_or_error(None, 0), Ok(VecDeque::new()));
+    }
+
+    #[test]
+    fn pending_or_error_rejects_no_queue_on_a_later_step() {
+        assert_eq!(pending_or_error(None, 1), Err(NO_PENDING));
+    }
+
+    #[test]
+    fn pending_or_error_returns_the_provided_queue_unchanged() {
+        let source = SourceName::new("sim".into()).unwrap();
+        let subject = EventSubject::new(source, "sim".into()).unwrap();
+        let event = Event::new(
+            EventId::new("timer:sim:1970-01-01T00:00:03Z".into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+        let queue = VecDeque::from([event]);
+
+        assert_eq!(pending_or_error(Some(queue.clone()), 3), Ok(queue));
     }
 
     #[test]
