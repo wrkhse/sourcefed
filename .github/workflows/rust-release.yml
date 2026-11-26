@@ -141,14 +141,15 @@ jobs:
           echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
       # The runner has no monospace font, and a video rendered without one
       # shows no glyphs, so the font the videos name is installed and found.
-      # ImageMagick measures the exported GIF.
-      - name: Install termctrl 1.2.1, ffmpeg, ImageMagick and DejaVu Sans Mono
+      # ImageMagick measures the exported GIF; Tesseract reads each take.
+      - name: Install termctrl 1.2.1, ffmpeg, ImageMagick, Tesseract and DejaVu
         run: |
           set -euo pipefail
 
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ffmpeg fontconfig fonts-dejavu-core imagemagick
+            ffmpeg fontconfig fonts-dejavu-core imagemagick \
+            tesseract-ocr tesseract-ocr-eng
           family=$(fc-match -f '%{family}' 'DejaVu Sans Mono')
           [[ "$family" == *"DejaVu Sans Mono"* ]] || {
             echo "::error::fontconfig matched '$family' for DejaVu Sans Mono"
@@ -451,6 +452,53 @@ jobs:
               --tail-ms 3500 --out "artifacts/demo-$take.mp4"
           done
           ls -l artifacts/*.mp4
+
+          # Prints the time in milliseconds of the recording's marker, or
+          # fails when the recording has no such marker. It runs inside $(),
+          # so the error goes to stderr to reach the log.
+          marker_ms() {
+            local ms
+            ms=$(termctrl markers "$1" |
+              awk -v name="$2" '$2 == name && !found { print $1; found = 1 }')
+            if [[ -z $ms ]]; then
+              echo "::error::$1 has no $2 marker" >&2
+              return 1
+            fi
+
+            echo "$ms"
+          }
+
+          # OCR reads each take at its first firing, so both takes, not only
+          # the GIF's last frame, show their text. The frame is halfway
+          # through the hold after the take's first clip; the footer, whose
+          # caption can name timer.fired, is cropped off, and the spaces OCR
+          # puts inside a word are dropped. ffmpeg writes no frame past the
+          # end of a video and still succeeds, so the frame is checked.
+          for take in run:fired restart:delivered; do
+            name=${take%%:*}
+            recording="artifacts/$name.termctrl"
+            start=$(marker_ms "$recording" start)
+            shown=$(marker_ms "$recording" "${take#*:}")
+            at=$(( shown - start + 1250 ))
+            seek=$(printf '%d.%03d' $(( at / 1000 )) $(( at % 1000 )))
+            frame="artifacts/ocr-$name.png"
+            rm -f -- "$frame"
+            ffmpeg -hide_banner -loglevel error -y -ss "$seek" \
+              -i "artifacts/demo-$name.mp4" -frames:v 1 \
+              -vf 'crop=iw:ih*3/4:0:0,format=gray,negate' "$frame"
+            if [[ ! -s $frame ]]; then
+              echo "::error::demo-$name.mp4 has no frame at $seek s"
+              exit 1
+            fi
+
+            text=$(tesseract "$frame" stdout)
+            printf -- '--- OCR of demo-%s.mp4 at %s s ---\n%s\n' \
+              "$name" "$seek" "$text"
+            if [[ $(tr -d '[:space:]' <<< "$text") != *timer.fired* ]]; then
+              echo "::error::OCR finds no timer.fired in demo-$name.mp4 at $seek s"
+              exit 1
+            fi
+          done
 
           # Both takes have the same terminal size, so their frames match.
           ffmpeg -hide_banner -loglevel error -y \
