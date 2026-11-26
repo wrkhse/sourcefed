@@ -297,3 +297,151 @@ impl StateStore for MemoryStore {
         Ok(count)
     }
 }
+#[cfg(test)]
+mod tests {
+    use jiff::Timestamp;
+    use sourcefed_core::store::MAX_POSITIONS;
+    use sourcefed_core::{
+        EventId, EventKind, EventSubject, MonitorId, Position, SourceName,
+    };
+
+    use super::*;
+
+    fn event(id: &str) -> Event {
+        let source = SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "subject".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
+    fn key(name: &str) -> PositionKey {
+        PositionKey {
+            monitor: MonitorId::new(name.into()).unwrap(),
+            source: SourceName::new("timer".into()).unwrap(),
+        }
+    }
+
+    fn position(text: &str) -> Position {
+        Position::new(text.into()).unwrap()
+    }
+
+    #[test]
+    fn commit_saves_position_seen_ids_and_pending_events() {
+        let mut store = MemoryStore::new();
+        let pending = event("e1");
+        let key = key("sim");
+
+        assert_eq!(
+            store
+                .commit(key.clone(), position("1"), std::slice::from_ref(&pending))
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.position(&key), Some(position("1")));
+        assert!(store.is_seen(&key, pending.id()));
+        assert!(store.is_pending(pending.id()));
+        assert_eq!(store.control().commits(), 1);
+
+        let saved = store.pending(&key).unwrap();
+
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id(), pending.id());
+    }
+
+    #[test]
+    fn a_commit_fault_leaves_state_unchanged() {
+        let mut store = MemoryStore::new();
+        let control = store.control();
+        control.fail_next_commit();
+
+        let pending = event("e1");
+        let result =
+            store.commit(key("sim"), position("1"), std::slice::from_ref(&pending));
+
+        assert!(matches!(result, Err(StoreError::Write { .. })));
+        assert_eq!(control.fault_count(), 1);
+        assert_eq!(control.commits(), 0);
+        assert_eq!(store.position(&key("sim")), None);
+        assert!(!store.is_pending(pending.id()));
+    }
+
+    #[test]
+    fn an_ack_fault_leaves_pending_unchanged() {
+        let mut store = MemoryStore::new();
+        let pending = event("e1");
+        let key = key("sim");
+        let control = store.control();
+
+        assert_eq!(
+            store
+                .commit(key.clone(), position("1"), std::slice::from_ref(&pending))
+                .unwrap(),
+            1
+        );
+
+        control.fail_next_ack();
+        let result = store.ack_pending(&key, std::slice::from_ref(pending.id()));
+
+        assert!(matches!(result, Err(StoreError::Write { .. })));
+        assert_eq!(control.fault_count(), 1);
+        assert_eq!(store.pending(&key).unwrap().len(), 1);
+        assert!(store.is_pending(pending.id()));
+    }
+
+    #[test]
+    fn ack_removes_only_the_named_event() {
+        let mut store = MemoryStore::new();
+        let first = event("e1");
+        let second = event("e2");
+        let key = key("sim");
+        let batch = [first.clone(), second.clone()];
+
+        assert_eq!(store.commit(key.clone(), position("1"), &batch).unwrap(), 2);
+        assert_eq!(
+            store
+                .ack_pending(&key, std::slice::from_ref(first.id()))
+                .unwrap(),
+            1
+        );
+        assert!(!store.is_pending(first.id()));
+        assert!(store.is_pending(second.id()));
+        assert!(store.is_seen(&key, first.id()));
+        assert_eq!(store.pending(&key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn too_many_positions_are_refused() {
+        let mut store = MemoryStore::new();
+
+        for index in 0..MAX_POSITIONS {
+            let name = format!("m{index}");
+
+            assert_eq!(store.commit(key(&name), position("1"), &[]).unwrap(), 0);
+        }
+
+        let result = store.commit(key("overflow"), position("1"), &[]);
+
+        assert!(matches!(result, Err(StoreError::TooMany { limit: 256 })));
+        assert_eq!(store.control().commits(), 256);
+    }
+
+    #[test]
+    fn too_many_fresh_events_are_refused() {
+        let mut store = MemoryStore::new();
+        let batch: Vec<Event> = (0..1001)
+            .map(|index| event(&format!("e{index:04}")))
+            .collect();
+        let result = store.commit(key("sim"), position("1"), &batch);
+
+        assert!(matches!(result, Err(StoreError::TooMany { limit: 1000 })));
+        assert_eq!(store.control().commits(), 0);
+        assert!(!store.is_pending(event("e0000").id()));
+    }
+}

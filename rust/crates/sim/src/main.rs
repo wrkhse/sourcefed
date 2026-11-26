@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use sourcefed_core::{
-    Clock, EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine,
-    PollInterval, Source, TimerSource,
+    Clock, EngineError, EngineState, Event, EventId, MonitorConfig, MonitorId,
+    PollEngine, PollInterval, Source, StoreError, TimerSource,
 };
 
 use crate::check::{Checker, ClockMark, StoreFaultKind, Trace, Violation};
@@ -72,7 +72,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<Outcome, Box<dyn Error>> {
-    let args = parse_args()?;
+    let args = parse_args(env::args().skip(1))?;
     let mut seed = args.seed.clone();
     let index = seed.pick_index(INTERVALS.len()).unwrap_or(0);
     let every = INTERVALS.get(index).copied().unwrap_or(1);
@@ -96,10 +96,16 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     for step in 0..args.steps {
         let marked = script.clock(step, &clock, &mut trace);
         script.advance(step, &clock, &mut trace);
-        script.commit(step, &control, &mut trace);
+        let armed_commit = script.commit(step, &control, &mut trace);
 
-        // A scripted store fault leaves the schedule and state unchanged.
-        let state = engine.run(1).unwrap_or_else(|_| engine.state());
+        // Only a scripted write fault leaves the schedule unchanged.
+        let state = match engine.run(1) {
+            Ok(state) => state,
+            Err(EngineError::Store(StoreError::Write { .. })) if armed_commit => {
+                engine.state()
+            }
+            Err(error) => return Err(Box::new(error)),
+        };
 
         trace.polls = control.commits();
 
@@ -112,15 +118,9 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
 
         inputs.schedule(&mut seed, &fresh, left);
 
-        if script.ack(step) && inputs.has_queued() {
-            control.fail_next_ack();
-            trace.store_faults.push(StoreFaultKind::Ack);
-        }
+        let ack_fault = script.ack(step) && inputs.has_pending_ack();
 
-        // A scripted ack fault leaves the event pending for the next poll.
-        if matches!(inputs.next_input(&mut engine), Ok(true)) {
-            engine.handle().stop();
-        }
+        apply_inputs(&mut inputs, &mut engine, &control, &mut trace, ack_fault)?;
 
         if state != EngineState::Running {
             break;
@@ -128,10 +128,6 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     }
 
     let store = engine.into_store();
-
-    for id in inputs.acked() {
-        trace.ack(id);
-    }
 
     trace.polls = control.commits();
     trace.sleeps = clock.sleep_log();
@@ -150,14 +146,65 @@ fn run() -> Result<Outcome, Box<dyn Error>> {
     }
 }
 
+/// Applies one input, records its ack tick, and watches for a replay.
+///
+/// # Errors
+/// Returns a store error unless it came from the scripted ack fault.
+fn apply_inputs(
+    inputs: &mut Inputs,
+    engine: &mut PollEngine<MemoryStore>,
+    control: &StoreControl,
+    trace: &mut Trace,
+    ack_fault: bool,
+) -> Result<(), Box<dyn Error>> {
+    let acked_before = inputs.acked().len();
+
+    if ack_fault {
+        control.fail_next_ack();
+        trace.store_faults.push(StoreFaultKind::Ack);
+    }
+
+    // A scripted ack fault leaves the event pending for the next poll.
+    match inputs.next_input(engine) {
+        Ok(true) => engine.handle().stop(),
+        Ok(false) => {}
+        Err(error) => {
+            let write = error
+                .downcast_ref::<StoreError>()
+                .is_some_and(|cause| matches!(cause, StoreError::Write { .. }));
+
+            if !ack_fault || !write {
+                return Err(error);
+            }
+        }
+    }
+
+    for id in inputs.acked().get(acked_before..).unwrap_or(&[]) {
+        trace.ack(id);
+    }
+
+    if let Some(pending) = engine.pending() {
+        for id in inputs.acked() {
+            if pending.iter().any(|event| event.id() == id) {
+                trace.replay(id);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Reads the two supported flags without a command-line dependency.
 ///
 /// # Errors
 /// Returns a short reason for a missing, unknown or malformed flag.
-fn parse_args() -> Result<Args, String> {
+fn parse_args<I>(words: I) -> Result<Args, String>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut seed = None;
     let mut steps = None;
-    let mut argv = env::args().skip(1);
+    let mut argv = words.into_iter();
 
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -250,11 +297,15 @@ impl Script {
         }
     }
 
-    fn commit(&self, step: u32, control: &StoreControl, trace: &mut Trace) {
+    fn commit(&self, step: u32, control: &StoreControl, trace: &mut Trace) -> bool {
         if step == self.commit {
             control.fail_next_commit();
             trace.store_faults.push(StoreFaultKind::Commit);
+
+            return true;
         }
+
+        false
     }
 
     const fn ack(&self, step: u32) -> bool {
@@ -278,12 +329,14 @@ fn collect(
     let Some(pending) = engine.pending() else {
         return Ok(Vec::new());
     };
+
+    trace.observe_pending(&pending);
+
     let mut fresh = Vec::new();
     let mut out = io::stdout().lock();
 
     for event in &pending {
         if printed.insert(event.id().clone()) {
-            trace.emit(event.id());
             trace.print(event.id());
             fresh.push(event.clone());
             writeln!(out, "{}", serde_json::to_string(event)?)?;
@@ -330,4 +383,113 @@ fn commit() -> String {
         .ok()
         .or_else(|| env::var("GITHUB_SHA").ok())
         .unwrap_or_else(|| "local".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn error(words: &[&str]) -> String {
+        parse_args(argv(words))
+            .err()
+            .unwrap_or_else(|| "no error".to_owned())
+    }
+
+    #[test]
+    fn parses_a_seed_and_a_step_count() {
+        let args =
+            parse_args(argv(&["--seed", "0000000000000001", "--steps", "20"]))
+                .unwrap();
+
+        assert_eq!(args.seed.to_string(), "0000000000000001");
+        assert_eq!(args.steps, 20);
+    }
+
+    #[test]
+    fn rejects_a_missing_seed() {
+        assert_eq!(error(&["--steps", "20"]), "missing --seed");
+    }
+
+    #[test]
+    fn rejects_a_missing_step_count() {
+        assert_eq!(error(&["--seed", "0000000000000001"]), "missing --steps");
+    }
+
+    #[test]
+    fn rejects_an_unknown_flag() {
+        assert_eq!(
+            error(&["--bogus"]),
+            "unknown argument \"--bogus\"; use --seed <hex> --steps <u32>"
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_seed_value() {
+        assert_eq!(error(&["--seed"]), "--seed needs 16 hex digits");
+    }
+
+    #[test]
+    fn rejects_a_missing_steps_value() {
+        assert_eq!(error(&["--steps"]), "--steps needs a u32");
+    }
+
+    #[test]
+    fn rejects_a_malformed_seed() {
+        assert_eq!(
+            error(&["--seed", "00000000000000f"]),
+            "seed must be 16 hexadecimal digits"
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_step_count() {
+        assert_eq!(
+            error(&["--seed", "0000000000000001", "--steps", "many"]),
+            "--steps needs a u32"
+        );
+    }
+
+    #[test]
+    fn seed_stream_is_deterministic() {
+        let mut first = Seed::from_hex("00000000000000ff").unwrap();
+        let mut second = Seed::from_hex("00000000000000ff").unwrap();
+        let left: Vec<u64> = (0..4).map(|_| first.next_u64()).collect();
+        let right: Vec<u64> = (0..4).map(|_| second.next_u64()).collect();
+
+        assert_eq!(
+            left,
+            vec![
+                0x338c_5071_4628_3fb4,
+                0xef84_b9a8_2c2c_8d15,
+                0xd66c_8117_e962_d63d,
+                0xa616_a87e_6e2a_e1ad,
+            ]
+        );
+        assert_eq!(left, right);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn seed_from_hex_validates_width_and_digits() {
+        assert_eq!(
+            Seed::from_hex("00000000000000ff").unwrap().to_string(),
+            "00000000000000ff"
+        );
+        assert_eq!(
+            Seed::from_hex("00000000000000FF").unwrap().to_string(),
+            "00000000000000ff"
+        );
+        assert_eq!(
+            Seed::from_hex("00000000000000f").err(),
+            Some("seed must be 16 hexadecimal digits".to_owned())
+        );
+        assert_eq!(
+            Seed::from_hex("00000000000000gg").err(),
+            Some("seed must be 16 hexadecimal digits".to_owned())
+        );
+    }
 }

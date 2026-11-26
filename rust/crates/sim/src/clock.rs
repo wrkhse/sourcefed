@@ -128,3 +128,48 @@ impl Clock for SimClock {
         self.slept(duration);
     }
 }
+#[cfg(test)]
+mod tests {
+    use jiff::Timestamp;
+    use sourcefed_core::ClockError;
+
+    use super::*;
+
+    #[test]
+    fn scripted_readings_are_consumed_in_order() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.script(ClockFault::Ok);
+        clock.script(ClockFault::Past);
+        clock.script(ClockFault::Future);
+
+        assert_eq!(clock.fault_count(), 0);
+        assert_eq!(clock.now(), Ok(Timestamp::UNIX_EPOCH));
+        assert_eq!(clock.now(), Err(ClockError::Past));
+        assert_eq!(clock.now(), Err(ClockError::Future));
+        assert_eq!(clock.fault_count(), 3);
+        assert_eq!(clock.now(), Ok(Timestamp::UNIX_EPOCH));
+        assert_eq!(clock.fault_count(), 3);
+    }
+
+    #[test]
+    fn sleeps_and_advances_move_virtual_time() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.advance(5);
+        clock.sleep(Duration::from_secs(3));
+
+        let expected = Timestamp::UNIX_EPOCH
+            .checked_add(Duration::from_secs(8))
+            .unwrap();
+
+        assert_eq!(clock.virtual_now(), expected);
+        assert_eq!(clock.sleep_log(), vec![Duration::from_secs(3)]);
+    }
+
+    #[test]
+    fn an_oversized_advance_clamps_to_the_last_timestamp() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.advance(u64::MAX);
+
+        assert_eq!(clock.virtual_now(), Timestamp::MAX);
+    }
+}

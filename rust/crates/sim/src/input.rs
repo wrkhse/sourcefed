@@ -14,6 +14,7 @@ use crate::store::MemoryStore;
 pub struct Inputs {
     queue: VecDeque<Input>,
     acked: Vec<EventId>,
+    pending_acks: usize,
 }
 
 impl Inputs {
@@ -23,10 +24,10 @@ impl Inputs {
         Self::default()
     }
 
-    /// Returns whether an input is waiting between polls.
+    /// Returns whether an acknowledgement is waiting between polls.
     #[must_use]
-    pub fn has_queued(&self) -> bool {
-        !self.queue.is_empty()
+    pub const fn has_pending_ack(&self) -> bool {
+        self.pending_acks > 0
     }
 
     /// Queues acks for some new events and, at the end, maybe a stop.
@@ -34,6 +35,7 @@ impl Inputs {
         for event in events {
             if seed.below(2) == 0 {
                 self.queue.push_back(Input::Ack(event.id().clone()));
+                self.pending_acks = self.pending_acks.saturating_add(1);
             }
         }
 
@@ -62,6 +64,7 @@ impl Inputs {
 
         if let Some(id) = id {
             self.acked.push(id);
+            self.pending_acks = self.pending_acks.saturating_sub(1);
         }
 
         Ok(stopped)
@@ -71,5 +74,93 @@ impl Inputs {
     #[must_use]
     pub const fn acked(&self) -> &[EventId] {
         self.acked.as_slice()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use jiff::Timestamp;
+    use sourcefed_core::{
+        Clock, EventKind, EventSubject, MonitorConfig, MonitorId, PollInterval,
+        Source, TimerSource,
+    };
+
+    use super::*;
+    use crate::clock::SimClock;
+
+    fn event(id: &str) -> Event {
+        let source = sourcefed_core::SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "subject".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
+    fn engine() -> PollEngine<MemoryStore> {
+        let source = TimerSource::new("deploy".into(), 1).unwrap();
+        let config = MonitorConfig {
+            id: MonitorId::new("sim".into()).unwrap(),
+            source: source.name().clone(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let shared: Arc<dyn Clock> = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+
+        PollEngine::new(config, Arc::new(source), MemoryStore::new(), shared)
+            .unwrap()
+    }
+
+    #[test]
+    fn schedule_tracks_a_queued_ack() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut inputs = Inputs::new();
+
+        inputs.schedule(&mut seed, &[event("e1")], 2);
+
+        assert!(inputs.has_pending_ack());
+    }
+
+    #[test]
+    fn a_lone_stop_is_not_a_pending_ack() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut inputs = Inputs::new();
+
+        inputs.schedule(&mut seed, &[], 1);
+
+        assert!(!inputs.has_pending_ack());
+    }
+
+    #[test]
+    fn next_input_records_an_applied_ack() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let pending = event("e1");
+        let id = pending.id().clone();
+        let mut inputs = Inputs::new();
+        let mut engine = engine();
+        inputs.schedule(&mut seed, &[pending], 2);
+
+        assert!(!inputs.next_input(&mut engine).unwrap());
+        assert_eq!(inputs.acked(), &[id]);
+        assert!(!inputs.has_pending_ack());
+    }
+
+    #[test]
+    fn next_input_reports_a_stop_without_an_ack() {
+        let mut seed = Seed::from_hex("0000000000000001").unwrap();
+        let mut inputs = Inputs::new();
+        let mut engine = engine();
+        inputs.schedule(&mut seed, &[], 1);
+
+        assert!(inputs.next_input(&mut engine).unwrap());
+        let expected: Vec<EventId> = Vec::new();
+        assert_eq!(inputs.acked(), expected);
+        assert!(!inputs.has_pending_ack());
     }
 }

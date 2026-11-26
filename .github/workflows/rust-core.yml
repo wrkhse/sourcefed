@@ -55,6 +55,40 @@ jobs:
           toolchain: 1.100.0
       - run: cargo +1.100.0 check --workspace --locked
 
+  # Fixed seeds drive the simulator through its real CLI path on every push.
+  seeded-sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = \(.*\)/\1/p' rust-toolchain.toml)
+          channel=${channel//\"/}
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
+        with:
+          tool: cargo-nextest@0.9.152,cargo-deny@0.22.0
+      - name: Run seeded simulations
+        timeout-minutes: 15
+        env:
+          SOURCEFED_SIM_COMMIT: ${{ github.sha }}
+        run: |
+          for seed in 0000000000000023 0000000000000031; do
+            cargo run --locked -p sourcefed-sim -- --seed "$seed" --steps 20
+          done
+
   # Every viable mutant in the lines a pull request changes must be caught; an
   # equivalent one is excluded in .cargo/mutants.toml, with why. A dispatched
   # run repeats it on a branch, diffed against main, to check the gate itself.

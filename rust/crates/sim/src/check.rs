@@ -1,10 +1,11 @@
 //! The guarantees a simulation run must satisfy.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use sourcefed_core::{DEFAULT_BACKOFF_CAP_SECS, EventId, MAX_WAIT_SECS};
+use sourcefed_core::{DEFAULT_BACKOFF_CAP_SECS, Event, EventId, MAX_WAIT_SECS};
 
 use crate::clock::{ClockFault, SimClock};
 use crate::store::MemoryStore;
@@ -41,6 +42,8 @@ pub struct Trace {
     pub printed: Vec<(EventId, u64)>,
     /// Acknowledged IDs and the tick when each ack was saved.
     pub acked: Vec<(EventId, u64)>,
+    /// Acked IDs that reappeared in the engine's pending queue.
+    pub replayed: Vec<EventId>,
     /// Scripted readings and the engine's response to each.
     pub clock_faults: Vec<ClockMark>,
     /// Store faults injected during the run.
@@ -76,6 +79,22 @@ impl Trace {
         self.emitted.push(id.clone());
     }
 
+    /// Records pending IDs the engine saved but has not emitted yet.
+    pub fn observe_pending(&mut self, pending: &VecDeque<Event>) {
+        for event in pending {
+            let id = event.id();
+
+            if !self.emitted.iter().any(|known| known == id) {
+                self.emit(id);
+            }
+        }
+    }
+
+    /// Records an acked ID that reappeared in pending.
+    pub fn replay(&mut self, id: &EventId) {
+        self.replayed.push(id.clone());
+    }
+
     /// Records an ID written to stdout.
     pub fn print(&mut self, id: &EventId) {
         self.bump();
@@ -98,11 +117,8 @@ impl Trace {
 pub enum Violation {
     /// An emitted event was neither printed nor acknowledged.
     AtLeastOnceDelivery { id: String, reason: String },
-    /// An acknowledged event was printed again or left pending.
+    /// An acknowledged event was printed again, replayed or left pending.
     NoAckLostBeforeHalt { id: String, reason: String },
-    /// State or pending work outgrew its bounds; checked by pinned seeds.
-    #[expect(dead_code, reason = "reserved for the PR 4 pinned seeds")]
-    BoundedCleanup { reason: String },
     /// An out-of-range reading did not fail closed like the real clock.
     ClockFaultsFailClosed { fault: ClockFault, reason: String },
     /// Simulated sleeps or poll lateness left their bounds.
@@ -116,7 +132,6 @@ impl Violation {
         match self {
             Self::AtLeastOnceDelivery { .. } => "at-least-once delivery",
             Self::NoAckLostBeforeHalt { .. } => "no ack lost before halt",
-            Self::BoundedCleanup { .. } => "bounded cleanup",
             Self::ClockFaultsFailClosed { .. } => "clock faults fail closed",
             Self::PollsOnTimeInSimulatedTime { .. } => {
                 "polls on time in simulated time"
@@ -130,7 +145,6 @@ impl Violation {
         match self {
             Self::AtLeastOnceDelivery { reason, .. }
             | Self::NoAckLostBeforeHalt { reason, .. }
-            | Self::BoundedCleanup { reason }
             | Self::ClockFaultsFailClosed { reason, .. }
             | Self::PollsOnTimeInSimulatedTime { reason } => reason,
         }
@@ -152,8 +166,9 @@ pub struct Checker;
 impl Checker {
     /// Returns each violated guarantee, in check order.
     ///
-    /// Bounded cleanup is reserved for the pinned seeds in the next slice;
-    /// this checker does not claim to prove it.
+    /// Checks at-least-once delivery, no ack lost before halt, clock faults
+    /// fail closed, and polls on time. Bounded cleanup belongs to the PR 4
+    /// pinned seeds.
     #[must_use]
     pub fn check(
         trace: &Trace,
@@ -193,6 +208,11 @@ impl Checker {
                 out.push(Violation::NoAckLostBeforeHalt {
                     id: id.as_str().to_owned(),
                     reason: "acked event was printed again".into(),
+                });
+            } else if trace.replayed.contains(id) {
+                out.push(Violation::NoAckLostBeforeHalt {
+                    id: id.as_str().to_owned(),
+                    reason: "acked event reappeared in pending".into(),
                 });
             } else if store.is_pending(id) {
                 out.push(Violation::NoAckLostBeforeHalt {
@@ -309,5 +329,248 @@ impl Checker {
                 reason: "lateness accumulated beyond the wait budget".into(),
             });
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use jiff::Timestamp;
+    use sourcefed_core::Clock;
+    use sourcefed_core::store::StateStore;
+    use sourcefed_core::{
+        Event, EventId, EventKind, EventSubject, MAX_WAIT_SECS, MonitorId, Position,
+        PositionKey, SourceName,
+    };
+
+    use super::*;
+    use crate::clock::SimClock;
+
+    fn event(id: &str) -> Event {
+        let source = SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "subject".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
+    fn key() -> PositionKey {
+        PositionKey {
+            monitor: MonitorId::new("sim".into()).unwrap(),
+            source: SourceName::new("timer".into()).unwrap(),
+        }
+    }
+
+    fn clock() -> SimClock {
+        SimClock::new(Timestamp::UNIX_EPOCH)
+    }
+
+    #[test]
+    fn observed_pending_that_is_never_printed_violates_delivery() {
+        let mut trace = Trace::default();
+        trace.observe_pending(&VecDeque::from([event("e1")]));
+        trace.observe_pending(&VecDeque::from([event("e1")]));
+
+        assert_eq!(trace.emitted.len(), 1);
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::AtLeastOnceDelivery {
+                id: "e1".into(),
+                reason: "emitted event was neither printed nor acked".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_printed_pending_event_satisfies_delivery() {
+        let pending = event("e1");
+        let mut trace = Trace::default();
+        trace.observe_pending(&VecDeque::from([pending.clone()]));
+        trace.print(pending.id());
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_replayed_ack_violates_no_ack_lost() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+        trace.ack(&id);
+        trace.replay(&id);
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::NoAckLostBeforeHalt {
+                id: "e1".into(),
+                reason: "acked event reappeared in pending".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_print_after_ack_violates_no_ack_lost() {
+        let id = event("e1").id().clone();
+        let mut trace = Trace::default();
+        trace.ack(&id);
+        trace.print(&id);
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::NoAckLostBeforeHalt {
+                id: "e1".into(),
+                reason: "acked event was printed again".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_pending_ack_violates_no_ack_lost() {
+        let pending = event("e1");
+        let id = pending.id().clone();
+        let mut store = MemoryStore::new();
+        let position = Position::new("1".into()).unwrap();
+
+        assert_eq!(
+            store
+                .commit(key(), position, std::slice::from_ref(&pending))
+                .unwrap(),
+            1
+        );
+
+        let mut trace = Trace::default();
+        trace.ack(&id);
+
+        let violations = Checker::check(&trace, &clock(), &store);
+
+        assert_eq!(
+            violations,
+            vec![Violation::NoAckLostBeforeHalt {
+                id: "e1".into(),
+                reason: "acked event is still pending".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_past_reading_that_keeps_running_fails_the_clock_check() {
+        let mut trace = Trace::default();
+        trace.clock_faults.push(ClockMark {
+            fault: ClockFault::Past,
+            polls_before: 0,
+            polls_after: 0,
+            stopped: false,
+        });
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::ClockFaultsFailClosed {
+                fault: ClockFault::Past,
+                reason: "past reading left the engine running".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_stopped_past_reading_satisfies_the_clock_check() {
+        let mut trace = Trace::default();
+        trace.clock_faults.push(ClockMark {
+            fault: ClockFault::Past,
+            polls_before: 0,
+            polls_after: 0,
+            stopped: true,
+        });
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        let expected: Vec<Violation> = Vec::new();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn a_future_reading_that_polls_fails_the_clock_check() {
+        let mut trace = Trace::default();
+        trace.clock_faults.push(ClockMark {
+            fault: ClockFault::Future,
+            polls_before: 1,
+            polls_after: 2,
+            stopped: false,
+        });
+
+        let violations = Checker::check(&trace, &clock(), &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::ClockFaultsFailClosed {
+                fault: ClockFault::Future,
+                reason: "future reading polled while deferred".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_sleep_over_the_wait_cap_fails_the_timing_check() {
+        let clock = clock();
+        let duration = Duration::from_secs(MAX_WAIT_SECS.saturating_add(1));
+        clock.sleep(duration);
+        let mut trace = Trace::new(Timestamp::UNIX_EPOCH, 1, 1);
+        trace.sleeps.push(duration);
+
+        let violations = Checker::check(&trace, &clock, &MemoryStore::new());
+
+        assert_eq!(
+            violations,
+            vec![Violation::PollsOnTimeInSimulatedTime {
+                reason: "a sleep exceeded the wait cap".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_four_proven_guarantees_have_distinct_names() {
+        let id = "e1".to_owned();
+        let guarantees = [
+            Violation::AtLeastOnceDelivery {
+                id: id.clone(),
+                reason: String::new(),
+            },
+            Violation::NoAckLostBeforeHalt {
+                id,
+                reason: String::new(),
+            },
+            Violation::ClockFaultsFailClosed {
+                fault: ClockFault::Ok,
+                reason: String::new(),
+            },
+            Violation::PollsOnTimeInSimulatedTime {
+                reason: String::new(),
+            },
+        ];
+        let names: Vec<_> = guarantees.iter().map(Violation::name).collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "at-least-once delivery",
+                "no ack lost before halt",
+                "clock faults fail closed",
+                "polls on time in simulated time",
+            ]
+        );
     }
 }
