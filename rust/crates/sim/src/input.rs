@@ -135,7 +135,7 @@ mod tests {
 
         let mut final_inputs = ScriptedInputs::new();
 
-        final_inputs.schedule(&mut Seed::from_u64(1), &events, 1);
+        final_inputs.schedule(&mut Seed::from_u64(119), &events, 1);
 
         assert_eq!(final_inputs.queued.len(), MAX_QUEUED);
         assert_eq!(final_inputs.queued.front(), Some(&Input::Stop));
