@@ -140,20 +140,31 @@ jobs:
           run_live=
           restart_live=
 
-          # Stops only the sessions still running, so a failed stop still
-          # fails the step.
+          # A command that fails in an EXIT trap leaves the step's result as
+          # it was. cleanup returns the incoming status, or 1 when a live
+          # session fails to stop or the folder stays; the trap exits with
+          # the incoming status, or 1 when cleanup returns nonzero.
           cleanup() {
-            if [[ -n $run_live ]]; then
-              termctrl stop run
+            local status=$1
+
+            if [[ -n $run_live ]] && ! termctrl stop run; then
+              echo "::error::termctrl stop run failed"
+              status=1
             fi
 
-            if [[ -n $restart_live ]]; then
-              termctrl stop restart
+            if [[ -n $restart_live ]] && ! termctrl stop restart; then
+              echo "::error::termctrl stop restart failed"
+              status=1
             fi
 
-            rm -rf "$work"
+            if ! rm -rf "$work"; then
+              echo "::error::could not remove $work"
+              status=1
+            fi
+
+            return "$status"
           }
-          trap cleanup EXIT
+          trap 'status=$?; cleanup "$status" || status=1; exit "$status"' EXIT
           tar -xzf "$RUNNER_TEMP"/dist/*.tar.gz -C "$work"
           mkdir -p artifacts
 
@@ -178,16 +189,43 @@ jobs:
           # the ack log line is never part of a match.
           id_pattern='timer:demo:[0-9T:.-]+Z'
 
-          # Prints each distinct event ID in stdin other than $1, sorted.
-          # awk and sort succeed when nothing matches.
-          other_ids() {
-            awk -v pattern="$id_pattern" -v acked="$1" '{
+          # Prints each distinct event ID in stdin, sorted. awk and sort
+          # succeed when nothing matches.
+          event_ids() {
+            awk -v pattern="$id_pattern" '{
               while (match($0, pattern)) {
-                found = substr($0, RSTART, RLENGTH)
-                if (found != acked) print found
+                print substr($0, RSTART, RLENGTH)
                 $0 = substr($0, RSTART + RLENGTH)
               }
             }' | sort -u
+          }
+
+          # The ID of the firing one interval after $1. Firings fall whole
+          # seconds apart, so only the seconds change and the fraction stays
+          # as printed.
+          next_id() {
+            local instant=${1#timer:demo:}
+            local seconds=${instant%%[.Z]*}
+            local epoch next
+            epoch=$(date -u -d "${seconds}Z" +%s) || return
+            next=$(date -u -d "@$((epoch + 1))" +%Y-%m-%dT%H:%M:%S) || return
+            echo "timer:demo:$next${instant#"$seconds"}"
+          }
+
+          # How often $1 occurs in $2. grep exits 1 when nothing matches,
+          # which counts as zero; any other failure is returned.
+          occurrences() {
+            local matches status=0
+            matches=$(grep -oF -- "$1" <<< "$2") || status=$?
+            if (( status > 1 )); then
+              return "$status"
+            fi
+
+            if [[ -z $matches ]]; then
+              echo 0
+            else
+              wc -l <<< "$matches"
+            fi
           }
 
           termctrl start run --record artifacts/run.termctrl \
@@ -203,11 +241,27 @@ jobs:
             echo "::error::no event ID on the run's screen"
             exit 1
           fi
+
+          # The next firing prints before the ack is sent, so the run keeps
+          # an event it never acks without waiting on a later poll.
+          second=$(next_id "$id")
+          termctrl wait run "$second" --timeout 10000
+          printed=$(joined run | event_ids)
           echo "acking $id"
 
           termctrl send run "text:ack $id" enter
           termctrl wait run "1 event(s) removed" --timeout 10000
           termctrl mark run acked
+
+          # Every ID printed before the ack, except the acked one.
+          unacked=$(awk -v acked="$id" '$0 != acked' <<< "$printed")
+          if [[ -z "$unacked" ]]; then
+            echo "::error::the run printed no unacknowledged timer.fired event"
+            exit 1
+          fi
+          printf 'unacknowledged:\n%s\n' "$unacked"
+          mapfile -t pending_ids <<< "$unacked"
+
           termctrl send run text:stop enter
           termctrl wait run "sourcefed-core exited with" --timeout 10000
           termctrl mark run stopped
@@ -219,22 +273,18 @@ jobs:
             exit 1
           }
 
-          # The firing after the acked one prints a poll before the ack is
-          # applied, so the run leaves at least one event unacknowledged.
-          unacked=$(printf '%s\n' "$run" | other_ids "$id")
-          if [[ -z "$unacked" ]]; then
-            echo "::error::the run printed no unacknowledged timer.fired event"
-            exit 1
-          fi
-          printf 'unacknowledged:\n%s\n' "$unacked"
-
+          # The same poll budget as the run, so every pending event can
+          # return; the first poll prints them all, then stop ends it.
           termctrl start restart --record artifacts/restart.termctrl \
-            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 3
+            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 30
           restart_live=1
           termctrl mark restart start
-          termctrl wait restart timer.fired --timeout 30000
+          for pending in "${pending_ids[@]}"; do
+            termctrl wait restart "$pending" --timeout 30000
+          done
           termctrl mark restart delivered
-          termctrl wait restart "sourcefed-core exited with" --timeout 30000
+          termctrl send restart text:stop enter
+          termctrl wait restart "sourcefed-core exited with" --timeout 10000
           termctrl mark restart finished
           restart=$(joined restart)
           termctrl stop restart
@@ -249,12 +299,18 @@ jobs:
             exit 1
           }
 
-          while IFS= read -r pending; do
-            if [[ "$restart" != *"$pending"* ]]; then
+          for pending in "${pending_ids[@]}"; do
+            count=$(occurrences "$pending" "$restart")
+            if (( count == 0 )); then
               echo "::error::the restart did not deliver unacknowledged $pending"
               exit 1
             fi
-          done <<< "$unacked"
+
+            if (( count != 1 )); then
+              echo "::error::the restart delivered $pending $count times"
+              exit 1
+            fi
+          done
 
           termctrl markers artifacts/run.termctrl
           termctrl markers artifacts/restart.termctrl
