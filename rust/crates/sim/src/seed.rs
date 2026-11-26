@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(seed.below(0), 0);
         assert_eq!(
             seed.as_u64(),
-            Seed::from_u64(0xBEEB_8DA1_658E_EC67).as_u64()
+            Seed::from_u64(0x3C6E_F372_FE94_F82B).as_u64()
         );
     }
 

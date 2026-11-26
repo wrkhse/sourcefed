@@ -4,7 +4,6 @@
 //! the same hash, with no engine, process, wall clock or operating-system
 //! randomness involved.
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
@@ -15,6 +14,32 @@ use sourcefed_core::{
 };
 
 use crate::{ClockFault, MemoryStore, Seed, SimClock};
+
+const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
+const FNV_PRIME: u64 = 1_099_511_628_211;
+
+// `DefaultHasher` may change its algorithm between Rust releases, so traces
+// use FNV-1a to keep recorded hashes stable across builds.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(FNV_OFFSET)
+    }
+}
+
+impl Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(FNV_PRIME);
+        }
+    }
+}
 
 /// One step recorded by a replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +57,8 @@ pub enum Step {
         /// How many events were new for the key.
         fresh: usize,
     },
+    /// A commit refused by the store, with the error message.
+    CommitFault(String),
     /// An acknowledgement with the event ID and how many events it removed.
     Ack {
         /// The ID offered to the store.
@@ -39,6 +66,8 @@ pub enum Step {
         /// How many pending events were removed.
         removed: usize,
     },
+    /// An acknowledgement refused by the store, with the error message.
+    AckFault(String),
 }
 
 /// The ordered steps recorded by one replay.
@@ -77,10 +106,11 @@ impl Trace {
 
     /// Hashes the seed and every recorded step in order.
     ///
-    /// The hasher has fixed keys, so the result is stable across runs.
+    /// The hasher has fixed FNV-1a constants, so the result is stable
+    /// across runs and Rust releases.
     #[must_use]
     pub fn hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FnvHasher::default();
         self.seed.hash(&mut hasher);
 
         for step in &self.steps {
@@ -91,7 +121,7 @@ impl Trace {
     }
 }
 
-fn hash_step(step: &Step, hasher: &mut DefaultHasher) {
+fn hash_step(step: &Step, hasher: &mut FnvHasher) {
     match step {
         Step::Reading(at) => {
             0_u8.hash(hasher);
@@ -116,6 +146,14 @@ fn hash_step(step: &Step, hasher: &mut DefaultHasher) {
             4_u8.hash(hasher);
             id.hash(hasher);
             removed.hash(hasher);
+        }
+        Step::CommitFault(message) => {
+            5_u8.hash(hasher);
+            message.hash(hasher);
+        }
+        Step::AckFault(message) => {
+            6_u8.hash(hasher);
+            message.hash(hasher);
         }
     }
 }
@@ -158,22 +196,29 @@ pub fn replay(mut seed: Seed, steps: u32) -> Trace {
             continue;
         };
 
-        let fresh = store
-            .commit(key.clone(), position, std::slice::from_ref(&event))
-            .unwrap_or(0);
-        trace.push(Step::Commit {
-            position: position_text,
-            fresh,
-        });
+        let commit = match store.commit(
+            key.clone(),
+            position,
+            std::slice::from_ref(&event),
+        ) {
+            Ok(fresh) => Step::Commit {
+                position: position_text,
+                fresh,
+            },
+            Err(error) => Step::CommitFault(error.to_string()),
+        };
+        trace.push(commit);
 
         if index.checked_rem(3).unwrap_or(0) == 0 {
-            let removed = store
-                .ack_pending(&key, std::slice::from_ref(event.id()))
-                .unwrap_or(0);
-            trace.push(Step::Ack {
-                id: String::from(event.id().as_str()),
-                removed,
-            });
+            let ack = match store.ack_pending(&key, std::slice::from_ref(event.id()))
+            {
+                Ok(removed) => Step::Ack {
+                    id: String::from(event.id().as_str()),
+                    removed,
+                },
+                Err(error) => Step::AckFault(error.to_string()),
+            };
+            trace.push(ack);
         }
     }
 
@@ -223,6 +268,7 @@ fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sourcefed_core::{MAX_PENDING_EVENTS, StoreError};
 
     #[test]
     fn the_same_seed_records_the_same_steps_and_hash() {
@@ -292,5 +338,40 @@ mod tests {
         assert_eq!(trace.seed(), Seed::from_u64(7));
         assert_eq!(trace.steps(), &[reading]);
         assert_ne!(trace.hash(), empty);
+    }
+
+    #[test]
+    fn a_full_pending_queue_records_a_commit_fault() {
+        let steps =
+            u32::try_from(MAX_PENDING_EVENTS.saturating_mul(2)).unwrap_or_default();
+        let trace = replay(Seed::from_u64(3), steps);
+        let expected = Step::CommitFault(
+            StoreError::TooMany {
+                limit: MAX_PENDING_EVENTS,
+            }
+            .to_string(),
+        );
+        let last =
+            trace.steps().iter().rev().find(|step| {
+                matches!(step, Step::Commit { .. } | Step::CommitFault(_))
+            });
+
+        assert_eq!(last, Some(&expected));
+        assert_eq!(
+            trace
+                .steps()
+                .iter()
+                .filter(|step| matches!(step, Step::Commit { fresh: 0, .. }))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_hash_is_a_pinned_fnv_1a_value() {
+        let mut trace = Trace::new(Seed::from_u64(1));
+        trace.push(Step::Reading(Timestamp::UNIX_EPOCH));
+
+        assert_eq!(trace.hash(), 0x0F36_9EF7_383E_59EC);
     }
 }

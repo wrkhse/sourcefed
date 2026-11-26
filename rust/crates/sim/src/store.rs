@@ -109,12 +109,11 @@ impl StateStore for MemoryStore {
         let Some(queue) = self.state.pending.get(key) else {
             return Ok(0);
         };
-        let before = queue.len();
         let matched = queue
             .iter()
             .filter(|event| ids.contains(event.id()))
             .count();
-        let removed = before.saturating_sub(matched);
+        let removed = matched;
 
         if removed == 0 {
             return Ok(0);
@@ -355,6 +354,21 @@ mod tests {
         assert_eq!(store.ack_pending(&key(1), &ids(&batch)).unwrap(), 1);
         assert_eq!(store.pending(&key(1)), Some(VecDeque::new()));
         assert_eq!(store.position(&key(1)), Some(cursor()));
+    }
+
+    #[test]
+    fn ack_reports_exactly_how_many_pending_events_it_removed() {
+        let mut store = MemoryStore::new();
+        let batch = events(0..4);
+        store.commit(key(1), cursor(), &batch).unwrap();
+
+        assert_eq!(store.ack_pending(&key(1), &ids(&batch[..2])).unwrap(), 2);
+        assert_eq!(
+            store.pending(&key(1)),
+            Some(VecDeque::from(vec![batch[2].clone(), batch[3].clone()]))
+        );
+        assert_eq!(store.ack_pending(&key(1), &ids(&batch[2..])).unwrap(), 2);
+        assert_eq!(store.pending(&key(1)), Some(VecDeque::new()));
     }
 
     #[test]
