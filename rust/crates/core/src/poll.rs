@@ -188,7 +188,7 @@ impl Schedule {
 /// Polls one source at a time and saves fresh events with the source position.
 ///
 /// The store owns a bounded pending queue for this engine's position key.
-/// The engine exposes a read-only view and removes delivered events by ID.
+/// The engine returns a copy of the pending queue and removes delivered events by ID.
 /// A successful commit sets the next due time or ends the engine. A source
 /// failure schedules a retry with backoff; it is not returned as an error.
 pub struct PollEngine<S = Store> {
