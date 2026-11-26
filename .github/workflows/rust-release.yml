@@ -1,14 +1,15 @@
 name: rust-release
 
-# A tag such as v0.1.0-rc.1 names a release candidate of sourcefed-core, the
-# Rust binary built from the sourcefed-cli package. `build` checks the tag
+# A tag such as core-v0.1.0-rc.1 names a release candidate of sourcefed-core,
+# the Rust binary built from the sourcefed-cli package. `build` checks the tag
 # against the package version, builds the binary and smoke-tests its tarball;
-# `recording` films the released binary firing a timer; `release` attaches
-# the tarball, its SHA256SUMS and the recording to a GitHub prerelease.
+# `recording` films the packed binary delivering, acknowledging and not
+# redelivering an event across a restart; `release` attaches the tarball, the
+# two videos and their SHA256SUMS to a GitHub prerelease that is never latest.
 
 on:
   push:
-    tags: ["v0.1.0-rc.*"]
+    tags: ["core-v*"]
 
 # Each job asks for what it needs; only `release` writes.
 permissions:
@@ -42,7 +43,7 @@ jobs:
           version=$(cargo +1.100.0 metadata --locked --no-deps \
             --format-version 1 |
             jq -r '.packages[] | select(.name == "sourcefed-cli") | .version')
-          [[ "$version" == "${TAG#v}" ]] || {
+          [[ "$version" == "${TAG#core-v}" ]] || {
             echo "::error::sourcefed-cli is $version, the tag is $TAG"
             exit 1
           }
@@ -80,6 +81,12 @@ jobs:
             < /dev/null > events.jsonl
           cat events.jsonl
           jq -e -s 'any(.[]; .kind == "timer.fired")' events.jsonl
+
+          if ! jq -e -s '[.[] | select(.kind == "timer.fired") | .id]
+            | length == (unique | length)' events.jsonl > /dev/null; then
+            echo "::error::a timer.fired id appears more than once"
+            exit 1
+          fi
       - uses: >- # v7.0.2
           actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -87,8 +94,10 @@ jobs:
           path: ${{ runner.temp }}/dist/*.tar.gz
           if-no-files-found: error
 
-  # Films the packed binary following a timer, for the prerelease. The
-  # recording is a release asset only; it is never committed.
+  # Films the packed binary end to end in two sessions that share one state
+  # directory: `run` prints a timer.fired event, acks it and stops; `restart`
+  # follows again and must not print the acked ID. The videos are release
+  # assets only; they are never committed.
   recording:
     needs: build
     runs-on: ubuntu-24.04
@@ -123,57 +132,158 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           cargo +1.100.0 install terminal-control --version 1.2.1 --locked
           termctrl --version
-      - name: Record the binary firing a timer
+      - name: Record a run that acks an event, then a restart
         run: |
           set -euo pipefail
 
           work=$(mktemp -d)
-          trap 'termctrl stop demo || true; rm -rf "$work"' EXIT
+          run_live=
+          restart_live=
+
+          # Stops only the sessions still running, so a failed stop still
+          # fails the step.
+          cleanup() {
+            if [[ -n $run_live ]]; then
+              termctrl stop run
+            fi
+
+            if [[ -n $restart_live ]]; then
+              termctrl stop restart
+            fi
+
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
           tar -xzf "$RUNNER_TEMP"/dist/*.tar.gz -C "$work"
           mkdir -p artifacts
 
-          termctrl start demo --record artifacts/demo.termctrl \
-            --cols 120 --rows 14 -- \
-            "$work/sourcefed-core" follow --job demo --every 1 \
-            --state-dir "$work/state" --max-polls 4
-          termctrl mark demo start
-          termctrl wait demo timer.fired --timeout 30000
-          termctrl mark demo fired
-          termctrl send demo text:stop enter
-          termctrl mark demo stopped
-          termctrl stop demo
-          termctrl markers artifacts/demo.termctrl
-      - name: Export the video
+          # Shows the command, runs it in the shared state directory, prints
+          # its exit status and keeps the screen until the session stops.
+          cat > "$work/follow.sh" <<'SH'
+          cmd=(./sourcefed-core follow --job demo --every 1 --state-dir state
+            --max-polls "$1")
+          echo "\$ ${cmd[*]}"
+          "${cmd[@]}"
+          echo "sourcefed-core exited with $?"
+          read -r _
+          SH
+
+          # Readable output with wrapped lines joined, so an ID split across
+          # rows still matches.
+          joined() {
+            termctrl logs "$1" | tr -d '\r\n'
+          }
+
+          termctrl start run --record artifacts/run.termctrl \
+            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 30
+          run_live=1
+          termctrl mark run start
+          termctrl wait run timer.fired --timeout 30000
+          termctrl mark run fired
+
+          if ! id=$(termctrl logs run | tr -d '\r\n' |
+            grep -oE 'timer:demo:[0-9TZ:.-]+' | sed -n 1p) || [[ -z "$id" ]]
+          then
+            echo "::error::no event ID on the run's screen"
+            exit 1
+          fi
+          echo "acking $id"
+
+          termctrl send run "text:ack $id" enter
+          termctrl wait run "1 event(s) removed" --timeout 10000
+          termctrl mark run acked
+          termctrl send run text:stop enter
+          termctrl wait run "sourcefed-core exited with" --timeout 10000
+          termctrl mark run stopped
+          run=$(joined run)
+          termctrl stop run
+          run_live=
+          [[ "$run" == *"sourcefed-core exited with 0"* ]] || {
+            echo "::error::the run did not exit cleanly"
+            exit 1
+          }
+
+          termctrl start restart --record artifacts/restart.termctrl \
+            --cols 120 --rows 16 --cwd "$work" -- bash ./follow.sh 3
+          restart_live=1
+          termctrl mark restart start
+          termctrl wait restart timer.fired --timeout 30000
+          termctrl mark restart delivered
+          termctrl wait restart "sourcefed-core exited with" --timeout 30000
+          termctrl mark restart finished
+          restart=$(joined restart)
+          termctrl stop restart
+          restart_live=
+          printf '%s\n' "$restart"
+          [[ "$restart" == *"sourcefed-core exited with 0"* ]] || {
+            echo "::error::the restart did not exit cleanly"
+            exit 1
+          }
+          [[ "$restart" != *"$id"* ]] || {
+            echo "::error::the restart delivered the acked $id again"
+            exit 1
+          }
+
+          termctrl markers artifacts/run.termctrl
+          termctrl markers artifacts/restart.termctrl
+      - name: Export the videos
         run: |
           set -euo pipefail
 
-          cat > artifacts/demo-edit.json <<'JSON'
+          cat > artifacts/run-edit.json <<'JSON'
           {
             "clips": [
               {
                 "from": "start",
                 "to": "fired",
-                "caption": "follow --job demo --every 1: the timer fires",
+                "caption": "follow prints a timer.fired event as one JSON line",
                 "hold_ms": 2500
               },
               {
                 "from": "fired",
+                "to": "acked",
+                "caption": "ack <event id> removes that event from the store",
+                "hold_ms": 2500
+              },
+              {
+                "from": "acked",
                 "to": "stopped",
-                "caption": "Each firing is one timer.fired JSON line; stop ends it",
+                "caption": "stop ends the run; the state directory remains",
                 "hold_ms": 2500
               }
             ]
           }
           JSON
-          termctrl video artifacts/demo.termctrl \
-            --edit artifacts/demo-edit.json --footer --fps 10 \
-            --tail-ms 3000 --out artifacts/demo.mp4
-          ls -l artifacts/demo.mp4
+          cat > artifacts/restart-edit.json <<'JSON'
+          {
+            "clips": [
+              {
+                "from": "start",
+                "to": "delivered",
+                "caption": "Restart on the same state: pending events return",
+                "hold_ms": 2500
+              },
+              {
+                "from": "delivered",
+                "to": "finished",
+                "caption": "The acked event is never delivered again",
+                "hold_ms": 2500
+              }
+            ]
+          }
+          JSON
+
+          for take in run restart; do
+            termctrl video "artifacts/$take.termctrl" \
+              --edit "artifacts/$take-edit.json" --footer --fps 10 \
+              --tail-ms 3000 --out "artifacts/demo-$take.mp4"
+          done
+          ls -l artifacts/*.mp4
       - uses: >- # v7.0.2
           actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: demo-recording
-          path: artifacts/demo.mp4
+          name: demo-recordings
+          path: artifacts/*.mp4
           if-no-files-found: error
 
   release:
@@ -191,14 +301,14 @@ jobs:
       - uses: >- # v4.3.0
           actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: demo-recording
+          name: demo-recordings
           path: ${{ runner.temp }}/release
       - name: Write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
         run: |
           set -euo pipefail
 
-          sha256sum -- *.tar.gz demo.mp4 > SHA256SUMS
+          sha256sum -- *.tar.gz demo-run.mp4 demo-restart.mp4 > SHA256SUMS
           cat SHA256SUMS
       - name: Publish the GitHub prerelease
         working-directory: ${{ runner.temp }}/release
@@ -208,10 +318,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          gh release create "$TAG" --prerelease --verify-tag \
-            --title "sourcefed-core $TAG" \
-            --notes "A release candidate of sourcefed-core, the Rust core, \
-          for x86_64 Linux. Check the tarball against SHA256SUMS, unpack it \
-          and run sourcefed-core --version. demo.mp4 shows this binary \
-          following a timer." \
-            -- *.tar.gz SHA256SUMS demo.mp4
+          notes="A release candidate of sourcefed-core, the Rust core, for x86_64"
+          notes+=" Linux. Check the tarball against SHA256SUMS, unpack it and run"
+          notes+=" sourcefed-core --version. demo-run.mp4 shows this binary"
+          notes+=" printing a timer.fired event and acking it; demo-restart.mp4"
+          notes+=" shows a restart on the same state that never delivers it again."
+
+          gh release create "$TAG" --prerelease --latest=false --verify-tag \
+            --title "sourcefed-core $TAG" --notes "$notes" \
+            -- *.tar.gz SHA256SUMS demo-run.mp4 demo-restart.mp4
