@@ -23,7 +23,11 @@ use sourcefed_sim::{MemoryStore, SimClock};
 use crate::check::{Checker, Trace};
 
 const WAIT: Duration = Duration::from_secs(3);
-// Lets the run halt the reader before the gate releases the handoff.
+// The gated reader holds the handoff lock, so `finish` cannot apply the ack
+// until the gate is released. There is no public hook for "finish halted
+// the reader", so a short delay is the only way to let the halt land first
+// without a new production seam. Releasing sooner would queue the ack instead
+// of leaving it held; a stuck gate fails through `WAIT` rather than hanging.
 const HANDOFF: Duration = Duration::from_millis(50);
 
 /// A run whose stdin is fed as raw bytes through the real CLI reader.
@@ -62,15 +66,23 @@ impl RawRun {
 
     /// Feeds raw bytes through the real stdin reader.
     fn feed(&mut self, bytes: &[u8]) {
-        for line in bytes.split(|&byte| byte == b'\n') {
-            if let Ok(text) = std::str::from_utf8(line)
-                && let Ok(Input::Ack(id)) = parse_input(text)
-            {
+        // Publish only the acks the reader accepted: a line it discards as
+        // over-long is not an ack the agent sent. Observe the reader's own
+        // inputs, then forward them to the run's queue for `poll`/`finish`.
+        let (observed, received) = input_channel();
+
+        read_input(Cursor::new(bytes), &self.stop, &self.state, &observed);
+        drop(observed);
+
+        for input in received {
+            if let Input::Ack(id) = &input {
                 self.record_published(id.as_str());
             }
-        }
 
-        read_input(Cursor::new(bytes), &self.stop, &self.state, &self.sender);
+            if self.sender.send(input).is_err() {
+                break;
+            }
+        }
     }
 
     /// Applies queued inputs, polls once, and records what was observed.
@@ -187,6 +199,7 @@ impl RawRun {
 
         if !self.acked.contains(&id) {
             self.acked.push(id.clone());
+            self.trace.acked.push(id.clone());
             self.trace.printed.push(id);
         }
     }
@@ -276,8 +289,12 @@ mod tests {
     #[test]
     fn an_overlong_line_is_discarded_and_the_next_ack_applied() {
         let mut run = with_pending();
-        let pad = "x".repeat(600);
-        let lines = format!("ack {pad}\nack {ID}\n");
+        // Spaces pad the line past the reader's byte limit but trim to a
+        // valid, different ack: if the reader ignored its limit, that extra
+        // ack would be published and the assertions below would fail.
+        let other = "timer:sim:1970-01-01T00:00:02Z";
+        let pad = " ".repeat(600);
+        let lines = format!("ack {pad}{other}\nack {ID}\n");
 
         run.feed(lines.as_bytes());
         run.finish().unwrap();

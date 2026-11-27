@@ -161,7 +161,7 @@ impl ReaderState {
     }
 
     /// Installs the gate that pauses this reader at its next handoff.
-    #[cfg(feature = "sim-seam")]
+    #[cfg(any(test, feature = "sim-seam"))]
     pub fn set_hold_gate(&mut self, gate: sim_seam::HoldGate) {
         self.hold_gate = Some(gate);
     }

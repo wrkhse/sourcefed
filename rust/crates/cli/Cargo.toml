@@ -13,7 +13,8 @@ path = "src/main.rs"
 doc = false
 
 [features]
-# Exposes the reader's hold gate to the simulator's raw-input harness.
+# Off by default, so the release CLI never ships the reader's hold gate.
+# Only the simulator's raw-input tests enable it.
 sim-seam = []
 
 [dependencies]
