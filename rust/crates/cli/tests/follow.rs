@@ -4,9 +4,80 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::iter;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+/// One poll takes a second; leave room for a slow CI runner.
+const SHORT_WAIT: Duration = Duration::from_secs(5);
+/// The second run prints several events, so it gets a longer bound.
+const LONG_WAIT: Duration = Duration::from_secs(30);
+
+/// Reads a child's stdout on a thread and sends each line through a channel.
+/// The sender drops at EOF (or on a read error), which the receiver observes
+/// as a disconnect: the end of the stream.
+fn line_receiver(reader: impl BufRead + Send + 'static) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    rx
+}
+
+/// Receives one line before `deadline`, failing fast instead of blocking.
+fn recv_line(
+    rx: &Receiver<String>,
+    deadline: Instant,
+    description: &str,
+) -> String {
+    let timeout = deadline.saturating_duration_since(Instant::now());
+
+    match rx.recv_timeout(timeout) {
+        Ok(line) => line,
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("timed out waiting for {description} within {timeout:?}");
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            panic!("stdout closed before {description} arrived");
+        }
+    }
+}
+
+/// Collects event IDs until the stream ends or `deadline` passes.
+fn remaining_ids(rx: &Receiver<String>, deadline: Instant) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    loop {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+
+        if timeout.is_zero() {
+            break;
+        }
+
+        match rx.recv_timeout(timeout) {
+            Ok(line) => {
+                let event: Value = serde_json::from_str(&line).unwrap();
+                ids.push(event["id"].as_str().unwrap().to_owned());
+            }
+            Err(RecvTimeoutError::Disconnected)
+            | Err(RecvTimeoutError::Timeout) => break,
+        }
+    }
+
+    ids
+}
 
 #[test]
 fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
@@ -23,26 +94,19 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
             .spawn()
             .unwrap()
     };
-    // Reads until the child closes stdout, which it does when it exits.
-    let remaining_ids = |stdout: &mut dyn BufRead| -> Vec<String> {
-        stdout
-            .lines()
-            .map(|line| {
-                let event: Value = serde_json::from_str(&line.unwrap()).unwrap();
-
-                event["id"].as_str().unwrap().to_owned()
-            })
-            .collect()
-    };
 
     // The first poll saves the next firing and each later one prints a
     // firing, so sixteen one-second polls keep the run going for about
     // fifteen seconds unless a stop ends it.
     let mut first = follow(16);
-    let mut stdout = BufReader::new(first.stdout.take().unwrap());
-    let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
+    let stdout = BufReader::new(first.stdout.take().unwrap());
+    let events = line_receiver(stdout);
 
+    let line = recv_line(
+        &events,
+        Instant::now() + SHORT_WAIT,
+        "the first event",
+    );
     let event: Value = serde_json::from_str(&line).unwrap();
     let id = event["id"].as_str().unwrap().to_owned();
     let at = event["at"].as_str().unwrap();
@@ -56,9 +120,11 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     assert_eq!(event["summary"], format!("timer deploy fired at {at}"));
 
     // The next firing is printed too, and is never acknowledged.
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-
+    let line = recv_line(
+        &events,
+        Instant::now() + SHORT_WAIT,
+        "the second event",
+    );
     let later: Value = serde_json::from_str(&line).unwrap();
     let later = later["id"].as_str().unwrap().to_owned();
 
@@ -68,7 +134,7 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     drop(stdin);
     let stopping = Instant::now();
 
-    let rest = remaining_ids(&mut stdout);
+    let rest = remaining_ids(&events, Instant::now() + SHORT_WAIT);
 
     assert!(first.wait().unwrap().success());
     // The polls left after the second event would take about thirteen
@@ -87,8 +153,9 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     // and in the same order.
     let mut second = follow(3);
     drop(second.stdin.take());
-    let mut stdout = BufReader::new(second.stdout.take().unwrap());
-    let printed = remaining_ids(&mut stdout);
+    let stdout = BufReader::new(second.stdout.take().unwrap());
+    let events = line_receiver(stdout);
+    let printed = remaining_ids(&events, Instant::now() + LONG_WAIT);
     let fresh = printed.iter().filter(|printed| !seen.contains(*printed));
     let again: Vec<&String> = printed
         .iter()
