@@ -129,7 +129,7 @@ pub fn simulate_with_trace(
             inputs.apply_next(&mut engine)?
         };
 
-        record_acked(&mut trace, inputs.acked_ids());
+        record_step_inputs(&mut trace, &engine, inputs.acked_ids())?;
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -177,6 +177,53 @@ fn record_acked(trace: &mut Trace, acked: &[EventId]) {
             trace.acked.push(id);
         }
     }
+}
+
+// Records applied acks and any acked ID replayed after this step's inputs.
+// Replay detection runs whenever acks exist or a queue can be read; skipping
+// it is only safe for a priming step with neither.
+//
+// # Errors
+// Returns NO_PENDING when acks exist but the queue cannot be read.
+fn record_step_inputs(
+    trace: &mut Trace,
+    engine: &PollEngine<MemoryStore>,
+    acked: &[EventId],
+) -> Result<(), &'static str> {
+    record_acked(trace, acked);
+
+    if !trace.acked.is_empty() || engine.pending().is_some() {
+        record_replayed(trace, engine)?;
+    }
+
+    Ok(())
+}
+
+// Records each acked ID that is present in pending after this step's inputs.
+// An absent queue has no ID to replay, yet the failed read is an error rather
+// than a silent pass, so the checker never runs without full observation.
+//
+// # Errors
+// Returns NO_PENDING when the queue cannot be read.
+fn record_replayed(
+    trace: &mut Trace,
+    engine: &PollEngine<MemoryStore>,
+) -> Result<(), &'static str> {
+    let Some(pending) = engine.pending() else {
+        return Err(NO_PENDING);
+    };
+
+    for id in &trace.acked {
+        let returning = pending
+            .iter()
+            .any(|event| event.id().as_str() == id.as_str());
+
+        if returning && !trace.replayed.contains(id) {
+            trace.replayed.push(id.clone());
+        }
+    }
+
+    Ok(())
 }
 
 fn pending_or_error(
@@ -570,6 +617,90 @@ mod tests {
     }
 
     #[test]
+    fn record_replayed_adds_a_returning_acked_id_once_and_ignores_fresh_ids() {
+        let returning = named_event("returning");
+        let fresh = named_event("fresh");
+        let mut trace = Trace {
+            acked: vec![String::from("returning")],
+            ..Default::default()
+        };
+        let engine = engine_with_pending(&[returning, fresh]);
+
+        record_replayed(&mut trace, &engine).unwrap();
+
+        assert_eq!(trace.replayed, vec![String::from("returning")]);
+
+        let engine_again =
+            engine_with_pending(&[named_event("returning"), named_event("fresh")]);
+        record_replayed(&mut trace, &engine_again).unwrap();
+
+        assert_eq!(trace.replayed, vec![String::from("returning")]);
+    }
+
+    #[test]
+    fn a_priming_step_with_no_acks_or_queue_skips_replay_detection() {
+        let engine = engine().unwrap();
+        let acked: [EventId; 0] = [];
+        let mut trace = Trace::default();
+
+        let result = record_step_inputs(&mut trace, &engine, &acked);
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(trace.acked, Vec::<String>::new());
+        assert_eq!(trace.replayed, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_priming_step_with_an_ack_and_no_queue_fails_closed() {
+        let engine = engine().unwrap();
+        let acked = [EventId::new("returning".into()).unwrap()];
+        let mut trace = Trace::default();
+
+        let result = record_step_inputs(&mut trace, &engine, &acked);
+
+        assert_eq!(result, Err(NO_PENDING));
+        assert_eq!(trace.acked, vec![String::from("returning")]);
+        assert_eq!(trace.replayed, Vec::<String>::new());
+    }
+
+    #[test]
+    fn replay_detection_fails_on_a_missing_pending_queue() {
+        let engine = engine().unwrap();
+        let acked = [EventId::new("returning".into()).unwrap()];
+        let mut trace = Trace::default();
+
+        let result = record_step_inputs(&mut trace, &engine, &acked);
+
+        assert_eq!(result, Err(NO_PENDING));
+        assert_eq!(trace.acked, vec![String::from("returning")]);
+        assert_eq!(trace.replayed, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_replayed_ack_after_an_empty_snapshot_reaches_the_checker() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let id = String::from("returning-on-empty-snapshot");
+        let acked = [EventId::new(id.clone()).unwrap()];
+        let mut trace = Trace::default();
+        // The step starts with no acks and no queue; its applied ack puts
+        // the ID back into pending before replay detection runs.
+        let engine = engine_with_pending(&[named_event(&id)]);
+
+        record_step_inputs(&mut trace, &engine, &acked).unwrap();
+
+        assert_eq!(trace.acked, vec![id.clone()]);
+        assert_eq!(trace.replayed, vec![id.clone()]);
+        assert_eq!(
+            Checker::check(&trace),
+            vec![Violation {
+                guarantee: Guarantee::NoAckLostBeforeHalt,
+                reason: format!("acked event {id} was redelivered after halt"),
+            }]
+        );
+    }
+
+    #[test]
     fn a_trace_records_only_acks_from_applied_inputs() {
         let mut out = Vec::new();
 
@@ -586,6 +717,74 @@ mod tests {
                 String::from("timer:sim:1970-01-01T00:00:02Z")
             ]
         );
+    }
+
+    #[test]
+    fn held_input_ack_then_stop_reaches_the_checker_cleanly() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let mut out = Vec::new();
+
+        let run = simulate_with_trace(Seed::from_u64(125), 2, &mut out).unwrap();
+
+        assert_eq!(
+            run.summary,
+            Summary {
+                steps: 2,
+                events: 1,
+                outcome: Outcome::Stopped,
+            }
+        );
+        assert_eq!(
+            run.trace.acked,
+            vec![String::from("timer:sim:1970-01-01T00:00:01Z")]
+        );
+        assert_eq!(run.trace.replayed, Vec::<String>::new());
+
+        let ack_loss: Vec<Violation> = Checker::check(&run.trace)
+            .into_iter()
+            .filter(|violation| {
+                violation.guarantee == Guarantee::NoAckLostBeforeHalt
+            })
+            .collect();
+
+        assert_eq!(ack_loss, Vec::<Violation>::new());
+    }
+
+    #[test]
+    fn a_full_run_with_acks_and_an_absent_start_queue_is_clean() {
+        use crate::check::Checker;
+
+        let mut out = Vec::new();
+
+        // Step 0 has no queue; step 1 applies an ack, so later steps carry
+        // acks into replay observation.
+        let run = simulate_with_trace(Seed::from_u64(1), 3, &mut out).unwrap();
+
+        assert_eq!(
+            run.summary,
+            Summary {
+                steps: 3,
+                events: 2,
+                outcome: Outcome::Budget,
+            }
+        );
+        assert_eq!(
+            run.trace,
+            Trace {
+                emitted: vec![
+                    String::from("timer:sim:1970-01-01T00:00:01Z"),
+                    String::from("timer:sim:1970-01-01T00:00:02Z")
+                ],
+                printed: vec![
+                    String::from("timer:sim:1970-01-01T00:00:01Z"),
+                    String::from("timer:sim:1970-01-01T00:00:02Z")
+                ],
+                acked: vec![String::from("timer:sim:1970-01-01T00:00:01Z")],
+                replayed: Vec::new()
+            }
+        );
+        assert_eq!(Checker::check(&run.trace), Vec::new());
     }
 
     #[test]

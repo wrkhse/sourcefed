@@ -7,12 +7,15 @@ use std::fmt;
 pub enum Guarantee {
     /// Every emitted event is delivered or acknowledged.
     AtLeastOnceDelivery,
+    /// An acknowledged event is never redelivered after the halt.
+    NoAckLostBeforeHalt,
 }
 
 impl fmt::Display for Guarantee {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AtLeastOnceDelivery => formatter.write_str("AtLeastOnceDelivery"),
+            Self::NoAckLostBeforeHalt => formatter.write_str("NoAckLostBeforeHalt"),
         }
     }
 }
@@ -36,6 +39,7 @@ pub struct Trace {
     pub emitted: Vec<String>,
     pub printed: Vec<String>,
     pub acked: Vec<String>,
+    pub replayed: Vec<String>,
 }
 
 /// Checks delivery against one trace.
@@ -46,7 +50,9 @@ impl Checker {
     /// Returns one violation for each emitted ID never printed or acked.
     #[must_use]
     pub fn check(trace: &Trace) -> Vec<Violation> {
-        check_delivery(trace)
+        let mut violations = check_delivery(trace);
+        violations.extend(check_ack_loss(trace));
+        violations
     }
 }
 
@@ -62,11 +68,24 @@ fn check_delivery(trace: &Trace) -> Vec<Violation> {
         .collect()
 }
 
+fn check_ack_loss(trace: &Trace) -> Vec<Violation> {
+    trace
+        .acked
+        .iter()
+        .filter(|id| trace.replayed.contains(id))
+        .map(|id| Violation {
+            guarantee: Guarantee::NoAckLostBeforeHalt,
+            reason: format!("acked event {id} was redelivered after halt"),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SEED_DELIVERY: u64 = 0x0A11_0000_0000_0001;
+    const SEED_ACK_LOSS: u64 = 0xACCF_0000_0000_0001;
 
     fn base_trace(seed: u64) -> Trace {
         let id = format!("event-{seed:016x}");
@@ -75,6 +94,7 @@ mod tests {
             emitted: vec![id.clone()],
             printed: vec![id.clone()],
             acked: vec![id],
+            replayed: Vec::new(),
         }
     }
 
@@ -102,6 +122,36 @@ mod tests {
         );
     }
 
+    // Bug seed accf000000000001: an acked ID reappears after the ack.
+    #[test]
+    fn seed_accf000000000001_replayed_ack_is_reported() {
+        let id = format!("event-{SEED_ACK_LOSS:016x}");
+        let trace = Trace {
+            acked: vec![id.clone()],
+            replayed: vec![id.clone()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            Checker::check(&trace),
+            violation(
+                Guarantee::NoAckLostBeforeHalt,
+                format!("acked event {id} was redelivered after halt")
+            )
+        );
+    }
+
+    #[test]
+    fn an_acked_id_absent_from_replayed_produces_no_violation() {
+        let trace = Trace {
+            acked: vec![String::from("event-acked")],
+            replayed: vec![String::from("event-fresh")],
+            ..Default::default()
+        };
+
+        assert_clean(&trace);
+    }
+
     #[test]
     fn clean_traces_produce_no_violations() {
         // An emitted event counts as delivered when it is acked, not printed.
@@ -117,6 +167,10 @@ mod tests {
         assert_eq!(
             Guarantee::AtLeastOnceDelivery.to_string(),
             "AtLeastOnceDelivery"
+        );
+        assert_eq!(
+            Guarantee::NoAckLostBeforeHalt.to_string(),
+            "NoAckLostBeforeHalt"
         );
     }
 
