@@ -82,14 +82,11 @@ impl SimClock {
 
     /// Returns how many scripted faults have been consumed.
     ///
-    /// A poisoned counter is recovered, so the count stays visible to the
-    /// checker even after a panic while the lock was held.
+    /// A poisoned counter fails closed: this reports `u64::MAX` instead of
+    /// a plausible count, so the poison is visible to the checker.
     #[must_use]
     pub fn fault_count(&self) -> u64 {
-        *self
-            .faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.faults.lock().ok().map_or(u64::MAX, |faults| *faults)
     }
 
     /// Returns every consumed fault in the order `now` returned the error.
@@ -105,11 +102,9 @@ impl SimClock {
     }
 
     fn count_fault(&self) {
-        let mut faults = self
-            .faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *faults = faults.saturating_add(1);
+        if let Ok(mut faults) = self.faults.lock() {
+            *faults = faults.saturating_add(1);
+        }
     }
 
     fn log_fault(&self, fault: ClockFault) {
@@ -375,14 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn fault_count_recovers_and_counts_after_poison() {
+    fn a_poisoned_counter_reports_an_unavailable_sentinel() {
         let clock = Arc::new(SimClock::new(at(0)));
-        clock.script(Err(ClockFault::Past));
-        assert_eq!(clock.now(), Err(ClockError::Past));
         poison_faults(&clock);
-        clock.script(Err(ClockFault::Future));
-        assert_eq!(clock.now(), Err(ClockError::Future));
 
-        assert_eq!(clock.fault_count(), 2);
+        assert_eq!(clock.fault_count(), u64::MAX);
     }
 }
