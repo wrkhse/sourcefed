@@ -81,35 +81,42 @@ impl SimClock {
     }
 
     /// Returns how many scripted faults have been consumed.
+    ///
+    /// A poisoned counter is recovered, so the count stays visible to the
+    /// checker even after a panic while the lock was held.
     #[must_use]
     pub fn fault_count(&self) -> u64 {
-        // Invariant: a poisoned counter is unavailable, so report u64::MAX
-        // (usize::MAX on this platform) instead of a plausible count.
-        self.faults.lock().ok().map_or(u64::MAX, |faults| *faults)
+        *self
+            .faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Returns every consumed fault in the order `now` returned the error.
     ///
-    /// Invariant: a poisoned log reads as empty, so a fault that reached
-    /// the engine without a logged entry is visible to the checker.
+    /// A poisoned log is recovered, so a consumed fault is always visible
+    /// to the checker, whether logged before or after the panic.
     #[must_use]
     pub fn fault_log(&self) -> Vec<ClockFault> {
         self.fault_log
             .lock()
-            .ok()
-            .map_or_else(Vec::new, |faults| faults.clone())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn count_fault(&self) {
-        if let Ok(mut faults) = self.faults.lock() {
-            *faults = faults.saturating_add(1);
-        }
+        let mut faults = self
+            .faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *faults = faults.saturating_add(1);
     }
 
     fn log_fault(&self, fault: ClockFault) {
-        if let Ok(mut log) = self.fault_log.lock() {
-            log.push(fault);
-        }
+        self.fault_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(fault);
     }
 }
 
@@ -263,11 +270,16 @@ mod tests {
     }
 
     #[test]
-    fn a_poisoned_fault_log_reads_as_empty() {
+    fn fault_log_recovers_faults_logged_before_and_after_poison() {
         let clock = Arc::new(SimClock::new(at(0)));
+        clock.log_fault(ClockFault::Past);
         poison_fault_log(&clock);
+        clock.log_fault(ClockFault::Future);
 
-        assert_eq!(clock.fault_log(), Vec::<ClockFault>::new());
+        assert_eq!(
+            clock.fault_log(),
+            vec![ClockFault::Past, ClockFault::Future]
+        );
     }
 
     #[test]
@@ -363,10 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn a_poisoned_counter_reports_an_unavailable_sentinel() {
+    fn fault_count_recovers_and_counts_after_poison() {
         let clock = Arc::new(SimClock::new(at(0)));
+        clock.script(Err(ClockFault::Past));
+        assert_eq!(clock.now(), Err(ClockError::Past));
         poison_faults(&clock);
+        clock.script(Err(ClockFault::Future));
+        assert_eq!(clock.now(), Err(ClockError::Future));
 
-        assert_eq!(clock.fault_count(), u64::MAX);
+        assert_eq!(clock.fault_count(), 2);
     }
 }

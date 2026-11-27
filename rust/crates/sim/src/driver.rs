@@ -1104,6 +1104,7 @@ mod tests {
             vec![ClockFault::Future, ClockFault::Past]
         );
         assert_eq!(clock.fault_count(), 2);
+        assert_eq!(run.summary.steps, 24);
 
         let clock_faults: Vec<Violation> = Checker::check(&run.trace)
             .into_iter()
@@ -1114,6 +1115,21 @@ mod tests {
 
         assert_eq!(clock_faults, Vec::<Violation>::new());
         assert_eq!(Checker::check(&run.trace), Vec::new());
+
+        let mut second_out = Vec::new();
+        let second_seed = Seed::from_u64(2);
+        let second_steps = 28;
+
+        let (second_run, second_clock) =
+            simulate_with_clock(second_seed, second_steps, &mut second_out).unwrap();
+
+        assert_eq!(second_run.summary.steps, 19);
+        assert_eq!(
+            second_clock.fault_log(),
+            vec![ClockFault::Future, ClockFault::Past]
+        );
+        assert_eq!(second_clock.fault_count(), 2);
+        assert_eq!(Checker::check(&second_run.trace), Vec::new());
     }
 
     #[test]
