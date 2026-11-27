@@ -514,6 +514,7 @@ dependencies = [
  "serde_json",
  "sourcefed-cli",
  "sourcefed-core",
+ "tempfile",
 ]
 
 [[package]]

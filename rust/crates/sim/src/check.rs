@@ -2,6 +2,11 @@
 
 use std::fmt;
 
+// Mirrors the core store's private cleanup bounds, so the checker judges
+// traces against the same limits the real store enforces.
+const MAX_TEMP_SCAN: usize = 500;
+const MAX_TEMP_REMOVE: usize = 100;
+
 /// A guarantee a simulation run must uphold.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Guarantee {
@@ -9,6 +14,8 @@ pub enum Guarantee {
     AtLeastOnceDelivery,
     /// An acknowledged event is never redelivered after the halt.
     NoAckLostBeforeHalt,
+    /// Cleanup stays within its bounds and never removes a user's file.
+    BoundedCleanup,
 }
 
 impl fmt::Display for Guarantee {
@@ -16,6 +23,7 @@ impl fmt::Display for Guarantee {
         match self {
             Self::AtLeastOnceDelivery => formatter.write_str("AtLeastOnceDelivery"),
             Self::NoAckLostBeforeHalt => formatter.write_str("NoAckLostBeforeHalt"),
+            Self::BoundedCleanup => formatter.write_str("BoundedCleanup"),
         }
     }
 }
@@ -33,13 +41,16 @@ impl fmt::Display for Violation {
     }
 }
 
-/// What one run did, in the terms delivery is stated in.
+/// What one run did, in the terms the guarantees are stated in.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Trace {
     pub emitted: Vec<String>,
     pub printed: Vec<String>,
     pub acked: Vec<String>,
     pub replayed: Vec<String>,
+    pub cleanup_scanned: usize,
+    pub cleanup_removed: usize,
+    pub user_files_removed: usize,
 }
 
 /// Checks delivery against one trace.
@@ -52,6 +63,7 @@ impl Checker {
     pub fn check(trace: &Trace) -> Vec<Violation> {
         let mut violations = check_delivery(trace);
         violations.extend(check_ack_loss(trace));
+        violations.extend(check_cleanup(trace));
         violations
     }
 }
@@ -80,6 +92,40 @@ fn check_ack_loss(trace: &Trace) -> Vec<Violation> {
         .collect()
 }
 
+fn check_cleanup(trace: &Trace) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    let scanned = trace.cleanup_scanned;
+    if scanned > MAX_TEMP_SCAN {
+        violations.push(Violation {
+            guarantee: Guarantee::BoundedCleanup,
+            reason: format!(
+                "cleanup scanned {scanned} > scan limit {MAX_TEMP_SCAN}"
+            ),
+        });
+    }
+
+    let removed = trace.cleanup_removed;
+    if removed > MAX_TEMP_REMOVE {
+        violations.push(Violation {
+            guarantee: Guarantee::BoundedCleanup,
+            reason: format!(
+                "cleanup removed {removed} > remove limit {MAX_TEMP_REMOVE}"
+            ),
+        });
+    }
+
+    let user_files = trace.user_files_removed;
+    if user_files > 0 {
+        violations.push(Violation {
+            guarantee: Guarantee::BoundedCleanup,
+            reason: format!("cleanup removed {user_files} > user-file limit 0"),
+        });
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +141,9 @@ mod tests {
             printed: vec![id.clone()],
             acked: vec![id],
             replayed: Vec::new(),
+            cleanup_scanned: 0,
+            cleanup_removed: 0,
+            user_files_removed: 0,
         }
     }
 
@@ -104,6 +153,47 @@ mod tests {
 
     fn assert_clean(trace: &Trace) {
         assert_eq!(Checker::check(trace), Vec::<Violation>::new());
+    }
+
+    // Bug seed c1ea000000000001: cleanup scans too far, removes too many
+    // temp files and deletes a user file that is not a generated temp name.
+    #[test]
+    fn seed_c1ea000000000001_cleanup_breaks_each_bound_exactly() {
+        let trace = Trace {
+            cleanup_scanned: 501,
+            cleanup_removed: 101,
+            user_files_removed: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            Checker::check(&trace),
+            vec![
+                Violation {
+                    guarantee: Guarantee::BoundedCleanup,
+                    reason: String::from("cleanup scanned 501 > scan limit 500"),
+                },
+                Violation {
+                    guarantee: Guarantee::BoundedCleanup,
+                    reason: String::from("cleanup removed 101 > remove limit 100"),
+                },
+                Violation {
+                    guarantee: Guarantee::BoundedCleanup,
+                    reason: String::from("cleanup removed 2 > user-file limit 0"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_at_both_limits_with_no_user_files_is_clean() {
+        let at_limits = Trace {
+            cleanup_scanned: MAX_TEMP_SCAN,
+            cleanup_removed: MAX_TEMP_REMOVE,
+            ..Default::default()
+        };
+
+        assert_clean(&at_limits);
     }
 
     // Bug seed 0a11000000000001: an emitted ID is never printed or acked.
@@ -172,6 +262,7 @@ mod tests {
             Guarantee::NoAckLostBeforeHalt.to_string(),
             "NoAckLostBeforeHalt"
         );
+        assert_eq!(Guarantee::BoundedCleanup.to_string(), "BoundedCleanup");
     }
 
     #[test]

@@ -11,6 +11,7 @@ jiff.workspace = true
 serde_json.workspace = true
 sourcefed-cli = { path = "../cli", version = "0.1.0-rc.1" }
 sourcefed-core = { path = "../core", version = "0.1.0-rc.1" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
