@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use sourcefed_core::{
-    EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine, PollError,
-    PollInterval, PollOutcome, PollRequest, Source, SourceName, Store, TimerSource,
+    EngineState, Event, EventId, MAX_WAIT_SECS, MonitorConfig, MonitorId,
+    PollEngine, PollError, PollInterval, PollOutcome, PollRequest, Source,
+    SourceName, Store, TimerSource,
 };
 use sourcefed_sim::{ClockFault, MemoryStore, Seed, SimClock};
 
@@ -63,11 +64,14 @@ pub struct Run {
     pub trace: Trace,
 }
 
-// Counts source poll attempts, so fault observation sees a real poll rather
-// than a queue change that is absent on the first poll.
+// Counts source polls, so fault observation sees a real poll rather than a
+// queue change that is absent on the first poll. Also flags a request made
+// at a time other than the clock's reading.
 struct CountingSource {
     inner: TimerSource,
+    clock: Arc<SimClock>,
     polls: Arc<AtomicUsize>,
+    off_time: Arc<AtomicUsize>,
 }
 
 impl Source for CountingSource {
@@ -77,6 +81,9 @@ impl Source for CountingSource {
 
     fn poll(&self, request: PollRequest) -> Result<PollOutcome, PollError> {
         self.polls.fetch_add(1, Ordering::Relaxed);
+        if request.now != self.clock.virtual_now() {
+            self.off_time.fetch_add(1, Ordering::Relaxed);
+        }
         self.inner.poll(request)
     }
 }
@@ -88,32 +95,41 @@ impl Source for CountingSource {
 /// be built.
 #[cfg(test)]
 pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
-    build_engine().map(|(engine, _, _)| engine)
+    build_engine().map(|(engine, _, _, _)| engine)
 }
 
-// The engine, the clock it reads and the counter shared with its source.
+// The engine, the clock it reads and the counters shared with its source.
 #[cfg(test)]
-type BuiltEngine = (PollEngine<MemoryStore>, Arc<SimClock>, Arc<AtomicUsize>);
+type BuiltEngine = (
+    PollEngine<MemoryStore>,
+    Arc<SimClock>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+);
 
 #[cfg(test)]
 fn build_engine() -> Result<BuiltEngine, String> {
     let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
-    let (engine, polls) = build_engine_with(Arc::clone(&clock))?;
+    let (engine, polls, off_time) = build_engine_with(Arc::clone(&clock))?;
 
-    Ok((engine, clock, polls))
+    Ok((engine, clock, polls, off_time))
 }
 
-// Builds the same engine around an injected clock and returns the counter
+// The engine built around an injected clock and its source counters.
+type InjectedEngine = (PollEngine<MemoryStore>, Arc<AtomicUsize>, Arc<AtomicUsize>);
+
+// Builds the same engine around an injected clock and returns the counters
 // shared with its source. A fault is scripted after this call, so the
 // constructor's initial reading stays on the empty script.
-fn build_engine_with(
-    clock: Arc<SimClock>,
-) -> Result<(PollEngine<MemoryStore>, Arc<AtomicUsize>), String> {
+fn build_engine_with(clock: Arc<SimClock>) -> Result<InjectedEngine, String> {
     let timer = TimerSource::new("sim".into(), 1).map_err(|e| e.to_string())?;
     let polls = Arc::new(AtomicUsize::new(0));
+    let off_time = Arc::new(AtomicUsize::new(0));
     let source = CountingSource {
         inner: timer,
+        clock: Arc::clone(&clock),
         polls: Arc::clone(&polls),
+        off_time: Arc::clone(&off_time),
     };
     let config = MonitorConfig {
         id: MonitorId::new("sim".into()).map_err(|e| e.to_string())?,
@@ -125,7 +141,7 @@ fn build_engine_with(
         PollEngine::new(config, Arc::new(source), MemoryStore::new(), clock)
             .map_err(|e| e.to_string())?;
 
-    Ok((engine, polls))
+    Ok((engine, polls, off_time))
 }
 
 /// Runs at most `steps` bounded polls, writing new pending events as lines.
@@ -163,10 +179,10 @@ fn simulate_with_clock(
     out: &mut impl Write,
 ) -> Result<(Run, Arc<SimClock>), Box<dyn Error>> {
     let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
-    let (engine, polls) = build_engine_with(Arc::clone(&clock))?;
+    let (engine, polls, off_time) = build_engine_with(Arc::clone(&clock))?;
     script_clock_faults(&clock, seed);
 
-    let run = run_with_clock(seed, steps, out, engine, &clock, &polls)?;
+    let run = run_with_clock(seed, steps, out, engine, &clock, &polls, &off_time)?;
 
     Ok((run, clock))
 }
@@ -214,6 +230,7 @@ fn run_with_clock(
     mut engine: PollEngine<MemoryStore>,
     clock: &SimClock,
     polls: &AtomicUsize,
+    off_time: &AtomicUsize,
 ) -> Result<Run, Box<dyn Error>> {
     let mut inputs = ScriptedInputs::new();
     let mut printed = HashSet::new();
@@ -229,9 +246,12 @@ fn run_with_clock(
 
         let logged = clock.fault_log().len();
         let polls_before = polls.load(Ordering::Relaxed);
+        let off_before = off_time.load(Ordering::Relaxed);
+        let sleeps_before = clock.sleep_log().len();
         let state = engine.run(1)?;
         let after = engine.pending();
         let polls_after = polls.load(Ordering::Relaxed);
+        observe_poll_timing(&mut trace, clock, off_time, off_before, sleeps_before);
         observe_clock_faults(
             &mut trace,
             clock,
@@ -311,6 +331,27 @@ fn observe_clock_faults(
             ClockFault::Past | ClockFault::Future => {}
         }
     }
+}
+
+// Counts polls made at a time other than the clock's reading and sleeps
+// longer than one engine wait, using only entries added by this step.
+fn observe_poll_timing(
+    trace: &mut Trace,
+    clock: &SimClock,
+    off_time: &AtomicUsize,
+    off_before: usize,
+    sleeps_before: usize,
+) {
+    let off_delta = off_time.load(Ordering::Relaxed).saturating_sub(off_before);
+    trace.polls_off_time = trace.polls_off_time.saturating_add(off_delta);
+
+    let long = clock
+        .sleep_log()
+        .into_iter()
+        .skip(sleeps_before)
+        .filter(|duration| *duration > Duration::from_secs(MAX_WAIT_SECS))
+        .count();
+    trace.long_sleeps = trace.long_sleeps.saturating_add(long);
 }
 
 // IDs in this pending snapshot that have not been printed yet.
@@ -543,6 +584,24 @@ mod tests {
             Arc::new(SimClock::new(Timestamp::UNIX_EPOCH)),
         )
         .unwrap()
+    }
+
+    // Counts every poll as off-clock, so an end-to-end run has a timing
+    // violation for the checker to find.
+    struct OffTimeSource {
+        inner: TimerSource,
+        off_time: Arc<AtomicUsize>,
+    }
+
+    impl Source for OffTimeSource {
+        fn name(&self) -> &SourceName {
+            self.inner.name()
+        }
+
+        fn poll(&self, request: PollRequest) -> Result<PollOutcome, PollError> {
+            self.off_time.fetch_add(1, Ordering::Relaxed);
+            self.inner.poll(request)
+        }
     }
 
     #[test]
@@ -1139,7 +1198,7 @@ mod tests {
         use crate::check::{Checker, Guarantee, Violation};
 
         let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
-        let (mut engine, polls) = build_engine_with(Arc::clone(&clock)).unwrap();
+        let (mut engine, polls, _) = build_engine_with(Arc::clone(&clock)).unwrap();
         let mut trace = Trace::default();
 
         // A future fault defers the first poll and leaves no queue.
@@ -1247,7 +1306,8 @@ mod tests {
     #[test]
     fn a_future_fault_step_with_no_source_poll_reports_cleanly() {
         let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
-        let (engine, polls) = build_engine_with(Arc::clone(&clock)).unwrap();
+        let (engine, polls, off_time) =
+            build_engine_with(Arc::clone(&clock)).unwrap();
         clock.script(Err(ClockFault::Future));
         let mut out = Vec::new();
 
@@ -1258,6 +1318,7 @@ mod tests {
             engine,
             clock.as_ref(),
             &polls,
+            &off_time,
         )
         .unwrap();
 
@@ -1265,5 +1326,159 @@ mod tests {
         assert_eq!(clock.fault_log(), vec![ClockFault::Future]);
         assert_eq!(run.trace.future_polled, 0);
         assert_eq!(run.trace.past_without_stop, 0);
+        assert_eq!(run.trace.long_sleeps, 0);
+        assert_eq!(run.trace.polls_off_time, 0);
+    }
+
+    #[test]
+    fn observe_poll_timing_counts_new_long_sleeps_and_off_time_polls() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.sleep(Duration::from_secs(10));
+        clock.sleep(Duration::from_secs(11));
+        clock.sleep(Duration::from_millis(250));
+        let off_time = AtomicUsize::new(5);
+        let mut trace = Trace {
+            long_sleeps: 2,
+            polls_off_time: 3,
+            ..Default::default()
+        };
+
+        observe_poll_timing(&mut trace, &clock, &off_time, 3, 1);
+
+        assert_eq!(trace.long_sleeps, 3);
+        assert_eq!(trace.polls_off_time, 5);
+        assert_eq!(clock.sleep_log().len(), 3);
+        assert_eq!(off_time.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn observe_poll_timing_with_no_new_activity_counts_none() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.sleep(Duration::from_secs(11));
+        let off_time = AtomicUsize::new(2);
+        let mut trace = Trace::default();
+
+        observe_poll_timing(&mut trace, &clock, &off_time, 2, 1);
+
+        assert_eq!(trace.long_sleeps, 0);
+        assert_eq!(trace.polls_off_time, 0);
+    }
+
+    #[test]
+    fn a_poll_off_the_clock_reading_is_counted_exactly() {
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let off_time = Arc::new(AtomicUsize::new(0));
+        let source = CountingSource {
+            inner: TimerSource::new("sim".into(), 1).unwrap(),
+            clock: Arc::clone(&clock),
+            polls: Arc::clone(&polls),
+            off_time: Arc::clone(&off_time),
+        };
+        let on_time = PollRequest {
+            now: clock.virtual_now(),
+            position: None,
+        };
+        let off_clock = PollRequest {
+            now: epoch_plus(1),
+            position: None,
+        };
+
+        source.poll(on_time).unwrap();
+        source.poll(off_clock).unwrap();
+
+        assert_eq!(polls.load(Ordering::Relaxed), 2);
+        assert_eq!(off_time.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_seeded_run_polls_on_time_with_bounded_sleeps() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let mut out = Vec::new();
+        let seed = Seed::from_u64(1);
+        let steps = FIRST_FAULT_STEP
+            .saturating_add(FAULT_STEP_SPAN)
+            .saturating_add(2);
+
+        let (run, clock) = simulate_with_clock(seed, steps, &mut out).unwrap();
+
+        assert_eq!(run.trace.long_sleeps, 0);
+        assert_eq!(run.trace.polls_off_time, 0);
+        assert!(
+            clock
+                .sleep_log()
+                .into_iter()
+                .all(|duration| duration <= Duration::from_secs(MAX_WAIT_SECS))
+        );
+        assert_eq!(
+            Checker::check(&run.trace)
+                .into_iter()
+                .filter(|violation| {
+                    violation.guarantee == Guarantee::PollsOnTime
+                })
+                .collect::<Vec<Violation>>(),
+            Vec::<Violation>::new()
+        );
+        assert_eq!(Checker::check(&run.trace), Vec::new());
+    }
+
+    #[test]
+    fn an_off_time_run_reports_a_poll_timing_violation() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let off_time = Arc::new(AtomicUsize::new(0));
+        let source = OffTimeSource {
+            inner: TimerSource::new("sim".into(), 1).unwrap(),
+            off_time: Arc::clone(&off_time),
+        };
+        let config = MonitorConfig {
+            id: MonitorId::new("sim".into()).unwrap(),
+            source: source.name().clone(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let engine_clock = Arc::clone(&clock);
+        let engine = PollEngine::new(
+            config,
+            Arc::new(source),
+            MemoryStore::new(),
+            engine_clock,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+
+        let run = run_with_clock(
+            Seed::from_u64(1),
+            3,
+            &mut out,
+            engine,
+            clock.as_ref(),
+            &polls,
+            &off_time,
+        )
+        .unwrap();
+
+        assert!(run.trace.polls_off_time > 0);
+
+        let timing: Vec<Violation> = Checker::check(&run.trace)
+            .into_iter()
+            .filter(|violation| violation.guarantee == Guarantee::PollsOnTime)
+            .collect();
+
+        assert_eq!(
+            timing,
+            vec![Violation {
+                guarantee: Guarantee::PollsOnTime,
+                reason: format!(
+                    concat!(
+                        "engine polled {} times at a time other than ",
+                        "the simulated clock"
+                    ),
+                    run.trace.polls_off_time
+                ),
+            }]
+        );
     }
 }

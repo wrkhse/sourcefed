@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use sourcefed_core::poll::MAX_WAIT_SECS;
+
 // Mirrors the core store's private cleanup bounds, so the checker judges
 // traces against the same limits the real store enforces.
 const MAX_TEMP_SCAN: usize = 500;
@@ -18,6 +20,8 @@ pub enum Guarantee {
     BoundedCleanup,
     /// A past reading stops the engine and a future reading never polls.
     ClockFaultsFailClosed,
+    /// Polls use the clock's reading and sleeps stay within the wait bound.
+    PollsOnTime,
 }
 
 impl fmt::Display for Guarantee {
@@ -29,6 +33,7 @@ impl fmt::Display for Guarantee {
             Self::ClockFaultsFailClosed => {
                 formatter.write_str("ClockFaultsFailClosed")
             }
+            Self::PollsOnTime => formatter.write_str("PollsOnTime"),
         }
     }
 }
@@ -58,6 +63,8 @@ pub struct Trace {
     pub user_files_removed: usize,
     pub past_without_stop: usize,
     pub future_polled: usize,
+    pub long_sleeps: usize,
+    pub polls_off_time: usize,
 }
 
 /// Checks delivery against one trace.
@@ -72,6 +79,7 @@ impl Checker {
         violations.extend(check_ack_loss(trace));
         violations.extend(check_cleanup(trace));
         violations.extend(check_clock_faults(trace));
+        violations.extend(check_poll_timing(trace));
         violations
     }
 }
@@ -158,6 +166,33 @@ fn check_clock_faults(trace: &Trace) -> Vec<Violation> {
     violations
 }
 
+fn check_poll_timing(trace: &Trace) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    let slept = trace.long_sleeps;
+    if slept > 0 {
+        violations.push(Violation {
+            guarantee: Guarantee::PollsOnTime,
+            reason: format!(
+                "engine slept {slept} times beyond the {MAX_WAIT_SECS} second bound"
+            ),
+        });
+    }
+
+    let polled = trace.polls_off_time;
+    if polled > 0 {
+        let reason = format!(
+            "engine polled {polled} times at a time other than the simulated clock"
+        );
+        violations.push(Violation {
+            guarantee: Guarantee::PollsOnTime,
+            reason,
+        });
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +213,8 @@ mod tests {
             user_files_removed: 0,
             past_without_stop: 0,
             future_polled: 0,
+            long_sleeps: 0,
+            polls_off_time: 0,
         }
     }
 
@@ -326,6 +363,47 @@ mod tests {
         assert_clean(&acked_only);
     }
 
+    // Bug seed b011000000000001: a sleep exceeds the ten-second bound and
+    // a poll uses a time other than the simulated clock's reading.
+    #[test]
+    fn seed_b011000000000001_poll_timing_breaks_each_bound_exactly() {
+        let trace = Trace {
+            long_sleeps: 4,
+            polls_off_time: 7,
+            ..Default::default()
+        };
+        let reason =
+            format!("engine slept 4 times beyond the {MAX_WAIT_SECS} second bound");
+
+        assert_eq!(
+            Checker::check(&trace),
+            vec![
+                Violation {
+                    guarantee: Guarantee::PollsOnTime,
+                    reason,
+                },
+                Violation {
+                    guarantee: Guarantee::PollsOnTime,
+                    reason: String::from(concat!(
+                        "engine polled 7 times at a time other than ",
+                        "the simulated clock"
+                    )),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_poll_timing_counts_produce_no_violations() {
+        let trace = Trace {
+            long_sleeps: 0,
+            polls_off_time: 0,
+            ..Default::default()
+        };
+
+        assert_clean(&trace);
+    }
+
     #[test]
     fn a_guarantee_displays_its_name_exactly() {
         assert_eq!(
@@ -341,6 +419,7 @@ mod tests {
             Guarantee::ClockFaultsFailClosed.to_string(),
             "ClockFaultsFailClosed"
         );
+        assert_eq!(Guarantee::PollsOnTime.to_string(), "PollsOnTime");
     }
 
     #[test]
