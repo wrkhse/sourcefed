@@ -289,8 +289,8 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
 
 /// Prints checker violations in the simulator's exact report format so a
 /// reverted fix surfaces the real violation line, not just the assert message.
-fn report_violations(trace: &Trace) {
-    let seed = Seed::from_u64(1);
+#[cfg(test)]
+fn report_violations(seed: Seed, trace: &Trace) {
     let commit = std::env::var("SOURCEFED_COMMIT")
         .unwrap_or_else(|_| String::from("local"));
     let violations = Checker::check(trace);
@@ -325,11 +325,11 @@ mod tests {
         run.feed(line.as_bytes()).unwrap();
         run.finish().unwrap();
 
+        report_violations(Seed::from_u64(1), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
-        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 
@@ -339,11 +339,11 @@ mod tests {
 
         run.held_ack_at_halt(ID).unwrap();
 
+        report_violations(Seed::from_u64(1), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
-        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 
@@ -360,11 +360,11 @@ mod tests {
         run.feed(lines.as_bytes()).unwrap();
         run.finish().unwrap();
 
+        report_violations(Seed::from_u64(1), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
-        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 
