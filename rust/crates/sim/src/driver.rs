@@ -586,6 +586,24 @@ mod tests {
         .unwrap()
     }
 
+    // Counts every poll as off-clock, so an end-to-end run has a timing
+    // violation for the checker to find.
+    struct OffTimeSource {
+        inner: TimerSource,
+        off_time: Arc<AtomicUsize>,
+    }
+
+    impl Source for OffTimeSource {
+        fn name(&self) -> &SourceName {
+            self.inner.name()
+        }
+
+        fn poll(&self, request: PollRequest) -> Result<PollOutcome, PollError> {
+            self.off_time.fetch_add(1, Ordering::Relaxed);
+            self.inner.poll(request)
+        }
+    }
+
     #[test]
     fn the_same_seed_and_steps_print_the_same_events() {
         let mut first = Vec::new();
@@ -1391,7 +1409,7 @@ mod tests {
             clock
                 .sleep_log()
                 .into_iter()
-                .all(|duration| duration <= Duration::from_secs(10))
+                .all(|duration| duration <= Duration::from_secs(MAX_WAIT_SECS))
         );
         assert_eq!(
             Checker::check(&run.trace)
@@ -1403,5 +1421,64 @@ mod tests {
             Vec::<Violation>::new()
         );
         assert_eq!(Checker::check(&run.trace), Vec::new());
+    }
+
+    #[test]
+    fn an_off_time_run_reports_a_poll_timing_violation() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let off_time = Arc::new(AtomicUsize::new(0));
+        let source = OffTimeSource {
+            inner: TimerSource::new("sim".into(), 1).unwrap(),
+            off_time: Arc::clone(&off_time),
+        };
+        let config = MonitorConfig {
+            id: MonitorId::new("sim".into()).unwrap(),
+            source: source.name().clone(),
+            poll_interval: PollInterval::from_secs(1).unwrap(),
+        };
+        let engine_clock = Arc::clone(&clock);
+        let engine = PollEngine::new(
+            config,
+            Arc::new(source),
+            MemoryStore::new(),
+            engine_clock,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+
+        let run = run_with_clock(
+            Seed::from_u64(1),
+            3,
+            &mut out,
+            engine,
+            clock.as_ref(),
+            &polls,
+            &off_time,
+        )
+        .unwrap();
+
+        assert!(run.trace.polls_off_time > 0);
+
+        let timing: Vec<Violation> = Checker::check(&run.trace)
+            .into_iter()
+            .filter(|violation| violation.guarantee == Guarantee::PollsOnTime)
+            .collect();
+
+        assert_eq!(
+            timing,
+            vec![Violation {
+                guarantee: Guarantee::PollsOnTime,
+                reason: format!(
+                    concat!(
+                        "engine polled {} times at a time other than ",
+                        "the simulated clock"
+                    ),
+                    run.trace.polls_off_time
+                ),
+            }]
+        );
     }
 }

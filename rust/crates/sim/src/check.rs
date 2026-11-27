@@ -372,15 +372,15 @@ mod tests {
             polls_off_time: 7,
             ..Default::default()
         };
+        let reason =
+            format!("engine slept 4 times beyond the {MAX_WAIT_SECS} second bound");
 
         assert_eq!(
             Checker::check(&trace),
             vec![
                 Violation {
                     guarantee: Guarantee::PollsOnTime,
-                    reason: String::from(
-                        "engine slept 4 times beyond the 10 second bound"
-                    ),
+                    reason,
                 },
                 Violation {
                     guarantee: Guarantee::PollsOnTime,
