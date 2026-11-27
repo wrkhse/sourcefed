@@ -167,8 +167,12 @@ impl RawRun {
         // neither returned nor has the harness observed a published ack.
         // Either observation here means the gate was released too early,
         // so the test would prove nothing.
-        assert!(read_rx.try_recv().is_err(), "reader left the gate early");
-        assert!(self.acked.is_empty(), "an ack was published while gated");
+        if read_rx.try_recv().is_ok() {
+            return Err(io::Error::other("reader left the gate early").into());
+        }
+        if !self.acked.is_empty() {
+            return Err(io::Error::other("an ack was published while gated").into());
+        }
 
         // A reader halted inside the gate never publishes to its output
         // channel: `finish` applies the held input through `close_held`.
