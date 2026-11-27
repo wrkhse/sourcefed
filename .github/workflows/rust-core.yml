@@ -510,7 +510,7 @@ jobs:
   drain-loop:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: rust
@@ -544,9 +544,12 @@ jobs:
           failures=0
           for i in $(seq 1 50); do
             echo "iteration $i"
-            output=$(cargo test -p sourcefed-cli --lib --locked -- \
-              --exact 'tests::finish_applies_a_full_queue_the_reader_left_when_the_run_ends' 2>&1)
-            status=$?
+            if output=$(cargo test -p sourcefed-cli --lib --locked -- \
+              --exact 'tests::finish_applies_a_full_queue_the_reader_left_when_the_run_ends' 2>&1); then
+              status=0
+            else
+              status=$?
+            fi
             echo "$output"
             if [ "$status" -ne 0 ]; then
               echo "iteration $i failed (exit=$status)"
