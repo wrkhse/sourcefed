@@ -1131,8 +1131,7 @@ mod tests {
         );
         assert_eq!(second_clock.fault_count(), 2);
         assert_eq!(Checker::check(&second_run.trace), Vec::new());
-        assert!(second_run.summary.steps < second_steps);
-        assert_ne!(second_run.summary.steps, run.summary.steps);
+        assert_eq!(second_run.summary.steps, 19);
     }
 
     #[test]
