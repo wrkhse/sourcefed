@@ -85,9 +85,11 @@ jobs:
             steps: 8
             guarantee: BoundedCleanup
           - proof: stdin-handoff
+            seed: 1
             test: raw_input::tests::a_held_ack_is_applied_when_the_run_halts_in_the_handoff
             guarantee: AtLeastOnceDelivery
           - proof: overlong-line
+            seed: 1
             test: raw_input::tests::an_overlong_line_is_discarded_and_the_next_ack_applied
             guarantee: AtLeastOnceDelivery
     defaults:
@@ -110,6 +112,7 @@ jobs:
       - name: Control (clean tree upholds the guarantee)
         env:
           SOURCEFED_COMMIT: ${{ github.sha }}
+          SOURCEFED_PROOF_SEED: ${{ matrix.seed }}
         run: |
           set -euo pipefail
           if [ -n '${{ matrix.test }}' ]; then
@@ -126,6 +129,7 @@ jobs:
         shell: bash --noprofile --norc {0}
         env:
           SOURCEFED_COMMIT: ${{ github.sha }}
+          SOURCEFED_PROOF_SEED: ${{ matrix.seed }}
         run: |
           set -uo pipefail
           if [ -n '${{ matrix.test }}' ]; then
@@ -137,7 +141,9 @@ jobs:
               echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 101"
               exit 1
             fi
-            expected="^sourcefed-sim: seed=0000000000000001 commit=${{ github.sha }}"
+            printf -v padded_seed '%016s' '${{ matrix.seed }}'
+            padded_seed=${padded_seed// /0}
+            expected="^sourcefed-sim: seed=$padded_seed commit=${{ github.sha }}"
             expected+=' violation=${{ matrix.guarantee }}: '
             if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
               echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"

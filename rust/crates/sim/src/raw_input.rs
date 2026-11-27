@@ -289,6 +289,15 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
     )?)
 }
 
+/// Proof seed supplied by CI, or a fixed seed when run locally.
+#[cfg(test)]
+fn proof_seed() -> Seed {
+    std::env::var("SOURCEFED_PROOF_SEED")
+        .ok()
+        .and_then(|hex| hex.parse::<Seed>().ok())
+        .unwrap_or_else(|| Seed::from_u64(1))
+}
+
 /// Prints checker violations in the simulator's exact report format so a
 /// reverted fix surfaces the real violation line, not just the assert message.
 #[cfg(test)]
@@ -327,7 +336,7 @@ mod tests {
         run.feed(line.as_bytes()).unwrap();
         run.finish().unwrap();
 
-        report_violations(Seed::from_u64(1), run.trace());
+        report_violations(proof_seed(), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
@@ -341,7 +350,7 @@ mod tests {
 
         run.held_ack_at_halt(ID).unwrap();
 
-        report_violations(Seed::from_u64(1), run.trace());
+        report_violations(proof_seed(), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
@@ -356,13 +365,15 @@ mod tests {
         // valid, different ack: if the reader ignored its limit, that extra
         // ack would be published and the assertions below would fail.
         let other = "timer:sim:1970-01-01T00:00:02Z";
-        let pad = " ".repeat(66049);
+        let pad = " ".repeat(
+            66049 + usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0),
+        );
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
         run.feed(lines.as_bytes()).unwrap();
         run.finish().unwrap();
 
-        report_violations(Seed::from_u64(1), run.trace());
+        report_violations(proof_seed(), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
