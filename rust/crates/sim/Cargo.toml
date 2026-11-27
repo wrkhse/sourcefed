@@ -14,7 +14,7 @@ sourcefed-core = { path = "../core", version = "0.1.0-rc.1" }
 tempfile.workspace = true
 
 [dev-dependencies]
-sourcefed-cli = { path = "../cli", version = "0.1.0-rc.1", features = ["sim-seam"] }
+sourcefed-cli = { path = "../cli", features = ["sim-seam"] }
 
 [lints]
 workspace = true
