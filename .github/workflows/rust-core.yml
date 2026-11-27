@@ -87,13 +87,9 @@ jobs:
           - proof: stdin-handoff
             test: raw_input::tests::a_held_ack_is_applied_when_the_run_halts_in_the_handoff
             guarantee: AtLeastOnceDelivery
-            seed: 1
-            steps: 8
           - proof: overlong-line
             test: raw_input::tests::an_overlong_line_is_discarded_and_the_next_ack_applied
             guarantee: AtLeastOnceDelivery
-            seed: 1
-            steps: 8
     defaults:
       run:
         working-directory: rust

@@ -16,9 +16,9 @@ use sourcefed_core::{
     MonitorConfig, MonitorId, PollEngine, PollInterval, Source, StopHandle,
     TimerSource,
 };
-use sourcefed_sim::{MemoryStore, SimClock};
 #[cfg(test)]
 use sourcefed_sim::Seed;
+use sourcefed_sim::{MemoryStore, SimClock};
 
 use crate::check::{Checker, Trace};
 
@@ -293,8 +293,8 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
 /// reverted fix surfaces the real violation line, not just the assert message.
 #[cfg(test)]
 fn report_violations(seed: Seed, trace: &Trace) {
-    let commit = std::env::var("SOURCEFED_COMMIT")
-        .unwrap_or_else(|_| String::from("local"));
+    let commit =
+        std::env::var("SOURCEFED_COMMIT").unwrap_or_else(|_| String::from("local"));
     let violations = Checker::check(trace);
 
     for violation in &violations {
@@ -356,7 +356,7 @@ mod tests {
         // valid, different ack: if the reader ignored its limit, that extra
         // ack would be published and the assertions below would fail.
         let other = "timer:sim:1970-01-01T00:00:02Z";
-        let pad = " ".repeat(600);
+        let pad = " ".repeat(66049);
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
         run.feed(lines.as_bytes()).unwrap();
