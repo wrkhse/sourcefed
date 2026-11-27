@@ -125,9 +125,20 @@ jobs:
             echo "::error::reverted-fix: ${{ matrix.proof }} unexpectedly passed"
             exit 1
           fi
-          expected='violation=${{ matrix.guarantee }}:'
-          if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
+          if [ "$status" -ne 1 ]; then
+            echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 1"
+            exit 1
+          fi
+          expected='^sourcefed-sim: seed=${{ matrix.seed }} commit=${{ github.sha }}'
+          expected+=' violation=${{ matrix.guarantee }}: '
+          if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
             echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
+            exit 1
+          fi
+          violations=$(printf '%s\n' "$output" \
+            | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=' || true)
+          if [ "$violations" -ne 1 ]; then
+            echo "::error::reverted-fix: ${{ matrix.proof }} violations=$violations"
             exit 1
           fi
 
