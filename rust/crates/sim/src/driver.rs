@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use jiff::Timestamp;
 use sourcefed_core::{
@@ -30,6 +31,11 @@ const USER_NAMES: [&str; 3] = [
     "positions.json.backup",
     "positions.json.notes.tmp",
 ];
+// Short seeded runs stay fault-free; seeded faults land after this step.
+const FIRST_FAULT_STEP: u32 = 10;
+// The seed picks the future-fault step in this span; the past fault follows.
+const FAULT_STEP_SPAN: u32 = 16;
+const FAULT_SEED_XOR: u64 = 0xC10C_0000_0000_0001;
 
 /// Why a simulation run ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,8 +92,10 @@ pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
 }
 
 // The engine, the clock it reads and the counter shared with its source.
+#[cfg(test)]
 type BuiltEngine = (PollEngine<MemoryStore>, Arc<SimClock>, Arc<AtomicUsize>);
 
+#[cfg(test)]
 fn build_engine() -> Result<BuiltEngine, String> {
     let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
     let (engine, polls) = build_engine_with(Arc::clone(&clock))?;
@@ -142,9 +150,59 @@ pub fn simulate_with_trace(
     steps: u32,
     out: &mut impl Write,
 ) -> Result<Run, Box<dyn Error>> {
-    let (engine, clock, polls) = build_engine()?;
+    let (run, _) = simulate_with_clock(seed, steps, out)?;
 
-    run_with_clock(seed, steps, out, engine, &clock, &polls)
+    Ok(run)
+}
+
+// Builds the real engine, scripts its clock from the seed and runs it. The
+// clock is returned so a test can assert which faults were consumed.
+fn simulate_with_clock(
+    seed: Seed,
+    steps: u32,
+    out: &mut impl Write,
+) -> Result<(Run, Arc<SimClock>), Box<dyn Error>> {
+    let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+    let (engine, polls) = build_engine_with(Arc::clone(&clock))?;
+    script_clock_faults(&clock, seed);
+
+    let run = run_with_clock(seed, steps, out, engine, &clock, &polls)?;
+
+    Ok((run, clock))
+}
+
+// Picks the future-fault step from a seed that leaves the run's input draws
+// untouched. The past fault lands on the next step and stops the engine.
+fn script_clock_faults(clock: &SimClock, seed: Seed) {
+    let mut draw = Seed::from_u64(seed.as_u64() ^ FAULT_SEED_XOR);
+    let offset =
+        u32::try_from(draw.below(u64::from(FAULT_STEP_SPAN))).unwrap_or_default();
+    let future_step = FIRST_FAULT_STEP.saturating_add(offset);
+
+    script_clean_readings(clock, future_step);
+    clock.script(Err(ClockFault::Future));
+    clock.script(Err(ClockFault::Past));
+}
+
+// Scripts the readings an empty script would return: one at step zero, then
+// one before and one after each one-second sleep. Matching virtual time keeps
+// the run's behavior unchanged so both faults land on their chosen steps.
+fn script_clean_readings(clock: &SimClock, until_step: u32) {
+    clock.script(Ok(clock.virtual_now()));
+
+    for step in 1..until_step {
+        let before = epoch_plus(step.saturating_sub(1));
+        let after = epoch_plus(step);
+
+        clock.script(Ok(before));
+        clock.script(Ok(after));
+    }
+}
+
+fn epoch_plus(secs: u32) -> Timestamp {
+    Timestamp::UNIX_EPOCH
+        .checked_add(Duration::from_secs(u64::from(secs)))
+        .unwrap_or(Timestamp::MAX)
 }
 
 // Runs one simulation over the engine and the clock it shares. Tests inject
@@ -1027,6 +1085,35 @@ mod tests {
                 reason: format!("emitted event {id} was neither printed nor acked"),
             }]
         );
+    }
+
+    #[test]
+    fn a_seeded_run_consumes_both_clock_faults_cleanly() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let mut out = Vec::new();
+        let seed = Seed::from_u64(1);
+        let steps = FIRST_FAULT_STEP
+            .saturating_add(FAULT_STEP_SPAN)
+            .saturating_add(2);
+
+        let (run, clock) = simulate_with_clock(seed, steps, &mut out).unwrap();
+
+        assert_eq!(
+            clock.fault_log(),
+            vec![ClockFault::Future, ClockFault::Past]
+        );
+        assert_eq!(clock.fault_count(), 2);
+
+        let clock_faults: Vec<Violation> = Checker::check(&run.trace)
+            .into_iter()
+            .filter(|violation| {
+                violation.guarantee == Guarantee::ClockFaultsFailClosed
+            })
+            .collect();
+
+        assert_eq!(clock_faults, Vec::<Violation>::new());
+        assert_eq!(Checker::check(&run.trace), Vec::new());
     }
 
     #[test]
