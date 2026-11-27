@@ -129,14 +129,16 @@ jobs:
             echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 1"
             exit 1
           fi
-          expected='^sourcefed-sim: seed=${{ matrix.seed }} commit=${{ github.sha }}'
+          printf -v padded_seed '%016s' '${{ matrix.seed }}'
+          padded_seed=${padded_seed// /0}
+          expected="^sourcefed-sim: seed=$padded_seed commit=${{ github.sha }}"
           expected+=' violation=${{ matrix.guarantee }}: '
           if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
             echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
             exit 1
           fi
           violations=$(printf '%s\n' "$output" \
-            | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=' || true)
+            | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=') || violations=0
           if [ "$violations" -ne 1 ]; then
             echo "::error::reverted-fix: ${{ matrix.proof }} violations=$violations"
             exit 1
