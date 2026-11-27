@@ -23,12 +23,10 @@ use sourcefed_sim::{MemoryStore, SimClock};
 use crate::check::{Checker, Trace};
 
 const WAIT: Duration = Duration::from_secs(3);
-// The gated reader holds the handoff lock, so `finish` cannot apply the ack
-// until the gate is released. There is no public hook for "finish halted
-// the reader", so a short delay is the only way to let the halt land first
-// without a new production seam. Releasing sooner would queue the ack instead
-// of leaving it held; a stuck gate fails through `WAIT` rather than hanging.
-const HANDOFF: Duration = Duration::from_millis(50);
+// The reader's own output queue. `feed` drains it only after the reader
+// returns, and a script can yield more inputs than the shared input channel
+// holds, so this exact bound keeps the reader from blocking on a full queue.
+const READER_QUEUE: usize = 4096;
 
 /// A run whose stdin is fed as raw bytes through the real CLI reader.
 struct RawRun {
@@ -69,7 +67,10 @@ impl RawRun {
         // Publish only the acks the reader accepted: a line it discards as
         // over-long is not an ack the agent sent. Observe the reader's own
         // inputs, then forward them to the run's queue for `poll`/`finish`.
-        let (observed, received) = input_channel();
+        // The reader runs to the end of the script before this queue is
+        // drained, so it gets its own channel with the larger `READER_QUEUE`
+        // bound instead of the shared input channel's smaller one.
+        let (observed, received) = mpsc::sync_channel(READER_QUEUE);
 
         read_input(Cursor::new(bytes), &self.stop, &self.state, &observed);
         drop(observed);
@@ -137,34 +138,59 @@ impl RawRun {
 
         let line = format!("ack {id}\n");
 
-        if let Ok(Input::Ack(published)) = parse_input(&line) {
-            self.record_published(published.as_str());
-        }
-
         let read_state = Arc::clone(&state);
         let stop = self.stop.clone();
         let (read_tx, read_rx) = mpsc::channel();
 
-        thread::spawn(move || {
-            read_input(Cursor::new(line), &stop, &read_state, &sender);
+        let read_thread = thread::spawn(move || {
+            read_input(Cursor::new(line.clone()), &stop, &read_state, &sender);
             let _ = read_tx.send(());
         });
         entered_rx.recv_timeout(WAIT)?;
 
-        let watchdog = thread::spawn(move || {
-            thread::sleep(HANDOFF);
-            let _ = resume.send(());
+        let mut engine = self.engine.take().ok_or_else(|| missing("engine"))?;
+        let mut inputs = self.inputs.take().ok_or_else(|| missing("inputs"))?;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        let finish_thread = thread::spawn(move || {
+            // Signals before finish runs, while the reader is still gated.
+            let _ = started_tx.send(());
+            let result = inputs.finish(&mut engine).map_err(|e| e.to_string());
+            let _ = finished_tx.send((result, engine));
         });
 
-        let engine = self.engine.as_mut().ok_or_else(|| missing("engine"))?;
-        let inputs = self.inputs.as_mut().ok_or_else(|| missing("inputs"))?;
+        started_rx.recv_timeout(WAIT)?;
 
-        inputs.finish(engine)?;
-        watchdog
+        // finish started while the reader was in the gate: the reader has
+        // neither returned nor has the harness observed a published ack.
+        // Either observation here means the gate was released too early,
+        // so the test would prove nothing.
+        assert!(read_rx.try_recv().is_err(), "reader left the gate early");
+        assert!(self.acked.is_empty(), "an ack was published while gated");
+
+        // A reader halted inside the gate never publishes to its output
+        // channel: `finish` applies the held input through `close_held`.
+        // Derive the ID from the line the real reader parsed, not from a
+        // separate guess, so the trace records the ack the agent actually sent.
+        if let Ok(Input::Ack(published)) = parse_input(&line) {
+            self.record_published(published.as_str());
+        }
+
+        resume
+            .send(())
+            .map_err(|_| io::Error::other("gate resume channel closed"))?;
+
+        let (result, finished_engine) = finished_rx.recv_timeout(WAIT)?;
+        read_thread
             .join()
-            .map_err(|_| io::Error::other("gate release panicked"))?;
-        read_rx.recv_timeout(WAIT)?;
+            .map_err(|_| io::Error::other("reader panicked"))?;
+        finish_thread
+            .join()
+            .map_err(|_| io::Error::other("finish panicked"))?;
+        result.map_err(io::Error::other)?;
 
+        self.engine = Some(finished_engine);
         let pending = self.pending_ids();
 
         self.record_emitted(&pending);
