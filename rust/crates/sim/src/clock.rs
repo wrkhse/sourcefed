@@ -37,6 +37,7 @@ pub struct SimClock {
     readings: Mutex<VecDeque<Result<Timestamp, ClockFault>>>,
     sleeps: Mutex<Vec<Duration>>,
     faults: Mutex<u64>,
+    fault_log: Mutex<Vec<ClockFault>>,
 }
 
 impl SimClock {
@@ -48,6 +49,7 @@ impl SimClock {
             readings: Mutex::new(VecDeque::new()),
             sleeps: Mutex::new(Vec::new()),
             faults: Mutex::new(0),
+            fault_log: Mutex::new(Vec::new()),
         }
     }
 
@@ -86,9 +88,27 @@ impl SimClock {
         self.faults.lock().ok().map_or(u64::MAX, |faults| *faults)
     }
 
+    /// Returns every consumed fault in the order `now` returned the error.
+    ///
+    /// Invariant: a poisoned log reads as empty, so a fault that reached
+    /// the engine without a logged entry is visible to the checker.
+    #[must_use]
+    pub fn fault_log(&self) -> Vec<ClockFault> {
+        self.fault_log
+            .lock()
+            .ok()
+            .map_or_else(Vec::new, |faults| faults.clone())
+    }
+
     fn count_fault(&self) {
         if let Ok(mut faults) = self.faults.lock() {
             *faults = faults.saturating_add(1);
+        }
+    }
+
+    fn log_fault(&self, fault: ClockFault) {
+        if let Ok(mut log) = self.fault_log.lock() {
+            log.push(fault);
         }
     }
 }
@@ -115,6 +135,7 @@ impl Clock for SimClock {
             }
             Some(Err(fault)) => {
                 self.count_fault();
+                self.log_fault(fault);
 
                 Err(fault.into())
             }
@@ -189,6 +210,13 @@ mod tests {
         });
     }
 
+    fn poison_fault_log(clock: &Arc<SimClock>) {
+        poison_with(clock, |clock| {
+            let _guard = clock.fault_log.lock().unwrap();
+            panic!("poison the fault log");
+        });
+    }
+
     #[test]
     fn scripted_readings_are_consumed_in_order() {
         let clock = SimClock::new(at(0));
@@ -213,6 +241,33 @@ mod tests {
         assert_eq!(clock.now(), Ok(at(7)));
         assert_eq!(clock.virtual_now(), at(7));
         assert_eq!(clock.fault_count(), 1);
+    }
+
+    #[test]
+    fn the_fault_log_records_each_consumed_fault_in_order() {
+        let clock = SimClock::new(at(0));
+        clock.script(Err(ClockFault::Past));
+        clock.script(Ok(at(5)));
+        clock.script(Err(ClockFault::Future));
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+        assert_eq!(clock.now(), Ok(at(5)));
+        assert_eq!(clock.now(), Err(ClockError::Future));
+        assert_eq!(clock.now(), Ok(at(5)));
+
+        assert_eq!(
+            clock.fault_log(),
+            vec![ClockFault::Past, ClockFault::Future]
+        );
+        assert_eq!(clock.fault_count(), 2);
+    }
+
+    #[test]
+    fn a_poisoned_fault_log_reads_as_empty() {
+        let clock = Arc::new(SimClock::new(at(0)));
+        poison_fault_log(&clock);
+
+        assert_eq!(clock.fault_log(), Vec::<ClockFault>::new());
     }
 
     #[test]

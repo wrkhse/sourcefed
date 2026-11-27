@@ -16,6 +16,8 @@ pub enum Guarantee {
     NoAckLostBeforeHalt,
     /// Cleanup stays within its bounds and never removes a user's file.
     BoundedCleanup,
+    /// A past reading stops the engine and a future reading never polls.
+    ClockFaultsFailClosed,
 }
 
 impl fmt::Display for Guarantee {
@@ -24,6 +26,9 @@ impl fmt::Display for Guarantee {
             Self::AtLeastOnceDelivery => formatter.write_str("AtLeastOnceDelivery"),
             Self::NoAckLostBeforeHalt => formatter.write_str("NoAckLostBeforeHalt"),
             Self::BoundedCleanup => formatter.write_str("BoundedCleanup"),
+            Self::ClockFaultsFailClosed => {
+                formatter.write_str("ClockFaultsFailClosed")
+            }
         }
     }
 }
@@ -51,6 +56,8 @@ pub struct Trace {
     pub cleanup_scanned: usize,
     pub cleanup_removed: usize,
     pub user_files_removed: usize,
+    pub past_without_stop: usize,
+    pub future_polled: usize,
 }
 
 /// Checks delivery against one trace.
@@ -64,6 +71,7 @@ impl Checker {
         let mut violations = check_delivery(trace);
         violations.extend(check_ack_loss(trace));
         violations.extend(check_cleanup(trace));
+        violations.extend(check_clock_faults(trace));
         violations
     }
 }
@@ -126,6 +134,30 @@ fn check_cleanup(trace: &Trace) -> Vec<Violation> {
     violations
 }
 
+fn check_clock_faults(trace: &Trace) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    let past = trace.past_without_stop;
+    if past > 0 {
+        violations.push(Violation {
+            guarantee: Guarantee::ClockFaultsFailClosed,
+            reason: format!("past clock fault left the engine running {past} times"),
+        });
+    }
+
+    let future = trace.future_polled;
+    if future > 0 {
+        violations.push(Violation {
+            guarantee: Guarantee::ClockFaultsFailClosed,
+            reason: format!(
+                "future clock fault polled while deferred {future} times"
+            ),
+        });
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +176,8 @@ mod tests {
             cleanup_scanned: 0,
             cleanup_removed: 0,
             user_files_removed: 0,
+            past_without_stop: 0,
+            future_polled: 0,
         }
     }
 
@@ -231,6 +265,46 @@ mod tests {
         );
     }
 
+    // Bug seed c10c000000000001: a past reading left the engine running and
+    // a future reading produced a poll while that poll was deferred.
+    #[test]
+    fn seed_c10c000000000001_clock_faults_do_not_fail_closed() {
+        let trace = Trace {
+            past_without_stop: 2,
+            future_polled: 3,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            Checker::check(&trace),
+            vec![
+                Violation {
+                    guarantee: Guarantee::ClockFaultsFailClosed,
+                    reason: String::from(
+                        "past clock fault left the engine running 2 times"
+                    ),
+                },
+                Violation {
+                    guarantee: Guarantee::ClockFaultsFailClosed,
+                    reason: String::from(
+                        "future clock fault polled while deferred 3 times"
+                    ),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_clock_fault_counts_produce_no_violations() {
+        let trace = Trace {
+            past_without_stop: 0,
+            future_polled: 0,
+            ..Default::default()
+        };
+
+        assert_clean(&trace);
+    }
+
     #[test]
     fn an_acked_id_absent_from_replayed_produces_no_violation() {
         let trace = Trace {
@@ -263,6 +337,10 @@ mod tests {
             "NoAckLostBeforeHalt"
         );
         assert_eq!(Guarantee::BoundedCleanup.to_string(), "BoundedCleanup");
+        assert_eq!(
+            Guarantee::ClockFaultsFailClosed.to_string(),
+            "ClockFaultsFailClosed"
+        );
     }
 
     #[test]
