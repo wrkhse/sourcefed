@@ -16,7 +16,9 @@ use sourcefed_core::{
     MonitorConfig, MonitorId, PollEngine, PollInterval, Source, StopHandle,
     TimerSource,
 };
-use sourcefed_sim::{MemoryStore, Seed, SimClock};
+use sourcefed_sim::{MemoryStore, SimClock};
+#[cfg(test)]
+use sourcefed_sim::Seed;
 
 use crate::check::{Checker, Trace};
 
