@@ -43,10 +43,18 @@ jobs:
           set -euo pipefail
 
           base="${PR_BASE:-$PUSH_BASE}"
-          changed=''
-          if [ -n "$base" ]; then
-            changed=$(git diff --name-only "$base" HEAD -- 'rust/**/*.rs')
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          changed=$(git diff --name-only "$base" HEAD -- \
+            'rust/**/*.rs' \
+            'rust/.cargo/mutants.toml' \
+            'rust/Cargo.toml' \
+            'rust/Cargo.lock' \
+            'rust/rust-toolchain*' \
+            'rust/clippy.toml')
 
           if [ -n "$changed" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
