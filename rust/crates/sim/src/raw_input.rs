@@ -180,7 +180,9 @@ impl RawRun {
             return Err(io::Error::other("an ack was published while gated").into());
         }
         if !state.gate_is_held() {
-            return Err(io::Error::other("gate was not held while finish ran").into());
+            return Err(
+                io::Error::other("gate was not held while finish ran").into()
+            );
         }
 
         // A reader halted inside the gate never publishes to its output
@@ -346,5 +348,14 @@ mod tests {
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
         assert_eq!(Checker::check(run.trace()), Vec::new());
+    }
+
+    #[test]
+    fn a_gate_that_is_not_waiting_is_not_reported_as_held() {
+        let (entered, _entered_rx) = mpsc::channel();
+        let (_resume, resume_rx) = mpsc::channel();
+        let mut reader = ReaderState::default();
+        reader.set_hold_gate(HoldGate::new(entered, resume_rx));
+        assert!(!reader.gate_is_held());
     }
 }
