@@ -31,6 +31,23 @@ impl ChildGuard {
     fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.0.wait()
     }
+
+    /// Waits for the child, killing it if it is still alive at `deadline`.
+    fn wait_bounded(&mut self, deadline: Instant) -> ExitStatus {
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = self.0.kill();
+                return self.wait().unwrap();
+            }
+
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    }
 }
 
 impl Drop for ChildGuard {
@@ -54,6 +71,25 @@ impl LineEvents {
     /// Joins the reader thread once the stream has ended.
     fn join(self) {
         self.handle.join().unwrap();
+    }
+
+    /// Joins the reader once it has finished, or leaves it detached if it is
+    /// still running at `deadline`.
+    fn join_bounded(self, deadline: Instant) {
+        loop {
+            if self.handle.is_finished() {
+                self.join();
+                return;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Dropping the handle detaches the reader thread.
+                return;
+            }
+
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
     }
 }
 
@@ -109,7 +145,10 @@ fn remaining_ids(rx: &Receiver<String>, deadline: Instant) -> Vec<String> {
                 let event: Value = serde_json::from_str(&line).unwrap();
                 ids.push(event["id"].as_str().unwrap().to_owned());
             }
-            Err(RecvTimeoutError::Disconnected) | Err(RecvTimeoutError::Timeout) => {
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("timed out draining events before {deadline:?}");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
                 break;
             }
         }
@@ -155,7 +194,8 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     assert_eq!(event["summary"], format!("timer deploy fired at {at}"));
 
     // The next firing is printed too, and is never acknowledged.
-    let line = recv_line(&events.rx, Instant::now() + SHORT_WAIT, "the second event");
+    let line =
+        recv_line(&events.rx, Instant::now() + SHORT_WAIT, "the second event");
     let later: Value = serde_json::from_str(&line).unwrap();
     let later = later["id"].as_str().unwrap().to_owned();
 
@@ -167,8 +207,8 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
 
     let rest = remaining_ids(&events.rx, Instant::now() + SHORT_WAIT);
 
-    assert!(first.wait().unwrap().success());
-    events.join();
+    assert!(first.wait_bounded(Instant::now() + SHORT_WAIT).success());
+    events.join_bounded(Instant::now() + SHORT_WAIT);
     // The polls left after the second event would take about thirteen
     // seconds. A stop ends the run within one poll, with room for a slow
     // machine.
@@ -194,8 +234,8 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
         .filter(|printed| unacknowledged.contains(*printed))
         .collect();
 
-    assert!(second.wait().unwrap().success());
-    events.join();
+    assert!(second.wait_bounded(Instant::now() + LONG_WAIT).success());
+    events.join_bounded(Instant::now() + LONG_WAIT);
     assert!(!printed.contains(&id));
     assert_eq!(again, unacknowledged.iter().collect::<Vec<_>>());
     assert_ne!(fresh.count(), 0);
