@@ -129,7 +129,7 @@ pub fn simulate_with_trace(
             inputs.apply_next(&mut engine)?
         };
 
-        record_step_inputs(&mut trace, &engine, inputs.acked_ids());
+        record_step_inputs(&mut trace, &engine, inputs.acked_ids(), index)?;
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -179,25 +179,39 @@ fn record_acked(trace: &mut Trace, acked: &[EventId]) {
     }
 }
 
-// Records applied acks and, when a queue exists, any acked ID replayed after
-// this step's inputs. An absent queue carries no pending ID to replay, so a
-// step with no queue skips replay observation.
+// Records applied acks and any acked ID replayed after this step's inputs.
+// The priming step (index 0) skips replay when no queue exists; every later
+// step runs detection, which fails if the queue cannot be read.
+//
+// # Errors
+// Returns NO_PENDING when a step past priming has no pending queue.
 fn record_step_inputs(
     trace: &mut Trace,
     engine: &PollEngine<MemoryStore>,
     acked: &[EventId],
-) {
+    index: u32,
+) -> Result<(), &'static str> {
     record_acked(trace, acked);
 
-    record_replayed(trace, engine);
+    if index > 0 || engine.pending().is_some() {
+        record_replayed(trace, engine)?;
+    }
+
+    Ok(())
 }
 
 // Records each acked ID that is present in pending after this step's inputs.
-// An absent queue has no ID to replay, so nothing is recorded; MemoryStore's
-// owned read has no IO-failure channel to surface as an error.
-fn record_replayed(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
+// An absent queue has no ID to replay, yet the failed read is an error rather
+// than a silent pass, so the checker never runs without full observation.
+//
+// # Errors
+// Returns NO_PENDING when the queue cannot be read.
+fn record_replayed(
+    trace: &mut Trace,
+    engine: &PollEngine<MemoryStore>,
+) -> Result<(), &'static str> {
     let Some(pending) = engine.pending() else {
-        return;
+        return Err(NO_PENDING);
     };
 
     for id in &trace.acked {
@@ -209,6 +223,8 @@ fn record_replayed(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
             trace.replayed.push(id.clone());
         }
     }
+
+    Ok(())
 }
 
 fn pending_or_error(
@@ -611,13 +627,13 @@ mod tests {
         };
         let engine = engine_with_pending(&[returning, fresh]);
 
-        record_replayed(&mut trace, &engine);
+        record_replayed(&mut trace, &engine).unwrap();
 
         assert_eq!(trace.replayed, vec![String::from("returning")]);
 
         let engine_again =
             engine_with_pending(&[named_event("returning"), named_event("fresh")]);
-        record_replayed(&mut trace, &engine_again);
+        record_replayed(&mut trace, &engine_again).unwrap();
 
         assert_eq!(trace.replayed, vec![String::from("returning")]);
     }
@@ -625,13 +641,26 @@ mod tests {
     #[test]
     fn a_missing_pending_queue_has_no_replay_to_record() {
         let engine = engine().unwrap();
-        let mut trace = Trace {
-            acked: vec![String::from("returning")],
-            ..Default::default()
-        };
+        let acked = [EventId::new("returning".into()).unwrap()];
+        let mut trace = Trace::default();
 
-        record_replayed(&mut trace, &engine);
+        let result = record_step_inputs(&mut trace, &engine, &acked, 0);
 
+        assert_eq!(result, Ok(()));
+        assert_eq!(trace.acked, vec![String::from("returning")]);
+        assert_eq!(trace.replayed, Vec::<String>::new());
+    }
+
+    #[test]
+    fn replay_detection_fails_on_a_missing_pending_queue() {
+        let engine = engine().unwrap();
+        let acked = [EventId::new("returning".into()).unwrap()];
+        let mut trace = Trace::default();
+
+        let result = record_step_inputs(&mut trace, &engine, &acked, 1);
+
+        assert_eq!(result, Err(NO_PENDING));
+        assert_eq!(trace.acked, vec![String::from("returning")]);
         assert_eq!(trace.replayed, Vec::<String>::new());
     }
 
@@ -646,7 +675,7 @@ mod tests {
         // the ID back into pending before replay detection runs.
         let engine = engine_with_pending(&[named_event(&id)]);
 
-        record_step_inputs(&mut trace, &engine, &acked);
+        record_step_inputs(&mut trace, &engine, &acked, 1).unwrap();
 
         assert_eq!(trace.acked, vec![id.clone()]);
         assert_eq!(trace.replayed, vec![id.clone()]);
