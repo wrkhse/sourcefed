@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use sourcefed_cli::sim_seam::HoldGate;
-use sourcefed_cli::{
-    Input, Inputs, ReaderState, input_channel, parse_input, read_input,
-};
+use sourcefed_cli::{Input, Inputs, ReaderState, input_channel, read_input};
 use sourcefed_core::{
     MonitorConfig, MonitorId, PollEngine, PollInterval, Source, StopHandle,
     TimerSource,
@@ -63,7 +61,10 @@ impl RawRun {
     }
 
     /// Feeds raw bytes through the real stdin reader.
-    fn feed(&mut self, bytes: &[u8]) {
+    ///
+    /// # Errors
+    /// Returns the error if the run's bounded input queue is full.
+    fn feed(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
         // Publish only the acks the reader accepted: a line it discards as
         // over-long is not an ack the agent sent. Observe the reader's own
         // inputs, then forward them to the run's queue for `poll`/`finish`.
@@ -80,10 +81,12 @@ impl RawRun {
                 self.record_published(id.as_str());
             }
 
-            if self.sender.send(input).is_err() {
-                break;
-            }
+            self.sender
+                .try_send(input)
+                .map_err(|_| io::Error::other("input queue full"))?;
         }
+
+        Ok(())
     }
 
     /// Applies queued inputs, polls once, and records what was observed.
@@ -141,13 +144,16 @@ impl RawRun {
         let read_state = Arc::clone(&state);
         let stop = self.stop.clone();
         let (read_tx, read_rx) = mpsc::channel();
-        let reader_line = line.clone();
 
         let read_thread = thread::spawn(move || {
-            read_input(Cursor::new(reader_line), &stop, &read_state, &sender);
+            read_input(Cursor::new(line), &stop, &read_state, &sender);
             let _ = read_tx.send(());
         });
         entered_rx.recv_timeout(WAIT)?;
+
+        // While the reader is gated, finish has not applied the held ack, so
+        // the engine still lists the event as pending.
+        let pending_before = self.pending_ids();
 
         let mut engine = self.engine.take().ok_or_else(|| missing("engine"))?;
         let mut inputs = self.inputs.take().ok_or_else(|| missing("inputs"))?;
@@ -173,15 +179,13 @@ impl RawRun {
         if !self.acked.is_empty() {
             return Err(io::Error::other("an ack was published while gated").into());
         }
-
-        // A reader halted inside the gate never publishes to its output
-        // channel: `finish` applies the held input through `close_held`.
-        // Derive the ID from the line the real reader parsed, not from a
-        // separate guess, so the trace records the ack the agent actually sent.
-        if let Ok(Input::Ack(published)) = parse_input(&line) {
-            self.record_published(published.as_str());
+        if !state.gate_is_held() {
+            return Err(io::Error::other("gate was not held while finish ran").into());
         }
 
+        // A reader halted inside the gate never publishes to its output
+        // channel: `finish` applies the held input through `close_held`, so
+        // observe the engine to see which ack finish actually applied.
         resume
             .send(())
             .map_err(|_| io::Error::other("gate resume channel closed"))?;
@@ -196,10 +200,17 @@ impl RawRun {
         result.map_err(io::Error::other)?;
 
         self.engine = Some(finished_engine);
-        let pending = self.pending_ids();
+        let pending_after = self.pending_ids();
 
-        self.record_emitted(&pending);
-        self.record_replayed(&pending);
+        for id in pending_before
+            .iter()
+            .filter(|id| !pending_after.contains(id))
+        {
+            self.record_published(id);
+        }
+
+        self.record_emitted(&pending_after);
+        self.record_replayed(&pending_after);
 
         Ok(())
     }
@@ -294,7 +305,7 @@ mod tests {
         let mut run = with_pending();
         let line = format!("ack {ID}\n");
 
-        run.feed(line.as_bytes());
+        run.feed(line.as_bytes()).unwrap();
         run.finish().unwrap();
 
         assert_eq!(run.trace().emitted, [ID]);
@@ -327,7 +338,7 @@ mod tests {
         let pad = " ".repeat(600);
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
-        run.feed(lines.as_bytes());
+        run.feed(lines.as_bytes()).unwrap();
         run.finish().unwrap();
 
         assert_eq!(run.trace().emitted, [ID]);

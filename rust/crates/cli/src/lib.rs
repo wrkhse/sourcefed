@@ -59,6 +59,7 @@ pub fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
 /// Seam for pausing the reader between reading a line and parsing it.
 #[cfg(any(test, feature = "sim-seam"))]
 pub mod sim_seam {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{Receiver, Sender};
     use std::sync::{Mutex, PoisonError};
     use std::time::Duration;
@@ -71,6 +72,7 @@ pub mod sim_seam {
     pub struct HoldGate {
         entered: Sender<()>,
         resume: Mutex<Receiver<()>>,
+        waiting: AtomicBool,
     }
 
     impl HoldGate {
@@ -80,7 +82,14 @@ pub mod sim_seam {
             Self {
                 entered,
                 resume: Mutex::new(resume),
+                waiting: AtomicBool::new(false),
             }
+        }
+
+        /// Whether this gate is between signalling and resuming.
+        #[must_use]
+        pub fn is_waiting(&self) -> bool {
+            self.waiting.load(Ordering::SeqCst)
         }
 
         /// Signals the observer, then waits for the resume token.
@@ -89,6 +98,8 @@ pub mod sim_seam {
         /// Panics when the observer is gone, the token channel closes, or
         /// the token does not arrive within `WAIT`.
         pub fn wait(&self) {
+            self.waiting.store(true, Ordering::SeqCst);
+
             assert!(
                 self.entered.send(()).is_ok(),
                 "hold gate: entered channel closed"
@@ -101,6 +112,8 @@ pub mod sim_seam {
                 "hold gate: no resume token within {WAIT:?}"
             );
             drop(resume);
+
+            self.waiting.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -164,6 +177,15 @@ impl ReaderState {
     #[cfg(any(test, feature = "sim-seam"))]
     pub fn set_hold_gate(&mut self, gate: sim_seam::HoldGate) {
         self.hold_gate = Some(gate);
+    }
+
+    /// Whether the installed gate is currently holding the reader.
+    #[cfg(any(test, feature = "sim-seam"))]
+    #[must_use]
+    pub fn gate_is_held(&self) -> bool {
+        self.hold_gate
+            .as_ref()
+            .is_some_and(sim_seam::HoldGate::is_waiting)
     }
 
     // Parses and publishes one bounded line as a single handoff. False if
