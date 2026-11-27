@@ -2,13 +2,15 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use sourcefed_core::{
     EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine, PollInterval,
-    Source, TimerSource,
+    Source, Store, TimerSource,
 };
 use sourcefed_sim::{MemoryStore, Seed, SimClock};
 
@@ -16,6 +18,16 @@ use crate::check::Trace;
 use crate::input::ScriptedInputs;
 
 const NO_PENDING: &str = "sim: missing pending queue";
+// Mirrors the core store's generated name: positions.json.<pid>.<count>.tmp.
+const STORE_FILE: &str = "positions.json";
+// Keeps the seeded set below the core store's 500-entry scan bound.
+const MAX_OFFERED: usize = 120;
+// User-named files, one of which resembles a generated temp name.
+const USER_NAMES: [&str; 3] = [
+    "my-notes.txt",
+    "positions.json.backup",
+    "positions.json.notes.tmp",
+];
 
 /// Why a simulation run ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,7 +150,10 @@ pub fn simulate_with_trace(
         }
     }
 
-    record_cleanup(seed, &mut trace);
+    let cleanup = observe_cleanup(seed)?;
+    trace.cleanup_scanned = cleanup.offered;
+    trace.cleanup_removed = cleanup.removed;
+    trace.user_files_removed = cleanup.user_removed;
 
     Ok(Run {
         summary: Summary {
@@ -170,14 +185,61 @@ fn record_emitted(trace: &mut Trace, pending: &[Event]) {
     }
 }
 
-// Scripts cleanup counts from the run's seed, inside the core store's
-// bounds (scan <= 500, remove <= 100). No filesystem cleanup runs here, so
-// a simulated run is clean by construction.
-fn record_cleanup(seed: Seed, trace: &mut Trace) {
+// What one real `Store::open` observed in a directory of leftover temps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CleanupObservation {
+    // Generated temp entries offered to the open, before any bound.
+    offered: usize,
+    // Generated temps that disappeared during the open.
+    removed: usize,
+    // User-named files that disappeared during the open.
+    user_removed: usize,
+}
+
+// Writes the seeded generated temps and the user files into `dir`.
+fn seed_files(
+    dir: &Path,
+    seed: Seed,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Box<dyn Error>> {
     let mut draw = seed;
-    trace.cleanup_scanned = draw.pick_index(501);
-    trace.cleanup_removed = draw.pick_index(101);
-    trace.user_files_removed = 0;
+    let offered = draw.pick_index(MAX_OFFERED).saturating_add(1);
+    let generated: Vec<PathBuf> = (0..offered)
+        .map(|index| dir.join(format!("{STORE_FILE}.1.{index}.tmp")))
+        .collect();
+    let user_files: Vec<PathBuf> =
+        USER_NAMES.iter().map(|name| dir.join(name)).collect();
+
+    for path in generated.iter().chain(user_files.iter()) {
+        fs::write(path, b"stale")?;
+    }
+
+    Ok((generated, user_files))
+}
+
+// Opens a real store over `dir` and counts what its cleanup removed.
+fn observe_open(
+    dir: &Path,
+    generated: &[PathBuf],
+    user_files: &[PathBuf],
+) -> Result<CleanupObservation, Box<dyn Error>> {
+    Store::open(dir)?;
+
+    let removed = generated.iter().filter(|path| !path.exists()).count();
+    let user_removed = user_files.iter().filter(|path| !path.exists()).count();
+
+    Ok(CleanupObservation {
+        offered: generated.len(),
+        removed,
+        user_removed,
+    })
+}
+
+// Observes cleanup through the real store on a throwaway directory.
+fn observe_cleanup(seed: Seed) -> Result<CleanupObservation, Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let (generated, user_files) = seed_files(dir.path(), seed)?;
+
+    observe_open(dir.path(), &generated, &user_files)
 }
 
 // Records only the IDs of Ack inputs that were applied this run.
@@ -293,6 +355,9 @@ mod tests {
     };
 
     use super::*;
+
+    // The core store removes at most this many generated temps per open.
+    const MAX_REMOVE: usize = 100;
 
     fn named_event(id: &str) -> Event {
         let source = SourceName::new("sim".into()).unwrap();
@@ -610,14 +675,46 @@ mod tests {
     }
 
     #[test]
-    fn record_cleanup_records_the_seed_derived_counts() {
-        let mut trace = Trace::default();
+    fn a_real_open_removes_a_generated_temp_and_keeps_user_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated = dir.path().join("positions.json.1.1.tmp");
+        let notes = dir.path().join("my-notes.txt");
+        let lookalike = dir.path().join("positions.json.notes.tmp");
+        fs::write(&generated, b"stale").unwrap();
+        fs::write(&notes, b"keep").unwrap();
+        fs::write(&lookalike, b"keep").unwrap();
 
-        record_cleanup(Seed::from_u64(42), &mut trace);
+        let observed = observe_open(
+            dir.path(),
+            std::slice::from_ref(&generated),
+            &[notes.clone(), lookalike.clone()],
+        )
+        .unwrap();
 
-        assert_eq!(trace.cleanup_scanned, 216);
-        assert_eq!(trace.cleanup_removed, 67);
-        assert_eq!(trace.user_files_removed, 0);
+        assert_eq!(
+            observed,
+            CleanupObservation {
+                offered: 1,
+                removed: 1,
+                user_removed: 0,
+            }
+        );
+        assert!(!generated.exists());
+        assert!(notes.exists());
+        assert!(lookalike.exists());
+    }
+
+    #[test]
+    fn a_seeded_observation_reports_only_what_the_store_removed() {
+        let draw = Seed::from_u64(42);
+        let mut expected_draw = draw;
+        let expected = expected_draw.pick_index(MAX_OFFERED).saturating_add(1);
+
+        let observed = observe_cleanup(draw).unwrap();
+
+        assert_eq!(observed.offered, expected);
+        assert_eq!(observed.removed, expected.min(MAX_REMOVE));
+        assert_eq!(observed.user_removed, 0);
     }
 
     #[test]
@@ -793,23 +890,30 @@ mod tests {
             }
         );
         assert_eq!(
-            run.trace,
-            Trace {
-                emitted: vec![
-                    String::from("timer:sim:1970-01-01T00:00:01Z"),
-                    String::from("timer:sim:1970-01-01T00:00:02Z")
-                ],
-                printed: vec![
-                    String::from("timer:sim:1970-01-01T00:00:01Z"),
-                    String::from("timer:sim:1970-01-01T00:00:02Z")
-                ],
-                acked: vec![String::from("timer:sim:1970-01-01T00:00:01Z")],
-                replayed: Vec::new(),
-                cleanup_scanned: 281,
-                cleanup_removed: 35,
-                user_files_removed: 0
-            }
+            run.trace.emitted,
+            vec![
+                String::from("timer:sim:1970-01-01T00:00:01Z"),
+                String::from("timer:sim:1970-01-01T00:00:02Z")
+            ]
         );
+        assert_eq!(
+            run.trace.printed,
+            vec![
+                String::from("timer:sim:1970-01-01T00:00:01Z"),
+                String::from("timer:sim:1970-01-01T00:00:02Z")
+            ]
+        );
+        assert_eq!(
+            run.trace.acked,
+            vec![String::from("timer:sim:1970-01-01T00:00:01Z")]
+        );
+        assert_eq!(run.trace.replayed, Vec::<String>::new());
+
+        let mut draw = Seed::from_u64(1);
+        let offered = draw.pick_index(MAX_OFFERED).saturating_add(1);
+        assert_eq!(run.trace.cleanup_scanned, offered);
+        assert_eq!(run.trace.cleanup_removed, offered.min(MAX_REMOVE));
+        assert_eq!(run.trace.user_files_removed, 0);
         assert_eq!(Checker::check(&run.trace), Vec::new());
     }
 
