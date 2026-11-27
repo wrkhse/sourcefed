@@ -189,9 +189,7 @@ fn record_step_inputs(
 ) {
     record_acked(trace, acked);
 
-    if !trace.acked.is_empty() && engine.pending().is_some() {
-        record_replayed(trace, engine);
-    }
+    record_replayed(trace, engine);
 }
 
 // Records each acked ID that is present in pending after this step's inputs.
