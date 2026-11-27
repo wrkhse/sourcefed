@@ -53,12 +53,12 @@
           "source": "github",
           "kind": "comment",
           "summary": "github-actions[bot] commented on PR #42",
-          "body": "<!-- opencode-review --> Verdict: request changes. Please bound the request line before parsing and add a regression test.",
+          "body": "<!-- opencode-review --> Verdict: MERGE AS IS (no findings)",
           "actionable": true
         }
       },
       "evidence": {
-        "event": "source: github\nkind: comment\nsummary: github-actions[bot] commented on PR #42\nbody: <!-- opencode-review --> Verdict: request changes. Please bound the request line before parsing and add a regression test.\nactionable: yes",
+        "event": "source: github\nkind: comment\nsummary: github-actions[bot] commented on PR #42\nbody: <!-- opencode-review --> Verdict: MERGE AS IS (no findings)\nactionable: yes",
         "thread": "#42: Bound and cancel daemon navigations",
         "monitor": "GitHub wrkhse/chauffeur#42"
       }

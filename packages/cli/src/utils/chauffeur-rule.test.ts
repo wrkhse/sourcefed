@@ -90,15 +90,22 @@ describe("TRIAGE_RULE", () => {
   test("names the opencode-review marker before the noise clause", () => {
     const instructions = TRIAGE_RULE.strategy[0].ask.instructions;
     const marker = "<!-- opencode-review -->";
+    const author = "github-actions[bot]";
     const noiseClause = "Answer no for noise:";
     const markerIndex = instructions.indexOf(marker);
+    const authorIndex = instructions.indexOf(author);
     const noiseIndex = instructions.indexOf(noiseClause);
 
     assert.notEqual(markerIndex, -1, "the rule must name the review marker");
+    assert.notEqual(authorIndex, -1, "the rule must name the trusted author");
     assert.notEqual(noiseIndex, -1, "the rule must keep the noise clause");
     assert.ok(
       markerIndex < noiseIndex,
       "the review marker must be handled before the noise clause",
+    );
+    assert.ok(
+      authorIndex < noiseIndex,
+      "the trusted author must be handled before the noise clause",
     );
   });
 });
