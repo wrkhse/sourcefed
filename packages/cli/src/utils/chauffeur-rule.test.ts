@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -85,6 +86,37 @@ after(async () => {
     rmSync(directory, { recursive: true, force: true });
 });
 
+describe("TRIAGE_RULE", () => {
+  test("names the opencode-review marker before the noise clause", () => {
+    const instructions = TRIAGE_RULE.strategy[0].ask.instructions;
+    const marker = "<!-- opencode-review -->";
+    const author = "github-actions[bot]";
+    const noiseClause = "Answer no for noise:";
+    const markerIndex = instructions.indexOf(marker);
+    const authorIndex = instructions.indexOf(author);
+    const noiseIndex = instructions.indexOf(noiseClause);
+
+    assert.notEqual(markerIndex, -1, "the rule must name the review marker");
+    assert.notEqual(authorIndex, -1, "the rule must name the trusted author");
+    assert.notEqual(noiseIndex, -1, "the rule must keep the noise clause");
+    assert.ok(
+      markerIndex < noiseIndex,
+      "the review marker must be handled before the noise clause",
+    );
+    assert.ok(
+      authorIndex < noiseIndex,
+      "the trusted author must be handled before the noise clause",
+    );
+
+    const reviewException =
+      "Answer yes for events whose body starts with the HTML comment marker <!-- opencode-review --> AND whose summary names the trusted author github-actions[bot], so the coder sees the review verdict.";
+    assert.ok(
+      instructions.includes(reviewException),
+      "the rule must answer yes for marked reviews whose summary names github-actions[bot]",
+    );
+  });
+});
+
 describe("triageRulePath", () => {
   test("uses XDG_CONFIG_HOME when it is set", () => {
     assert.equal(
@@ -144,6 +176,27 @@ describe("installTriageRule", () => {
 
     assert.equal(second.status, "present");
     assert.equal(readFileSync(second.path, "utf8"), '{"edited":true}\n');
+  });
+
+  test("an explicit update overwrites a user-edited rule with the canonical text", async () => {
+    const env = environment();
+    const first = await installTriageRule({ name: "chauffeur-next", env });
+
+    writeFileSync(first.path, '{"edited":true}\n');
+    const updated = await installTriageRule({
+      name: "chauffeur-next",
+      env,
+      update: true,
+    });
+
+    assert.equal(updated.status, "updated");
+    assert.equal(updated.path, first.path);
+    assert.equal(
+      readFileSync(updated.path, "utf8"),
+      `${JSON.stringify(TRIAGE_RULE, null, 2)}\n`,
+    );
+    assert.equal(statSync(updated.path).mode & 0o777, 0o644);
+    assert.deepEqual(readdirSync(path.dirname(updated.path)), ["triage.json"]);
   });
 
   test("refuses the chauffeur name when no v2 daemon answers", async () => {

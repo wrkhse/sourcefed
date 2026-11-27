@@ -27,6 +27,23 @@
       },
       "elapsed_ms": 283
     },
+    "opencode-review-verdict": {
+      "origin": "hand-written",
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "comment",
+        "summary": "github-actions[bot] commented on PR #42",
+        "body": "<!-- opencode-review --> Verdict: MERGE AS IS (no findings)",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 338
+    },
     "approval": {
       "params": {
         "sessionID": "slice-2-triage-replay",

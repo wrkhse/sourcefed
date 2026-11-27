@@ -8,7 +8,7 @@ import { setupHost, setupSpec } from "../utils/setup.ts";
 export type SetupTarget = "all" | "opencode" | "pi" | "chauffeur";
 
 export type SetupArgs =
-  { target: SetupTarget; name: string } | { error: string };
+  { target: SetupTarget; name: string; update: boolean } | { error: string };
 
 function isSetupTarget(value: string | undefined): value is SetupTarget {
   return (
@@ -32,28 +32,40 @@ export function parseSetupArgs(args: string[]): SetupArgs {
   const index = args.findIndex(
     (arg) => arg === "--name" || arg.startsWith("--name="),
   );
+  const update = args.includes("--update");
+  let name = "chauffeur-next";
 
-  if (index === -1) return { target, name: "chauffeur-next" };
+  if (index !== -1) {
+    if (target !== "chauffeur") {
+      return {
+        error: `--name is only valid with the chauffeur target, not ${target}`,
+      };
+    }
 
-  if (target !== "chauffeur") {
+    const value =
+      args[index] === "--name"
+        ? args[index + 1]
+        : args[index].slice("--name=".length);
+
+    if (
+      value === undefined ||
+      !(CHAUFFEUR_NAMES as readonly string[]).includes(value)
+    ) {
+      return {
+        error: `--name needs a value of ${CHAUFFEUR_NAMES.join(" or ")}`,
+      };
+    }
+
+    name = value;
+  }
+
+  if (update && target !== "chauffeur") {
     return {
-      error: `--name is only valid with the chauffeur target, not ${target}`,
+      error: `--update is only valid with the chauffeur target, not ${target}`,
     };
   }
 
-  const value =
-    args[index] === "--name"
-      ? args[index + 1]
-      : args[index].slice("--name=".length);
-
-  if (
-    value === undefined ||
-    !(CHAUFFEUR_NAMES as readonly string[]).includes(value)
-  ) {
-    return { error: `--name needs a value of ${CHAUFFEUR_NAMES.join(" or ")}` };
-  }
-
-  return { target, name: value };
+  return { target, name, update };
 }
 
 export async function runSetup(args: string[]): Promise<void> {
@@ -74,7 +86,10 @@ export async function runSetup(args: string[]): Promise<void> {
     await setupHost("pi", ["install", `npm:${spec}`], `npm:${spec}`);
   }
   if (parsed.target === "chauffeur") {
-    const result = await installTriageRule({ name: parsed.name });
+    const result = await installTriageRule({
+      name: parsed.name,
+      update: parsed.update,
+    });
     printRuleInstall(result);
     if (result.status === "refused") process.exitCode = 1;
   }
@@ -98,6 +113,12 @@ function printRuleInstall(result: RuleInstall): void {
   }
   if (result.status === "present") {
     console.error(`[sourcefed] ${result.path} is already present; left as is`);
+    return;
+  }
+  if (result.status === "updated") {
+    console.error(
+      `[sourcefed] updated the sourcefed/triage rule at ${result.path}; Chauffeur v2 loads it on its next rule reload`,
+    );
     return;
   }
   if (result.status === "refused")

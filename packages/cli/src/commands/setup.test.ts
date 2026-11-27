@@ -7,6 +7,7 @@ describe("parseSetupArgs", () => {
     assert.deepEqual(parseSetupArgs([]), {
       target: "all",
       name: "chauffeur-next",
+      update: false,
     });
   });
 
@@ -14,14 +15,17 @@ describe("parseSetupArgs", () => {
     assert.deepEqual(parseSetupArgs(["opencode"]), {
       target: "opencode",
       name: "chauffeur-next",
+      update: false,
     });
     assert.deepEqual(parseSetupArgs(["pi"]), {
       target: "pi",
       name: "chauffeur-next",
+      update: false,
     });
     assert.deepEqual(parseSetupArgs(["chauffeur"]), {
       target: "chauffeur",
       name: "chauffeur-next",
+      update: false,
     });
   });
 
@@ -29,11 +33,29 @@ describe("parseSetupArgs", () => {
     assert.deepEqual(parseSetupArgs(["chauffeur", "--name", "chauffeur"]), {
       target: "chauffeur",
       name: "chauffeur",
+      update: false,
     });
     assert.deepEqual(parseSetupArgs(["chauffeur", "--name=chauffeur"]), {
       target: "chauffeur",
       name: "chauffeur",
+      update: false,
     });
+  });
+
+  test("reads --update only for the chauffeur target", () => {
+    assert.deepEqual(parseSetupArgs(["chauffeur", "--update"]), {
+      target: "chauffeur",
+      name: "chauffeur-next",
+      update: true,
+    });
+    assert.deepEqual(
+      parseSetupArgs(["chauffeur", "--name=chauffeur", "--update"]),
+      {
+        target: "chauffeur",
+        name: "chauffeur",
+        update: true,
+      },
+    );
   });
 
   test("names the allowed targets when the target is missing or unknown", () => {
@@ -72,6 +94,22 @@ describe("parseSetupArgs", () => {
 
       assert.ok("error" in parsed, args.join(" "));
       assert.match(parsed.error, /only valid with the chauffeur target/);
+    }
+  });
+
+  test("rejects --update with another target", () => {
+    for (const args of [
+      ["opencode", "--update"],
+      ["all", "--update"],
+      ["pi", "--update"],
+    ]) {
+      const parsed = parseSetupArgs(args);
+
+      assert.ok("error" in parsed, args.join(" "));
+      assert.match(
+        parsed.error,
+        /--update is only valid with the chauffeur target/,
+      );
     }
   });
 });
