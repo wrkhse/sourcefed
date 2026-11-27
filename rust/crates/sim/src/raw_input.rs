@@ -296,9 +296,7 @@ fn proof_seed() -> Seed {
     std::env::var(NAME)
         .unwrap_or_else(|_| panic!("{NAME} must be set to a valid hex seed"))
         .parse::<Seed>()
-        .unwrap_or_else(|_| {
-            panic!("{NAME} is set but is not a valid hex seed")
-        })
+        .unwrap_or_else(|_| panic!("{NAME} is set but is not a valid hex seed"))
 }
 
 /// Prints checker violations in the simulator's exact report format so a
@@ -371,11 +369,9 @@ mod tests {
         // valid, different ack: if the reader ignored its limit, that extra
         // ack would be published and the assertions below would fail.
         let other = "timer:sim:1970-01-01T00:00:02Z";
-        let seed_offset =
-            usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0);
-        let pad = " ".repeat(
-            MAX_INPUT_LINE_LEN + MAX_DISCARD_BYTES + 1 + seed_offset,
-        );
+        let seed_offset = usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0);
+        let pad =
+            " ".repeat(MAX_INPUT_LINE_LEN + MAX_DISCARD_BYTES + 1 + seed_offset);
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
         run.feed(lines.as_bytes()).unwrap();
