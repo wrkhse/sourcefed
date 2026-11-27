@@ -28,6 +28,7 @@
       "elapsed_ms": 283
     },
     "opencode-review-verdict": {
+      "origin": "hand-written",
       "params": {
         "sessionID": "slice-2-triage-replay",
         "monitorID": "slice-2-replay-42",

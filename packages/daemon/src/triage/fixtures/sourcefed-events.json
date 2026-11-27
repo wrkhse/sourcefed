@@ -34,6 +34,7 @@
     },
     {
       "id": "opencode-review-verdict",
+      "origin": "hand-written",
       "expected": {
         "deliver": true
       },

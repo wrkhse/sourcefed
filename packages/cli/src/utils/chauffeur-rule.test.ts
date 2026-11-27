@@ -107,6 +107,13 @@ describe("TRIAGE_RULE", () => {
       authorIndex < noiseIndex,
       "the trusted author must be handled before the noise clause",
     );
+
+    const reviewException =
+      "Answer yes for events whose body starts with the HTML comment marker <!-- opencode-review --> AND whose summary names the trusted author github-actions[bot], so the coder sees the review verdict.";
+    assert.ok(
+      instructions.includes(reviewException),
+      "the rule must answer yes for marked reviews whose summary names github-actions[bot]",
+    );
   });
 });
 

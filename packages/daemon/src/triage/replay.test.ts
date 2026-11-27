@@ -18,6 +18,7 @@ type ReplayParams = {
 
 type ReplayCase = {
   id: string;
+  origin?: "hand-written";
   monitor_source: MonitorRecord["source"];
   subject?: { title?: string };
   v1: { method: string; params: ReplayParams };
@@ -34,6 +35,7 @@ type V1Fixture = {
   replies: Record<
     string,
     {
+      origin?: "hand-written";
       params: ReplayParams;
       deliver: boolean;
       reply: { effects: unknown[] };
@@ -119,10 +121,16 @@ describe("sourcefed event replay", () => {
   });
 
   for (const replayCase of fixture.cases) {
-    test(`${replayCase.id} makes the evidence recorded with its v1 reply`, () => {
+    const handWritten = replayCase.origin === "hand-written";
+    const label = handWritten
+      ? `${replayCase.id} matches its hand-written expectation, not recorded v1 output`
+      : `${replayCase.id} makes the evidence recorded with its v1 reply`;
+
+    test(label, () => {
       const reply = v1.replies[replayCase.id];
 
       assert.ok(reply, `${replayCase.id} has no v1 reply`);
+      assert.equal(reply.origin, replayCase.origin, replayCase.id);
       assert.deepEqual(reply.params, replayCase.v1.params, replayCase.id);
       assert.equal(reply.deliver, replayCase.expected.deliver, replayCase.id);
 
