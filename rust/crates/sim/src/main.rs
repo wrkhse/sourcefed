@@ -4,6 +4,7 @@ mod args;
 mod check;
 mod driver;
 mod input;
+mod raw_input;
 
 use std::ffi::OsString;
 use std::io;

@@ -56,6 +56,68 @@ pub fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
     mpsc::sync_channel(MAX_QUEUED_INPUTS)
 }
 
+/// Seam for pausing the reader between reading a line and parsing it.
+#[cfg(any(test, feature = "sim-seam"))]
+pub mod sim_seam {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Mutex, PoisonError};
+    use std::time::Duration;
+
+    // Ample for a scripted handoff, yet a stuck gate fails instead of hanging.
+    const WAIT: Duration = Duration::from_secs(3);
+
+    /// Signals once parsing starts and waits for permission to continue.
+    #[derive(Debug)]
+    pub struct HoldGate {
+        entered: Sender<()>,
+        resume: Mutex<Receiver<()>>,
+        waiting: AtomicBool,
+    }
+
+    impl HoldGate {
+        /// Builds a gate that signals `entered` and waits on `resume`.
+        #[must_use]
+        pub const fn new(entered: Sender<()>, resume: Receiver<()>) -> Self {
+            Self {
+                entered,
+                resume: Mutex::new(resume),
+                waiting: AtomicBool::new(false),
+            }
+        }
+
+        /// Whether this gate is between signalling and resuming.
+        #[must_use]
+        pub fn is_waiting(&self) -> bool {
+            self.waiting.load(Ordering::SeqCst)
+        }
+
+        /// Signals the observer, then waits for the resume token.
+        ///
+        /// # Panics
+        /// Panics when the observer is gone, the token channel closes, or
+        /// the token does not arrive within `WAIT`.
+        pub fn wait(&self) {
+            self.waiting.store(true, Ordering::SeqCst);
+
+            assert!(
+                self.entered.send(()).is_ok(),
+                "hold gate: entered channel closed"
+            );
+
+            let resume = self.resume.lock().unwrap_or_else(PoisonError::into_inner);
+
+            assert!(
+                resume.recv_timeout(WAIT).is_ok(),
+                "hold gate: no resume token within {WAIT:?}"
+            );
+            drop(resume);
+
+            self.waiting.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 // The reader locks the handoff slot after reading a complete line and holds
 // it through parsing and publication. Shutdown can close the slot first,
 // or take the input already being prepared. Neither operation holds the
@@ -64,8 +126,8 @@ pub fn input_channel() -> (SyncSender<Input>, Receiver<Input>) {
 pub struct ReaderState {
     phase: AtomicU8,
     held: Mutex<Held>,
-    #[cfg(test)]
-    hold_gate: Option<tests::HoldGate>,
+    #[cfg(any(test, feature = "sim-seam"))]
+    hold_gate: Option<sim_seam::HoldGate>,
 }
 
 #[derive(Debug)]
@@ -111,6 +173,21 @@ impl ReaderState {
         self.phase.swap(Self::HALTED, Ordering::SeqCst) == Self::SENDING
     }
 
+    /// Installs the gate that pauses this reader at its next handoff.
+    #[cfg(any(test, feature = "sim-seam"))]
+    pub fn set_hold_gate(&mut self, gate: sim_seam::HoldGate) {
+        self.hold_gate = Some(gate);
+    }
+
+    /// Whether the installed gate is currently holding the reader.
+    #[cfg(any(test, feature = "sim-seam"))]
+    #[must_use]
+    pub fn gate_is_held(&self) -> bool {
+        self.hold_gate
+            .as_ref()
+            .is_some_and(sim_seam::HoldGate::is_waiting)
+    }
+
     // Parses and publishes one bounded line as a single handoff. False if
     // finish already closed the slot.
     fn hold(
@@ -122,7 +199,7 @@ impl ReaderState {
             return Ok(false);
         };
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "sim-seam"))]
         if let Some(gate) = &self.hold_gate {
             gate.wait();
         }
@@ -642,19 +719,6 @@ mod tests {
         true
     }
 
-    #[derive(Debug)]
-    pub struct HoldGate {
-        entered: mpsc::Sender<()>,
-        resume: Mutex<Receiver<()>>,
-    }
-
-    impl HoldGate {
-        pub fn wait(&self) {
-            self.entered.send(()).unwrap();
-            self.resume.lock().unwrap().recv_timeout(WAIT).unwrap();
-        }
-    }
-
     // Serves `lines` and halts the reader as their last byte is read, the
     // way a run ends just after a line reaches the reader.
     struct HaltsWhenRead<'a> {
@@ -941,10 +1005,9 @@ mod tests {
         let (sender, mut inputs) = inputs();
         let (entered, holding) = mpsc::channel();
         let (resume, released) = mpsc::channel();
-        Arc::get_mut(&mut inputs.reader).unwrap().hold_gate = Some(HoldGate {
-            entered,
-            resume: Mutex::new(released),
-        });
+        Arc::get_mut(&mut inputs.reader)
+            .unwrap()
+            .set_hold_gate(sim_seam::HoldGate::new(entered, released));
         let state = Arc::clone(&inputs.reader);
         let reader_state = Arc::clone(&state);
         let line = format!("ack {ID}\n");
