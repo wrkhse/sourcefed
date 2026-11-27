@@ -27,7 +27,7 @@ import type {
 import { NotifyingEventSink, targetKey } from "./utils";
 
 const DELIVERY_LOG_LIMIT = 100;
-/** Deliveries remembered per target within one run; a restart is allowed to re-deliver. */
+/** Acknowledged deliveries remembered per target within one run; a restart is allowed to re-deliver. */
 export const ADMITTED_LIMIT = 2048;
 type DeliverySource = MonitorRecord["delivery"];
 
@@ -47,7 +47,7 @@ export class SourcefedDaemon {
   >();
   private readonly emitChains = new Map<string, Promise<void>>();
   private readonly deliveryLog = new Map<string, QueuedMonitorEvent[]>();
-  /** Delivered event ids per target and the delivery source that admitted them, oldest first. */
+  /** Acknowledged event ids per target and the delivery source that admitted them, oldest first. */
   private readonly admitted = new Map<string, Map<string, DeliverySource>>();
   private releaseExclusive?: () => Promise<void>;
   private stopHearingEndings?: () => void;
@@ -255,6 +255,11 @@ export class SourcefedDaemon {
     const queued = await this.queue.read(target);
     const acked = queued.filter((event) => eventIDs.includes(event.id));
     await this.queue.acknowledge(target, eventIDs);
+    const liveMonitors = (await this.service.list()).filter(isLive);
+    const deliveryByMonitor = new Map(
+      liveMonitors.map((monitor) => [monitor.id, monitor.delivery] as const),
+    );
+    this.admit(targetKey(target), acked, deliveryByMonitor);
     if (acked.length > 0) this.appendLog(target, acked);
     const receivedByListener = this.received.get(targetKey(target));
     if (receivedByListener) {
@@ -386,7 +391,6 @@ export class SourcefedDaemon {
       for (const event of deliverable) received.add(event.id);
       try {
         await listener(deliverable);
-        this.admit(key, deliverable, deliveryByMonitor);
         return;
       } catch (error) {
         console.error(
@@ -398,7 +402,7 @@ export class SourcefedDaemon {
     }
   }
 
-  /** Remember only deliveries a listener accepted, so a failed listener still gets its retry. */
+  /** Remember only acknowledged deliveries, so an unacknowledged event is still delivered on reconnect. */
   private admit(
     key: string,
     events: QueuedMonitorEvent[],
