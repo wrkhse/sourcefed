@@ -27,6 +27,9 @@ import type {
 import { NotifyingEventSink, targetKey } from "./utils";
 
 const DELIVERY_LOG_LIMIT = 100;
+/** Deliveries remembered per target within one run; a restart is allowed to re-deliver. */
+export const ADMITTED_LIMIT = 2048;
+type DeliverySource = MonitorRecord["delivery"];
 
 export class SourcefedDaemon {
   readonly runtime: MonitorRuntime;
@@ -44,6 +47,8 @@ export class SourcefedDaemon {
   >();
   private readonly emitChains = new Map<string, Promise<void>>();
   private readonly deliveryLog = new Map<string, QueuedMonitorEvent[]>();
+  /** Delivered event ids per target and the delivery source that admitted them, oldest first. */
+  private readonly admitted = new Map<string, Map<string, DeliverySource>>();
   private releaseExclusive?: () => Promise<void>;
   private stopHearingEndings?: () => void;
   private started = false;
@@ -331,8 +336,10 @@ export class SourcefedDaemon {
 
     // A stopped or removed monitor must go silent: drop its still-queued events
     // instead of replaying them to subscribers. An ended one still owes its last events.
-    const live = new Set(
-      (await this.service.list()).filter(isLive).map((monitor) => monitor.id),
+    const liveMonitors = (await this.service.list()).filter(isLive);
+    const live = new Set(liveMonitors.map((monitor) => monitor.id));
+    const deliveryByMonitor = new Map(
+      liveMonitors.map((monitor) => [monitor.id, monitor.delivery] as const),
     );
     await this.dropQueued(
       target,
@@ -355,23 +362,58 @@ export class SourcefedDaemon {
     );
     if (fresh.length === 0) return;
 
+    // The queue can offer the same id again after an ack, or through another
+    // delivery source after a switch; a warning is the whole suppression.
+    const ledger = this.admitted.get(key);
+    for (const event of fresh) {
+      if (!ledger?.has(event.id)) continue;
+      const admittedVia = ledger.get(event.id);
+      const receivedVia = deliveryByMonitor.get(event.monitorID);
+      console.warn(
+        `[sourcefed] duplicate delivery suppressed: ${event.id} (admitted via ${admittedVia ?? "unknown"}, received via ${receivedVia ?? "unknown"})`,
+        { id: event.id, admittedVia, receivedVia },
+      );
+    }
+    const deliverable = fresh.filter((event) => !ledger?.has(event.id));
+    if (deliverable.length === 0) return;
+
     for (const listener of [...listeners]) {
       let received = receivedByListener.get(listener);
       if (!received) {
         received = new Set();
         receivedByListener.set(listener, received);
       }
-      for (const event of fresh) received.add(event.id);
+      for (const event of deliverable) received.add(event.id);
       try {
-        await listener(fresh);
+        await listener(deliverable);
+        this.admit(key, deliverable, deliveryByMonitor);
         return;
       } catch (error) {
         console.error(
           `[sourcefed] event delivery failed: ${error instanceof Error ? error.message : String(error)}`,
         );
-        for (const event of fresh) received.delete(event.id);
+        for (const event of deliverable) received.delete(event.id);
         if (received.size === 0) receivedByListener.delete(listener);
       }
+    }
+  }
+
+  /** Remember only deliveries a listener accepted, so a failed listener still gets its retry. */
+  private admit(
+    key: string,
+    events: QueuedMonitorEvent[],
+    deliveryByMonitor: Map<string, DeliverySource>,
+  ): void {
+    let ledger = this.admitted.get(key);
+    if (!ledger) {
+      ledger = new Map();
+      this.admitted.set(key, ledger);
+    }
+    for (const event of events) {
+      const source = deliveryByMonitor.get(event.monitorID);
+      if (!source) continue;
+      ledger.set(event.id, source);
+      evictOldestAdmitted(ledger);
     }
   }
 
@@ -431,6 +473,18 @@ export class SourcefedDaemon {
         .filter((event) => event.monitorID === monitorID)
         .map((event) => event.id),
     );
+  }
+}
+
+/** Map iteration is insertion order, so the oldest admission is the first key. */
+export function evictOldestAdmitted<T>(
+  ledger: Map<string, T>,
+  limit = ADMITTED_LIMIT,
+): void {
+  while (ledger.size > limit) {
+    const oldest = ledger.keys().next().value;
+    if (oldest === undefined) return;
+    ledger.delete(oldest);
   }
 }
 
