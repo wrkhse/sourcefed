@@ -883,7 +883,7 @@ mod tests {
             inputs.handle(&mut engine, input).unwrap();
         }
 
-        assert_eq!(read.recv_timeout(DRAIN_TEST_WAIT), Ok(()));
+        assert_eq!(read.recv_timeout(WAIT), Ok(()));
 
         let (inputs, engine) =
             finish_within_timeout(inputs, engine, false, DRAIN_TEST_WAIT);
