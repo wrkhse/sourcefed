@@ -6,11 +6,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jiff::Timestamp;
 use sourcefed_core::{
-    EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine, PollInterval,
-    Source, Store, TimerSource,
+    EngineState, Event, EventId, MonitorConfig, MonitorId, PollEngine, PollError,
+    PollInterval, PollOutcome, PollRequest, Source, SourceName, Store, TimerSource,
 };
 use sourcefed_sim::{ClockFault, MemoryStore, Seed, SimClock};
 
@@ -56,6 +57,24 @@ pub struct Run {
     pub trace: Trace,
 }
 
+// Counts source poll attempts, so fault observation sees a real poll rather
+// than a queue change that is absent on the first poll.
+struct CountingSource {
+    inner: TimerSource,
+    polls: Arc<AtomicUsize>,
+}
+
+impl Source for CountingSource {
+    fn name(&self) -> &SourceName {
+        self.inner.name()
+    }
+
+    fn poll(&self, request: PollRequest) -> Result<PollOutcome, PollError> {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        self.inner.poll(request)
+    }
+}
+
 /// Builds a real engine over a timer, the virtual clock and memory store.
 ///
 /// # Errors
@@ -63,25 +82,42 @@ pub struct Run {
 /// be built.
 #[cfg(test)]
 pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
-    build_engine().map(|(engine, _)| engine)
+    build_engine().map(|(engine, _, _)| engine)
 }
 
-// Returns the engine with the clock it reads, so faults can be scripted.
-fn build_engine() -> Result<(PollEngine<MemoryStore>, Arc<SimClock>), String> {
-    let source = TimerSource::new("sim".into(), 1).map_err(|e| e.to_string())?;
+// The engine, the clock it reads and the counter shared with its source.
+type BuiltEngine = (PollEngine<MemoryStore>, Arc<SimClock>, Arc<AtomicUsize>);
+
+fn build_engine() -> Result<BuiltEngine, String> {
+    let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+    let (engine, polls) = build_engine_with(Arc::clone(&clock))?;
+
+    Ok((engine, clock, polls))
+}
+
+// Builds the same engine around an injected clock and returns the counter
+// shared with its source. A fault is scripted after this call, so the
+// constructor's initial reading stays on the empty script.
+fn build_engine_with(
+    clock: Arc<SimClock>,
+) -> Result<(PollEngine<MemoryStore>, Arc<AtomicUsize>), String> {
+    let timer = TimerSource::new("sim".into(), 1).map_err(|e| e.to_string())?;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let source = CountingSource {
+        inner: timer,
+        polls: Arc::clone(&polls),
+    };
     let config = MonitorConfig {
         id: MonitorId::new("sim".into()).map_err(|e| e.to_string())?,
         source: source.name().clone(),
         poll_interval: PollInterval::from_secs(1).map_err(|e| e.to_string())?,
     };
-    let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
 
-    let shared: Arc<SimClock> = Arc::clone(&clock);
     let engine =
-        PollEngine::new(config, Arc::new(source), MemoryStore::new(), shared)
+        PollEngine::new(config, Arc::new(source), MemoryStore::new(), clock)
             .map_err(|e| e.to_string())?;
 
-    Ok((engine, clock))
+    Ok((engine, polls))
 }
 
 /// Runs at most `steps` bounded polls, writing new pending events as lines.
@@ -106,7 +142,21 @@ pub fn simulate_with_trace(
     steps: u32,
     out: &mut impl Write,
 ) -> Result<Run, Box<dyn Error>> {
-    let (mut engine, clock) = build_engine()?;
+    let (engine, clock, polls) = build_engine()?;
+
+    run_with_clock(seed, steps, out, engine, &clock, &polls)
+}
+
+// Runs one simulation over the engine and the clock it shares. Tests inject
+// a clock built around the engine, so a fault can be scripted for a step.
+fn run_with_clock(
+    seed: Seed,
+    steps: u32,
+    out: &mut impl Write,
+    mut engine: PollEngine<MemoryStore>,
+    clock: &SimClock,
+    polls: &AtomicUsize,
+) -> Result<Run, Box<dyn Error>> {
     let mut inputs = ScriptedInputs::new();
     let mut printed = HashSet::new();
     let mut trace = Trace::default();
@@ -119,11 +169,18 @@ pub fn simulate_with_trace(
         taken = index.saturating_add(1);
         let left = steps.saturating_sub(index);
 
-        let before = engine.pending();
         let logged = clock.fault_log().len();
+        let polls_before = polls.load(Ordering::Relaxed);
         let state = engine.run(1)?;
         let after = engine.pending();
-        observe_clock_faults(&mut trace, &clock, logged, state, before != after);
+        let polls_after = polls.load(Ordering::Relaxed);
+        observe_clock_faults(
+            &mut trace,
+            clock,
+            logged,
+            state,
+            polls_after.saturating_sub(polls_before),
+        );
 
         if state != EngineState::Running {
             outcome = Outcome::Ended;
@@ -177,20 +234,20 @@ pub fn simulate_with_trace(
 }
 
 // Compares each fault consumed by this run with what the engine did. A past
-// fault must stop it; a future fault must defer without producing a poll.
+// fault must stop it; a future fault must defer without a source poll.
 fn observe_clock_faults(
     trace: &mut Trace,
     clock: &SimClock,
     logged: usize,
     state: EngineState,
-    pending_changed: bool,
+    polls_delta: usize,
 ) {
     for fault in clock.fault_log().into_iter().skip(logged) {
         match fault {
             ClockFault::Past if state != EngineState::Stopped => {
                 trace.past_without_stop = trace.past_without_stop.saturating_add(1);
             }
-            ClockFault::Future if pending_changed => {
+            ClockFault::Future if polls_delta > 0 => {
                 trace.future_polled = trace.future_polled.saturating_add(1);
             }
             ClockFault::Past | ClockFault::Future => {}
@@ -380,8 +437,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use sourcefed_core::{
-        Event, EventKind, EventSubject, Position, PositionKey, SourceName,
-        StateStore,
+        Clock, ClockError, Event, EventKind, EventSubject, Position, PositionKey,
+        SourceName, StateStore,
     };
 
     use super::*;
@@ -976,23 +1033,27 @@ mod tests {
     fn scripted_past_and_future_faults_are_observed_without_violations() {
         use crate::check::{Checker, Guarantee, Violation};
 
-        let (mut engine, clock) = build_engine().unwrap();
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let (mut engine, polls) = build_engine_with(Arc::clone(&clock)).unwrap();
         let mut trace = Trace::default();
 
         // A future fault defers the first poll and leaves no queue.
         clock.script(Err(ClockFault::Future));
         let before = engine.pending();
         let logged = clock.fault_log().len();
+        let polls_before = polls.load(Ordering::Relaxed);
         let future_state = engine.run(1).unwrap();
         let after = engine.pending();
+        let polls_after = polls.load(Ordering::Relaxed);
         observe_clock_faults(
             &mut trace,
             &clock,
             logged,
             future_state,
-            before != after,
+            polls_after.saturating_sub(polls_before),
         );
 
+        assert_eq!(polls_before, polls_after);
         assert_eq!(future_state, EngineState::Running);
         assert_eq!(before, None);
         assert_eq!(after, None);
@@ -1001,17 +1062,22 @@ mod tests {
         clock.script(Err(ClockFault::Past));
         let before = engine.pending();
         let logged = clock.fault_log().len();
+        let polls_before = polls.load(Ordering::Relaxed);
         let past_state = engine.run(1).unwrap();
         let after = engine.pending();
+        let polls_after = polls.load(Ordering::Relaxed);
         observe_clock_faults(
             &mut trace,
             &clock,
             logged,
             past_state,
-            before != after,
+            polls_after.saturating_sub(polls_before),
         );
 
+        assert_eq!(polls_before, polls_after);
         assert_eq!(past_state, EngineState::Stopped);
+        assert_eq!(before, None);
+        assert_eq!(after, None);
         assert_eq!(
             clock.fault_log(),
             vec![ClockFault::Future, ClockFault::Past]
@@ -1027,5 +1093,72 @@ mod tests {
                 .collect::<Vec<Violation>>(),
             Vec::<Violation>::new()
         );
+    }
+
+    #[test]
+    fn a_past_fault_without_a_stop_is_counted_exactly() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.script(Err(ClockFault::Past));
+
+        assert_eq!(clock.now(), Err(ClockError::Past));
+        assert_eq!(clock.fault_log(), vec![ClockFault::Past]);
+
+        let mut trace = Trace::default();
+        observe_clock_faults(&mut trace, &clock, 0, EngineState::Running, 0);
+
+        assert_eq!(trace.past_without_stop, 1);
+        assert_eq!(trace.future_polled, 0);
+    }
+
+    #[test]
+    fn a_future_fault_with_one_poll_is_counted_exactly() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.script(Err(ClockFault::Future));
+
+        assert_eq!(clock.now(), Err(ClockError::Future));
+        assert_eq!(clock.fault_log(), vec![ClockFault::Future]);
+
+        let mut trace = Trace::default();
+        observe_clock_faults(&mut trace, &clock, 0, EngineState::Running, 1);
+
+        assert_eq!(trace.future_polled, 1);
+        assert_eq!(trace.past_without_stop, 0);
+    }
+
+    #[test]
+    fn a_future_fault_without_a_poll_counts_none() {
+        let clock = SimClock::new(Timestamp::UNIX_EPOCH);
+        clock.script(Err(ClockFault::Future));
+
+        assert_eq!(clock.now(), Err(ClockError::Future));
+
+        let mut trace = Trace::default();
+        observe_clock_faults(&mut trace, &clock, 0, EngineState::Running, 0);
+
+        assert_eq!(trace.future_polled, 0);
+        assert_eq!(trace.past_without_stop, 0);
+    }
+
+    #[test]
+    fn a_future_fault_step_with_no_source_poll_reports_cleanly() {
+        let clock = Arc::new(SimClock::new(Timestamp::UNIX_EPOCH));
+        let (engine, polls) = build_engine_with(Arc::clone(&clock)).unwrap();
+        clock.script(Err(ClockFault::Future));
+        let mut out = Vec::new();
+
+        let run = run_with_clock(
+            Seed::from_u64(1),
+            1,
+            &mut out,
+            engine,
+            clock.as_ref(),
+            &polls,
+        )
+        .unwrap();
+
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
+        assert_eq!(clock.fault_log(), vec![ClockFault::Future]);
+        assert_eq!(run.trace.future_polled, 0);
+        assert_eq!(run.trace.past_without_stop, 0);
     }
 }
