@@ -289,13 +289,16 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
     )?)
 }
 
-/// Proof seed supplied by CI, or a fixed seed when run locally.
+/// Proof seed supplied by CI. Panics when it is missing or invalid.
 #[cfg(test)]
 fn proof_seed() -> Seed {
-    std::env::var("SOURCEFED_PROOF_SEED")
-        .ok()
-        .and_then(|hex| hex.parse::<Seed>().ok())
-        .unwrap_or_else(|| Seed::from_u64(1))
+    const NAME: &str = "SOURCEFED_PROOF_SEED";
+    std::env::var(NAME)
+        .unwrap_or_else(|_| panic!("{NAME} must be set to a valid hex seed"))
+        .parse::<Seed>()
+        .unwrap_or_else(|_| {
+            panic!("{NAME} is set but is not a valid hex seed")
+        })
 }
 
 /// Prints checker violations in the simulator's exact report format so a
@@ -318,6 +321,9 @@ mod tests {
     use super::*;
 
     const ID: &str = "timer:sim:1970-01-01T00:00:01Z";
+    // The reader discards a line past its own limit plus a discard budget.
+    const MAX_INPUT_LINE_LEN: usize = 512;
+    const MAX_DISCARD_BYTES: usize = 65_536;
 
     // The first poll sets the timer position; the second emits one event.
     fn with_pending() -> RawRun {
@@ -336,7 +342,7 @@ mod tests {
         run.feed(line.as_bytes()).unwrap();
         run.finish().unwrap();
 
-        report_violations(proof_seed(), run.trace());
+        report_violations(Seed::from_u64(1), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
@@ -365,8 +371,10 @@ mod tests {
         // valid, different ack: if the reader ignored its limit, that extra
         // ack would be published and the assertions below would fail.
         let other = "timer:sim:1970-01-01T00:00:02Z";
+        let seed_offset =
+            usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0);
         let pad = " ".repeat(
-            66049 + usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0),
+            MAX_INPUT_LINE_LEN + MAX_DISCARD_BYTES + 1 + seed_offset,
         );
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
