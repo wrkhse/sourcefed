@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { chauffeurSocket, probeChauffeur } from "@sourcefed/daemon";
@@ -122,9 +122,12 @@ export async function installTriageRule(options: {
   if (existsSync(file)) {
     if (!update) return { status: "present", path: file };
 
-    await writeFile(file, JSON.stringify(TRIAGE_RULE, null, 2) + "\n", {
-      mode: 0o644,
-    });
+    // Rename a complete sibling file into place so a partial write cannot
+    // corrupt the installed rule, then set its mode explicitly.
+    const temporary = `${file}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(TRIAGE_RULE, null, 2)}\n`);
+    await rename(temporary, file);
+    await chmod(file, 0o644);
     return { status: "updated", path: file };
   }
 

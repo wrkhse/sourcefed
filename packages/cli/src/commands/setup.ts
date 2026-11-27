@@ -8,8 +8,7 @@ import { setupHost, setupSpec } from "../utils/setup.ts";
 export type SetupTarget = "all" | "opencode" | "pi" | "chauffeur";
 
 export type SetupArgs =
-  | { target: SetupTarget; name: string; update: boolean }
-  | { error: string };
+  { target: SetupTarget; name: string; update: boolean } | { error: string };
 
 function isSetupTarget(value: string | undefined): value is SetupTarget {
   return (

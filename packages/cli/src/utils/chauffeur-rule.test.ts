@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -85,6 +86,23 @@ after(async () => {
     rmSync(directory, { recursive: true, force: true });
 });
 
+describe("TRIAGE_RULE", () => {
+  test("names the opencode-review marker before the noise clause", () => {
+    const instructions = TRIAGE_RULE.strategy[0].ask.instructions;
+    const marker = "<!-- opencode-review -->";
+    const noiseClause = "Answer no for noise:";
+    const markerIndex = instructions.indexOf(marker);
+    const noiseIndex = instructions.indexOf(noiseClause);
+
+    assert.notEqual(markerIndex, -1, "the rule must name the review marker");
+    assert.notEqual(noiseIndex, -1, "the rule must keep the noise clause");
+    assert.ok(
+      markerIndex < noiseIndex,
+      "the review marker must be handled before the noise clause",
+    );
+  });
+});
+
 describe("triageRulePath", () => {
   test("uses XDG_CONFIG_HOME when it is set", () => {
     assert.equal(
@@ -164,6 +182,7 @@ describe("installTriageRule", () => {
       `${JSON.stringify(TRIAGE_RULE, null, 2)}\n`,
     );
     assert.equal(statSync(updated.path).mode & 0o777, 0o644);
+    assert.deepEqual(readdirSync(path.dirname(updated.path)), ["triage.json"]);
   });
 
   test("refuses the chauffeur name when no v2 daemon answers", async () => {
