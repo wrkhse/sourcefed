@@ -21,12 +21,12 @@ struct ChildGuard(Child);
 
 impl ChildGuard {
     #[cfg(test)]
-    fn stdin(&mut self) -> Option<ChildStdin> {
+    const fn stdin(&mut self) -> Option<ChildStdin> {
         self.0.stdin.take()
     }
 
     #[cfg(test)]
-    fn stdout(&mut self) -> Option<ChildStdout> {
+    const fn stdout(&mut self) -> Option<ChildStdout> {
         self.0.stdout.take()
     }
 
