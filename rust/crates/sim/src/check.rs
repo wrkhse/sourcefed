@@ -111,4 +111,25 @@ mod tests {
         assert_clean(&base_trace(SEED_DELIVERY));
         assert_clean(&acked_only);
     }
+
+    #[test]
+    fn a_guarantee_displays_its_name_exactly() {
+        assert_eq!(
+            Guarantee::AtLeastOnceDelivery.to_string(),
+            "AtLeastOnceDelivery"
+        );
+    }
+
+    #[test]
+    fn a_violation_displays_its_guarantee_and_reason_exactly() {
+        let violation = Violation {
+            guarantee: Guarantee::AtLeastOnceDelivery,
+            reason: String::from("missing event-7"),
+        };
+
+        assert_eq!(
+            violation.to_string(),
+            "AtLeastOnceDelivery: missing event-7"
+        );
+    }
 }

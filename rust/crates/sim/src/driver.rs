@@ -239,6 +239,20 @@ mod tests {
 
     use super::*;
 
+    fn named_event(id: &str) -> Event {
+        let source = SourceName::new("sim".into()).unwrap();
+        let subject = EventSubject::new(source, "sim".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
     fn engine_with_pending(events: &[Event]) -> PollEngine<MemoryStore> {
         let source = TimerSource::new("sim".into(), 1).unwrap();
         let config = MonitorConfig {
@@ -497,5 +511,68 @@ mod tests {
         forget_acked(&engine, &mut seen);
 
         assert_eq!(seen, HashSet::from([second.id().clone()]));
+    }
+
+    #[test]
+    fn record_emitted_adds_each_new_id_once() {
+        let existing = named_event("existing");
+        let fresh = named_event("fresh");
+        let mut trace = Trace {
+            emitted: vec![String::from("existing")],
+            ..Default::default()
+        };
+
+        record_emitted(&mut trace, &[existing, fresh]);
+
+        assert_eq!(
+            trace.emitted,
+            vec![String::from("existing"), String::from("fresh")]
+        );
+        assert_eq!(trace.printed, Vec::<String>::new());
+        assert_eq!(trace.acked, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_emitted_but_unprinted_id_reaches_the_checker_as_a_violation() {
+        use crate::check::Checker;
+
+        let event = named_event("emitted-only");
+        let mut trace = Trace::default();
+
+        record_emitted(&mut trace, std::slice::from_ref(&event));
+
+        assert_eq!(trace.emitted, vec![String::from("emitted-only")]);
+        assert_eq!(trace.printed, Vec::<String>::new());
+        assert_eq!(
+            Checker::check(&trace),
+            vec![crate::check::Violation {
+                guarantee: crate::check::Guarantee::AtLeastOnceDelivery,
+                reason: String::from(
+                    "emitted event emitted-only was neither printed nor acked"
+                ),
+            }]
+        );
+    }
+
+    #[test]
+    fn record_acked_adds_only_missing_ids_once() {
+        let present = named_event("present");
+        let engine = engine_with_pending(&[present]);
+        let mut trace = Trace {
+            emitted: vec![
+                String::from("present"),
+                String::from("acked-before"),
+                String::from("gone"),
+            ],
+            acked: vec![String::from("acked-before")],
+            ..Default::default()
+        };
+
+        record_acked(&mut trace, &engine);
+
+        assert_eq!(
+            trace.acked,
+            vec![String::from("acked-before"), String::from("gone")]
+        );
     }
 }

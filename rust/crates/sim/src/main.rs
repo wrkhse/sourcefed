@@ -91,4 +91,40 @@ mod tests {
 
         assert_eq!(error, NON_UTF8);
     }
+
+    #[test]
+    fn commit_returns_the_configured_commit() {
+        let expected = std::env::var("SOURCEFED_COMMIT")
+            .unwrap_or_else(|_| String::from("local"));
+
+        assert_eq!(commit(), expected);
+    }
+
+    #[test]
+    fn a_violating_report_fails_and_a_clean_report_succeeds() {
+        use crate::check::Trace;
+        use crate::driver::{Outcome, Summary};
+        use sourcefed_sim::Seed;
+
+        let seed = Seed::from_u64(1);
+        let summary = Summary {
+            steps: 1,
+            events: 0,
+            outcome: Outcome::Budget,
+        };
+        let clean = driver::Run {
+            summary,
+            trace: Trace::default(),
+        };
+        let violating = driver::Run {
+            summary,
+            trace: Trace {
+                emitted: vec![String::from("lost")],
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(report(seed, &clean), ExitCode::SUCCESS);
+        assert_eq!(report(seed, &violating), ExitCode::FAILURE);
+    }
 }
