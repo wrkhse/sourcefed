@@ -129,10 +129,7 @@ pub fn simulate_with_trace(
             inputs.apply_next(&mut engine)?
         };
 
-        record_acked(&mut trace, inputs.acked_ids());
-        if had_pending {
-            record_replayed(&mut trace, &engine)?;
-        }
+        record_step_inputs(&mut trace, &engine, inputs.acked_ids())?;
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -180,6 +177,26 @@ fn record_acked(trace: &mut Trace, acked: &[EventId]) {
             trace.acked.push(id);
         }
     }
+}
+
+// Records applied acks and any acked ID replayed after this step's inputs.
+// A step whose snapshot had no pending queue still runs replay detection:
+// only the priming step, with no acks and no queue, needs no replay read.
+//
+// # Errors
+// Returns NO_PENDING when acks exist and the queue cannot be read.
+fn record_step_inputs(
+    trace: &mut Trace,
+    engine: &PollEngine<MemoryStore>,
+    acked: &[EventId],
+) -> Result<(), Box<dyn Error>> {
+    record_acked(trace, acked);
+
+    if !trace.acked.is_empty() {
+        record_replayed(trace, engine)?;
+    }
+
+    Ok(())
 }
 
 // Records each acked ID that is present in pending after this step's inputs.
@@ -634,6 +651,30 @@ mod tests {
             Some(String::from("sim: missing pending queue"))
         );
         assert_eq!(trace.replayed, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_replayed_ack_after_an_empty_snapshot_reaches_the_checker() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let id = String::from("returning-on-empty-snapshot");
+        let acked = [EventId::new(id.clone()).unwrap()];
+        let mut trace = Trace::default();
+        // The step starts with no acks and no queue; its applied ack puts
+        // the ID back into pending before replay detection runs.
+        let engine = engine_with_pending(&[named_event(&id)]);
+
+        record_step_inputs(&mut trace, &engine, &acked).unwrap();
+
+        assert_eq!(trace.acked, vec![id.clone()]);
+        assert_eq!(trace.replayed, vec![id.clone()]);
+        assert_eq!(
+            Checker::check(&trace),
+            vec![Violation {
+                guarantee: Guarantee::NoAckLostBeforeHalt,
+                reason: format!("acked event {id} was redelivered after halt"),
+            }]
+        );
     }
 
     #[test]
