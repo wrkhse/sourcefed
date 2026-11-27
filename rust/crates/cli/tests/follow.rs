@@ -3,10 +3,162 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::iter;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+/// One poll takes a second; leave room for a slow CI runner.
+const SHORT_WAIT: Duration = Duration::from_secs(5);
+/// The second run prints several events, so it gets a longer bound.
+const LONG_WAIT: Duration = Duration::from_secs(30);
+
+/// Owns a spawned child so every path reaps it: on drop the child is killed
+/// (errors ignored) and waited on (errors ignored), even if the test panics.
+struct ChildGuard(Child);
+
+impl ChildGuard {
+    #[cfg(test)]
+    const fn stdin(&mut self) -> Option<ChildStdin> {
+        self.0.stdin.take()
+    }
+
+    #[cfg(test)]
+    const fn stdout(&mut self) -> Option<ChildStdout> {
+        self.0.stdout.take()
+    }
+
+    #[cfg(test)]
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.0.wait()
+    }
+
+    /// Waits for the child, killing it if it is still alive at `deadline`.
+    #[cfg(test)]
+    fn wait_bounded(&mut self, deadline: Instant) -> ExitStatus {
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = self.0.kill();
+                return self.wait().unwrap();
+            }
+
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Owns the line receiver together with the reader thread's handle.
+///
+/// On a panic path the `JoinHandle` is dropped, which detaches the thread;
+/// the `ChildGuard` then kills the child, so the reader sees EOF and exits
+/// instead of being left running.
+struct LineEvents {
+    rx: Receiver<String>,
+    handle: JoinHandle<()>,
+}
+
+impl LineEvents {
+    /// Joins the reader once it has finished, or leaves it detached if it is
+    /// still running at `deadline`.
+    #[cfg(test)]
+    fn join_bounded(self, deadline: Instant) {
+        loop {
+            if self.handle.is_finished() {
+                self.handle.join().unwrap();
+                return;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Dropping the handle detaches the reader thread.
+                return;
+            }
+
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    }
+}
+
+/// Reads a child's stdout on a thread, returning the receiver and the thread's
+/// handle wrapped in a `LineEvents`. The sender drops at EOF (or on a read
+/// error), which the receiver observes as a disconnect: the end of the stream.
+#[cfg(test)]
+fn line_receiver(reader: impl BufRead + Send + 'static) -> LineEvents {
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    LineEvents { rx, handle }
+}
+
+/// Receives one line before `deadline`, failing fast instead of blocking.
+#[cfg(test)]
+fn recv_line(rx: &Receiver<String>, deadline: Instant, description: &str) -> String {
+    let timeout = deadline.saturating_duration_since(Instant::now());
+
+    match rx.recv_timeout(timeout) {
+        Ok(line) => line,
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("timed out waiting for {description} within {timeout:?}");
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            panic!("stdout closed before {description} arrived");
+        }
+    }
+}
+
+/// Collects event IDs until the stream ends, failing fast if `deadline` passes.
+#[cfg(test)]
+fn remaining_ids(rx: &Receiver<String>, deadline: Instant) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    loop {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+
+        if timeout.is_zero() {
+            break;
+        }
+
+        match rx.recv_timeout(timeout) {
+            Ok(line) => {
+                let event: Value = serde_json::from_str(&line).unwrap();
+                ids.push(event["id"].as_str().unwrap().to_owned());
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("timed out draining events before {deadline:?}");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    ids
+}
 
 #[test]
 fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
@@ -23,26 +175,15 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
             .spawn()
             .unwrap()
     };
-    // Reads until the child closes stdout, which it does when it exits.
-    let remaining_ids = |stdout: &mut dyn BufRead| -> Vec<String> {
-        stdout
-            .lines()
-            .map(|line| {
-                let event: Value = serde_json::from_str(&line.unwrap()).unwrap();
-
-                event["id"].as_str().unwrap().to_owned()
-            })
-            .collect()
-    };
 
     // The first poll saves the next firing and each later one prints a
     // firing, so sixteen one-second polls keep the run going for about
     // fifteen seconds unless a stop ends it.
-    let mut first = follow(16);
-    let mut stdout = BufReader::new(first.stdout.take().unwrap());
-    let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
+    let mut first = ChildGuard(follow(16));
+    let stdout = BufReader::new(first.stdout().unwrap());
+    let events = line_receiver(stdout);
 
+    let line = recv_line(&events.rx, Instant::now() + SHORT_WAIT, "the first event");
     let event: Value = serde_json::from_str(&line).unwrap();
     let id = event["id"].as_str().unwrap().to_owned();
     let at = event["at"].as_str().unwrap();
@@ -56,21 +197,21 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     assert_eq!(event["summary"], format!("timer deploy fired at {at}"));
 
     // The next firing is printed too, and is never acknowledged.
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-
+    let line =
+        recv_line(&events.rx, Instant::now() + SHORT_WAIT, "the second event");
     let later: Value = serde_json::from_str(&line).unwrap();
     let later = later["id"].as_str().unwrap().to_owned();
 
-    let mut stdin = first.stdin.take().unwrap();
+    let mut stdin = first.stdin().unwrap();
     writeln!(stdin, "ack {id}").unwrap();
     writeln!(stdin, "stop").unwrap();
     drop(stdin);
     let stopping = Instant::now();
 
-    let rest = remaining_ids(&mut stdout);
+    let rest = remaining_ids(&events.rx, Instant::now() + SHORT_WAIT);
 
-    assert!(first.wait().unwrap().success());
+    assert!(first.wait_bounded(Instant::now() + SHORT_WAIT).success());
+    events.join_bounded(Instant::now() + SHORT_WAIT);
     // The polls left after the second event would take about thirteen
     // seconds. A stop ends the run within one poll, with room for a slow
     // machine.
@@ -85,17 +226,19 @@ fn an_acknowledged_event_is_never_printed_again_after_a_restart() {
     // the first never saw, and never the one it acknowledged. The pending
     // events are saved too, so it prints each unacknowledged one again, once
     // and in the same order.
-    let mut second = follow(3);
-    drop(second.stdin.take());
-    let mut stdout = BufReader::new(second.stdout.take().unwrap());
-    let printed = remaining_ids(&mut stdout);
+    let mut second = ChildGuard(follow(3));
+    drop(second.stdin());
+    let stdout = BufReader::new(second.stdout().unwrap());
+    let events = line_receiver(stdout);
+    let printed = remaining_ids(&events.rx, Instant::now() + LONG_WAIT);
     let fresh = printed.iter().filter(|printed| !seen.contains(*printed));
     let again: Vec<&String> = printed
         .iter()
         .filter(|printed| unacknowledged.contains(*printed))
         .collect();
 
-    assert!(second.wait().unwrap().success());
+    assert!(second.wait_bounded(Instant::now() + LONG_WAIT).success());
+    events.join_bounded(Instant::now() + LONG_WAIT);
     assert!(!printed.contains(&id));
     assert_eq!(again, unacknowledged.iter().collect::<Vec<_>>());
     assert_ne!(fresh.count(), 0);

@@ -14,17 +14,57 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCEFED_PROOF_SEED: 1
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # The reverted-fix proofs live beside the mutants gate.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect Rust changes
+        id: diff
+        shell: bash
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          base="${PR_BASE:-$PUSH_BASE}"
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$base" HEAD -- \
+            'rust/**/*.rs' \
+            'rust/.cargo/mutants.toml' \
+            'rust/Cargo.toml' \
+            'rust/Cargo.lock' \
+            'rust/rust-toolchain*' \
+            'rust/clippy.toml')
+
+          if [ -n "$changed" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      SOURCEFED_PROOF_SEED: 1
     defaults:
       run:
         working-directory: rust
@@ -203,6 +243,8 @@ jobs:
   # run on a branch uses the diff by default, or the full tree with full_tree;
   # see wrkhse/sourcefed#117.
   mutants-shard:
+    needs: [changes]
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || needs.changes.outputs.rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -210,7 +252,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      FULL_TREE: ${{ inputs.full_tree == true }}
+      FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,6 +283,12 @@ jobs:
 
           base="${BASE_SHA:-origin/main}"
           git diff --relative=rust "$base"...HEAD -- 'rust/**/*.rs' > rust/pr.diff
+          changed=$(git diff --name-only --relative=rust "$base"...HEAD \
+            -- 'rust/**/*.rs')
+          if [ -n "$changed" ] && [ ! -s rust/pr.diff ]; then
+            echo "::error::mutants-diff: changed Rust files produced no diff"
+            exit 1
+          fi
           wc -l rust/pr.diff
       # A missed mutant or a timeout fails. One that truly hangs the tests is
       # excluded by name in .cargo/mutants.toml, with its reason.
@@ -273,23 +321,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f mutants.out/outcomes.json ]; then
-            exit 0
-          fi
-
+          mkdir -p mutants.out
           args=(--no-shuffle -j 2 --shard "$SHARD/4")
           if [[ "$FULL_TREE" == "false" ]]; then
             args+=(--in-diff pr.diff)
           fi
 
-          listed=$(mktemp)
-          if ! cargo mutants "${args[@]}" --list > "$listed"; then
+          if ! cargo mutants "${args[@]}" --list \
+            > "listed-$SHARD.txt"; then
             echo "::error::mutants-shard-list: cargo mutants --list failed for shard $SHARD"
             exit 1
           fi
 
-          if [ ! -s "$listed" ]; then
-            mkdir -p mutants.out
+          if [ -f mutants.out/outcomes.json ]; then
+            exit 0
+          fi
+
+          if [ ! -s "listed-$SHARD.txt" ]; then
             printf '%s\n' '{"total_mutants":0,"caught":0,"missed":0,"timeout":0,"unviable":0}' > mutants.out/outcomes.json
             exit 0
           fi
@@ -323,14 +371,21 @@ jobs:
           name: mutants-shard-${{ matrix.shard }}
           path: rust/mutants.out/outcomes.json
           if-no-files-found: error
+      - if: always()
+        uses: >- # v7.0.2
+          actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mutants-listed-${{ matrix.shard }}
+          path: rust/listed-${{ matrix.shard }}.txt
+          if-no-files-found: warn
 
   mutants:
-    needs: [mutants-shard]
-    if: always()
+    needs: [changes, mutants-shard]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      FULL_TREE: ${{ inputs.full_tree == true }}
+      FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
       - name: Download shard outcomes
         uses: >- # v4.3.0
@@ -338,6 +393,12 @@ jobs:
         with:
           pattern: mutants-shard-*
           path: ${{ runner.temp }}/mutants-shards
+      - name: Download shard lists
+        uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: mutants-listed-*
+          path: ${{ runner.temp }}/mutants-listed/listed
       - name: Check shard outcomes
         shell: bash
         env:
@@ -393,10 +454,18 @@ jobs:
 
           base="${BASE_SHA:-origin/main}"
           git diff --relative=rust "$base"...HEAD -- 'rust/**/*.rs' > rust/pr.diff
+          changed=$(git diff --name-only --relative=rust "$base"...HEAD \
+            -- 'rust/**/*.rs')
+          if [ -n "$changed" ] && [ ! -s rust/pr.diff ]; then
+            echo "::error::mutants-diff: changed Rust files produced no diff"
+            exit 1
+          fi
           wc -l rust/pr.diff
       - name: Check shard coverage
         shell: bash
         working-directory: rust
+        env:
+          LISTED: ${{ runner.temp }}/mutants-listed/listed
         run: |
           set -euo pipefail
 
@@ -413,6 +482,18 @@ jobs:
           listed=$(wc -l < listed.txt)
           if [ "$listed" -ne "$TOTAL_MUTANTS" ]; then
             echo "::error::mutants-coverage: shards covered $TOTAL_MUTANTS mutants, the full list has $listed"
+            exit 1
+          fi
+
+          mapfile -t shard_lists < <(find "$LISTED" -name 'listed-*.txt' -type f)
+          if [ "${#shard_lists[@]}" -ne 4 ]; then
+            echo "::error::mutants-identities: expected 4 lists, found ${#shard_lists[@]}"
+            exit 1
+          fi
+          cat "${shard_lists[@]}" | sort > shard-listed.txt
+          sort listed.txt > full-listed.txt
+          if ! diff -u full-listed.txt shard-listed.txt; then
+            echo "::error::mutants-identities: shard lists differ from the full list"
             exit 1
           fi
       - name: Summary
