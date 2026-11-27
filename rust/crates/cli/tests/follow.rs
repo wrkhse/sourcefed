@@ -20,19 +20,23 @@ const LONG_WAIT: Duration = Duration::from_secs(30);
 struct ChildGuard(Child);
 
 impl ChildGuard {
+    #[cfg(test)]
     fn stdin(&mut self) -> Option<ChildStdin> {
         self.0.stdin.take()
     }
 
+    #[cfg(test)]
     fn stdout(&mut self) -> Option<ChildStdout> {
         self.0.stdout.take()
     }
 
+    #[cfg(test)]
     fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.0.wait()
     }
 
     /// Waits for the child, killing it if it is still alive at `deadline`.
+    #[cfg(test)]
     fn wait_bounded(&mut self, deadline: Instant) -> ExitStatus {
         loop {
             if let Some(status) = self.0.try_wait().unwrap() {
@@ -68,17 +72,13 @@ struct LineEvents {
 }
 
 impl LineEvents {
-    /// Joins the reader thread once the stream has ended.
-    fn join(self) {
-        self.handle.join().unwrap();
-    }
-
     /// Joins the reader once it has finished, or leaves it detached if it is
     /// still running at `deadline`.
+    #[cfg(test)]
     fn join_bounded(self, deadline: Instant) {
         loop {
             if self.handle.is_finished() {
-                self.join();
+                self.handle.join().unwrap();
                 return;
             }
 
@@ -96,6 +96,7 @@ impl LineEvents {
 /// Reads a child's stdout on a thread, returning the receiver and the thread's
 /// handle wrapped in a `LineEvents`. The sender drops at EOF (or on a read
 /// error), which the receiver observes as a disconnect: the end of the stream.
+#[cfg(test)]
 fn line_receiver(reader: impl BufRead + Send + 'static) -> LineEvents {
     let (tx, rx) = mpsc::channel();
 
@@ -115,6 +116,7 @@ fn line_receiver(reader: impl BufRead + Send + 'static) -> LineEvents {
 }
 
 /// Receives one line before `deadline`, failing fast instead of blocking.
+#[cfg(test)]
 fn recv_line(rx: &Receiver<String>, deadline: Instant, description: &str) -> String {
     let timeout = deadline.saturating_duration_since(Instant::now());
 
@@ -129,7 +131,8 @@ fn recv_line(rx: &Receiver<String>, deadline: Instant, description: &str) -> Str
     }
 }
 
-/// Collects event IDs until the stream ends or `deadline` passes.
+/// Collects event IDs until the stream ends, failing fast if `deadline` passes.
+#[cfg(test)]
 fn remaining_ids(rx: &Receiver<String>, deadline: Instant) -> Vec<String> {
     let mut ids = Vec::new();
 
