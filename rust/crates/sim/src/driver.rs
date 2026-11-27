@@ -1115,6 +1115,24 @@ mod tests {
 
         assert_eq!(clock_faults, Vec::<Violation>::new());
         assert_eq!(Checker::check(&run.trace), Vec::new());
+
+        // Seed 1 pins the exact stop step; seed 2 checks that fault
+        // consumption is seed-dependent.
+        let mut second_out = Vec::new();
+        let second_seed = Seed::from_u64(2);
+        let second_steps = 28;
+
+        let (second_run, second_clock) =
+            simulate_with_clock(second_seed, second_steps, &mut second_out).unwrap();
+
+        assert_eq!(
+            second_clock.fault_log(),
+            vec![ClockFault::Future, ClockFault::Past]
+        );
+        assert_eq!(second_clock.fault_count(), 2);
+        assert_eq!(Checker::check(&second_run.trace), Vec::new());
+        assert!(second_run.summary.steps < second_steps);
+        assert_ne!(second_run.summary.steps, run.summary.steps);
     }
 
     #[test]
