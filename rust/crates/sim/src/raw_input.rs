@@ -141,9 +141,10 @@ impl RawRun {
         let read_state = Arc::clone(&state);
         let stop = self.stop.clone();
         let (read_tx, read_rx) = mpsc::channel();
+        let reader_line = line.clone();
 
         let read_thread = thread::spawn(move || {
-            read_input(Cursor::new(line.clone()), &stop, &read_state, &sender);
+            read_input(Cursor::new(reader_line), &stop, &read_state, &sender);
             let _ = read_tx.send(());
         });
         entered_rx.recv_timeout(WAIT)?;
