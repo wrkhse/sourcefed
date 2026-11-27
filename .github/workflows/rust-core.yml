@@ -18,8 +18,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# The future seeded-simulation CI job belongs here in rust-core.yml, beside
-# the mutants gate.
+# The reverted-fix proofs live beside the mutants gate.
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -66,6 +65,71 @@ jobs:
         with:
           toolchain: 1.100.0
       - run: cargo +1.100.0 check --workspace --locked
+
+  reverted-fix:
+    name: Reverted fix (${{ matrix.proof }})
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - proof: clock-fallback
+            seed: c10c000000000001
+            steps: 28
+            guarantee: ClockFaultsFailClosed
+          - proof: temp-cleanup
+            seed: 1
+            steps: 8
+            guarantee: BoundedCleanup
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = \(.*\)/\1/p' rust-toolchain.toml)
+          channel=${channel//\"/}
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - name: Control (clean tree upholds the guarantee)
+        env:
+          SOURCEFED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cargo run --quiet --bin sourcefed-sim --locked -- \
+            --seed ${{ matrix.seed }} --steps ${{ matrix.steps }}
+      - name: Revert the fix
+        working-directory: .
+        run: git apply rust/sim/reverted-fixes/${{ matrix.proof }}.patch
+      - name: Reverted fix violates the guarantee
+        shell: bash --noprofile --norc {0}
+        env:
+          SOURCEFED_COMMIT: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          output=$(cargo run --quiet --bin sourcefed-sim --locked -- \
+            --seed ${{ matrix.seed }} --steps ${{ matrix.steps }} 2>&1)
+          status=$?
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::reverted-fix: ${{ matrix.proof }} unexpectedly passed"
+            exit 1
+          fi
+          expected='violation=${{ matrix.guarantee }}:'
+          if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
+            echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
+            exit 1
+          fi
 
   # Every viable mutant in the lines a pull request changes must be caught; an
   # equivalent one is excluded in .cargo/mutants.toml, with why. A dispatched

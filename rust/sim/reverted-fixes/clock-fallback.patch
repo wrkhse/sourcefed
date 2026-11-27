@@ -1,0 +1,11 @@
+diff --git a/rust/crates/core/src/poll.rs b/rust/crates/core/src/poll.rs
+--- a/rust/crates/core/src/poll.rs
++++ b/rust/crates/core/src/poll.rs
+@@ -177,6 +177,6 @@ impl Schedule {
+     fn after_clock_error(self, error: ClockError) -> Self {
+         let (schedule, action) = match error {
+-            ClockError::Past => (Self::Stopped, "polling stopped"),
++            ClockError::Past => (self, "polling stopped"),
+             ClockError::Future => (self, "polling deferred"),
+         };
+         tracing::warn!(reason = %error, "{action}");

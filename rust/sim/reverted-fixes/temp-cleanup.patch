@@ -1,0 +1,10 @@
+diff --git a/rust/crates/core/src/store.rs b/rust/crates/core/src/store.rs
+--- a/rust/crates/core/src/store.rs
++++ b/rust/crates/core/src/store.rs
+@@ -613,5 +613,5 @@ fn cleanup_entries(
+     // The limit applies to raw entries, so unreadable ones count toward it too.
+-    let raw: Vec<_> = entries.take(MAX_TEMP_SCAN).collect();
++    let raw: Vec<_> = entries.collect();
+     let examined = raw.len();
+     let paths = raw
+         .into_iter()
