@@ -130,6 +130,7 @@ pub fn simulate_with_trace(
         };
 
         record_acked(&mut trace, inputs.acked_ids());
+        record_replayed(&mut trace, &engine);
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -175,6 +176,23 @@ fn record_acked(trace: &mut Trace, acked: &[EventId]) {
 
         if !trace.acked.contains(&id) {
             trace.acked.push(id);
+        }
+    }
+}
+
+// Records each acked ID that is present in pending after this step's inputs.
+fn record_replayed(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
+    let Some(pending) = engine.pending() else {
+        return;
+    };
+
+    for id in &trace.acked {
+        let returning = pending
+            .iter()
+            .any(|event| event.id().as_str() == id.as_str());
+
+        if returning && !trace.replayed.contains(id) {
+            trace.replayed.push(id.clone());
         }
     }
 }
@@ -567,6 +585,27 @@ mod tests {
             trace.acked,
             vec![String::from("already-recorded"), String::from("first")]
         );
+    }
+
+    #[test]
+    fn record_replayed_adds_a_returning_acked_id_once_and_ignores_fresh_ids() {
+        let returning = named_event("returning");
+        let fresh = named_event("fresh");
+        let mut trace = Trace {
+            acked: vec![String::from("returning")],
+            ..Default::default()
+        };
+        let engine = engine_with_pending(&[returning, fresh]);
+
+        record_replayed(&mut trace, &engine);
+
+        assert_eq!(trace.replayed, vec![String::from("returning")]);
+
+        let engine_again =
+            engine_with_pending(&[named_event("returning"), named_event("fresh")]);
+        record_replayed(&mut trace, &engine_again);
+
+        assert_eq!(trace.replayed, vec![String::from("returning")]);
     }
 
     #[test]
