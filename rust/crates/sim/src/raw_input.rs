@@ -16,7 +16,7 @@ use sourcefed_core::{
     MonitorConfig, MonitorId, PollEngine, PollInterval, Source, StopHandle,
     TimerSource,
 };
-use sourcefed_sim::{MemoryStore, SimClock};
+use sourcefed_sim::{MemoryStore, Seed, SimClock};
 
 use crate::check::{Checker, Trace};
 
@@ -287,6 +287,21 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
     )?)
 }
 
+/// Prints checker violations in the simulator's exact report format so a
+/// reverted fix surfaces the real violation line, not just the assert message.
+fn report_violations(trace: &Trace) {
+    let seed = Seed::from_u64(1);
+    let commit = std::env::var("SOURCEFED_COMMIT")
+        .unwrap_or_else(|_| String::from("local"));
+    let violations = Checker::check(trace);
+
+    for violation in &violations {
+        eprintln!(
+            "sourcefed-sim: seed={seed} commit={commit} violation={violation}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +329,7 @@ mod tests {
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
+        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 
@@ -327,6 +343,7 @@ mod tests {
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
+        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 
@@ -347,6 +364,7 @@ mod tests {
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
         assert_eq!(run.trace().replayed, Vec::<String>::new());
+        report_violations(run.trace());
         assert_eq!(Checker::check(run.trace()), Vec::new());
     }
 

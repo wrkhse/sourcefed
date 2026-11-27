@@ -117,7 +117,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n '${{ matrix.test }}' ]; then
-            cargo test -p sourcefed-sim '${{ matrix.test }}' --locked
+            cargo test -p sourcefed-sim --bin sourcefed-sim --locked -- \
+              --exact '${{ matrix.test }}'
           else
             cargo run --quiet --bin sourcefed-sim --locked -- \
               --seed ${{ matrix.seed }} --steps ${{ matrix.steps }}
@@ -132,21 +133,22 @@ jobs:
         run: |
           set -uo pipefail
           if [ -n '${{ matrix.test }}' ]; then
-            output=$(cargo test -p sourcefed-sim \
-              '${{ matrix.test }}' --locked 2>&1)
+            output=$(cargo test -p sourcefed-sim --bin sourcefed-sim --locked -- \
+              --exact '${{ matrix.test }}' 2>&1)
             status=$?
             echo "$output"
             if [ "$status" -ne 101 ]; then
               echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 101"
               exit 1
             fi
-            expected='guarantee: ${{ matrix.guarantee }}'
-            if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
+            expected="^sourcefed-sim: seed=0000000000000001 commit=${{ github.sha }}"
+            expected+=' violation=${{ matrix.guarantee }}: '
+            if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
               echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
               exit 1
             fi
             found=$(printf '%s\n' "$output" \
-              | grep -Fc 'guarantee: ') || found=0
+              | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=') || found=0
             if [ "$found" -ne 1 ]; then
               echo "::error::reverted-fix: ${{ matrix.proof }} found=$found"
               exit 1
