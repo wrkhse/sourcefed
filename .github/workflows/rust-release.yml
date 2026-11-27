@@ -6,6 +6,7 @@ name: rust-release
 # `recording` films the packed binary delivering, acknowledging and not
 # redelivering an event across a restart; `release` attaches the tarball, the
 # demo GIF and their SHA256SUMS to a GitHub prerelease that is never latest.
+# Two targets ship: x86_64 Linux and macOS arm64, each with its own tarball.
 #
 # A dispatch names an existing tag and runs the same jobs against it, so a
 # release's assets are rebuilt and replaced without a new tag or release.
@@ -106,6 +107,88 @@ jobs:
           actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: sourcefed-core-tarball
+          path: ${{ runner.temp }}/dist/*.tar.gz
+          if-no-files-found: error
+
+  # The same candidate for macOS arm64, built and smoke-tested on a native
+  # Apple Silicon runner so its tarball matches the platform it names.
+  build-macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TARGET: aarch64-apple-darwin
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      # A dispatch runs on a branch, so the tag is checked out by name; a
+      # tag that does not exist fails here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.100.0
+          targets: aarch64-apple-darwin
+      - name: The tag names the sourcefed-cli version
+        run: |
+          set -euo pipefail
+
+          version=$(cargo +1.100.0 metadata --locked --no-deps \
+            --format-version 1 |
+            jq -r '.packages[] | select(.name == "sourcefed-cli") | .version')
+          [[ "$version" == "${TAG#core-v}" ]] || {
+            echo "::error::sourcefed-cli is $version, the tag is $TAG"
+            exit 1
+          }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=sourcefed-core-$version-$TARGET.tar.gz" >> "$GITHUB_ENV"
+      - run: cargo +1.100.0 build --release --locked -p sourcefed-cli \
+          --target "$TARGET"
+      - name: Pack the binary
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/dist"
+          tar -czf "$RUNNER_TEMP/dist/$ARCHIVE" \
+            -C "target/$TARGET/release" sourcefed-core
+          tar -tzvf "$RUNNER_TEMP/dist/$ARCHIVE"
+      # Runs the binary from the tarball, outside the checkout, the way a
+      # person who downloads it would. The CLI's poll budget bounds the run,
+      # so no external timeout, absent on macOS, is needed.
+      - name: Smoke-test the packed binary
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          tar -xzf "$RUNNER_TEMP/dist/$ARCHIVE" -C "$work"
+          cd "$work"
+
+          printed=$(./sourcefed-core --version)
+          [[ "$printed" == "sourcefed-core $VERSION" ]] || {
+            echo "::error::--version printed '$printed'"
+            exit 1
+          }
+
+          # The first poll saves the next firing; a later one prints it.
+          ./sourcefed-core follow --job smoke --every 1 \
+            --state-dir "$work/state" --max-polls 3 \
+            < /dev/null > events.jsonl
+          cat events.jsonl
+          jq -e -s 'any(.[]; .kind == "timer.fired")' events.jsonl
+
+          if ! jq -e -s '[.[] | select(.kind == "timer.fired") | .id]
+            | length == (unique | length)' events.jsonl > /dev/null; then
+            echo "::error::a timer.fired id appears more than once"
+            exit 1
+          fi
+      - uses: >- # v7.0.2
+          actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sourcefed-core-macos-tarball
           path: ${{ runner.temp }}/dist/*.tar.gz
           if-no-files-found: error
 
@@ -673,7 +756,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build, recording]
+    needs: [build, build-macos, recording]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -687,11 +770,16 @@ jobs:
       - uses: >- # v4.3.0
           actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
+          name: sourcefed-core-macos-tarball
+          path: ${{ runner.temp }}/release
+      - uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
           name: demo-recording
           path: ${{ runner.temp }}/release
-      # A dispatch keeps the published tarball, so the rebuilt one gives way
-      # to the release's own copy and the sums cover what is attached. A
-      # dispatch on a tag with no release, or no tarball, fails here.
+      # A dispatch keeps the published tarballs, so the rebuilt ones give
+      # way to the release's own copies and the sums cover what is attached.
+      # A dispatch on a tag with no release, or no tarball, fails here.
       - name: Write SHA256SUMS
         working-directory: ${{ runner.temp }}/release
         env:
@@ -701,30 +789,31 @@ jobs:
           set -euo pipefail
 
           tarballs=(*.tar.gz)
-          if (( ${#tarballs[@]} != 1 )); then
-            echo "::error::expected one tarball, found ${tarballs[*]}"
+          if (( ${#tarballs[@]} != 2 )); then
+            echo "::error::expected two tarballs, found ${tarballs[*]}"
             exit 1
           fi
-          tarball=${tarballs[0]}
 
           if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
             # Prove the rerun path before rewriting checksums or assets:
-            # gh must see the release and the tarball it already carries.
+            # gh must see the release and both tarballs it already carries.
             names=$(gh api "repos/$GH_REPO/releases/tags/$TAG" \
               --jq '.assets[].name') || {
               echo "::error::dispatch cannot view release $TAG"
               exit 1
             }
-            if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
-              echo "::error::release $TAG has no asset $tarball"
-              exit 1
-            fi
+            for tarball in "${tarballs[@]}"; do
+              if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
+                echo "::error::release $TAG has no asset $tarball"
+                exit 1
+              fi
 
-            rm -- "$tarball"
-            gh release download "$TAG" --pattern "$tarball" --dir .
+              rm -- "$tarball"
+              gh release download "$TAG" --pattern "$tarball" --dir .
+            done
           fi
 
-          sha256sum -- "$tarball" demo.gif > SHA256SUMS
+          sha256sum -- "${tarballs[@]}" demo.gif > SHA256SUMS
           cat SHA256SUMS
       - name: Publish the GitHub prerelease
         working-directory: ${{ runner.temp }}/release
@@ -734,15 +823,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          notes="A release candidate of sourcefed-core, the Rust core, for x86_64"
-          notes+=" Linux. Check the tarball against SHA256SUMS, unpack it and run"
-          notes+=" sourcefed-core --version. demo.gif shows this binary"
-          notes+=" printing a timer.fired event and acking it, then a restart"
-          notes+=" on the same state that never delivers it again."
+          notes="Release candidates of sourcefed-core, the Rust core, for macOS"
+          notes+=" arm64 and x86_64 Linux. Check the tarballs against SHA256SUMS,"
+          notes+=" unpack one and run sourcefed-core --version. demo.gif shows"
+          notes+=" this binary printing a timer.fired event and acking it, then a"
+          notes+=" restart on the same state that never delivers it again."
 
           # A dispatch re-records the demo of a published tag, so it replaces
-          # the GIF and the SHA256SUMS that covers it, and leaves the tarball
-          # as it was.
+          # the GIF and the SHA256SUMS that covers it, and leaves the tarballs
+          # as they were.
           if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
             assets=(SHA256SUMS demo.gif)
           else
