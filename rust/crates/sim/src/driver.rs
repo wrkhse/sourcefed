@@ -130,7 +130,9 @@ pub fn simulate_with_trace(
         };
 
         record_acked(&mut trace, inputs.acked_ids());
-        record_replayed(&mut trace, &engine);
+        if had_pending {
+            record_replayed(&mut trace, &engine)?;
+        }
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -181,9 +183,16 @@ fn record_acked(trace: &mut Trace, acked: &[EventId]) {
 }
 
 // Records each acked ID that is present in pending after this step's inputs.
-fn record_replayed(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
+//
+// # Errors
+// Returns NO_PENDING when the queue cannot be read. Skipping detection on a
+// failed read would let the checker pass without proof.
+fn record_replayed(
+    trace: &mut Trace,
+    engine: &PollEngine<MemoryStore>,
+) -> Result<(), Box<dyn Error>> {
     let Some(pending) = engine.pending() else {
-        return;
+        return Err(NO_PENDING.into());
     };
 
     for id in &trace.acked {
@@ -195,6 +204,8 @@ fn record_replayed(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
             trace.replayed.push(id.clone());
         }
     }
+
+    Ok(())
 }
 
 fn pending_or_error(
@@ -597,15 +608,32 @@ mod tests {
         };
         let engine = engine_with_pending(&[returning, fresh]);
 
-        record_replayed(&mut trace, &engine);
+        record_replayed(&mut trace, &engine).unwrap();
 
         assert_eq!(trace.replayed, vec![String::from("returning")]);
 
         let engine_again =
             engine_with_pending(&[named_event("returning"), named_event("fresh")]);
-        record_replayed(&mut trace, &engine_again);
+        record_replayed(&mut trace, &engine_again).unwrap();
 
         assert_eq!(trace.replayed, vec![String::from("returning")]);
+    }
+
+    #[test]
+    fn replay_detection_fails_on_a_missing_pending_queue() {
+        let engine = engine().unwrap();
+        let mut trace = Trace {
+            acked: vec![String::from("returning")],
+            ..Default::default()
+        };
+
+        let result = record_replayed(&mut trace, &engine);
+
+        assert_eq!(
+            result.err().map(|error| error.to_string()),
+            Some(String::from("sim: missing pending queue"))
+        );
+        assert_eq!(trace.replayed, Vec::<String>::new());
     }
 
     #[test]
@@ -625,6 +653,38 @@ mod tests {
                 String::from("timer:sim:1970-01-01T00:00:02Z")
             ]
         );
+    }
+
+    #[test]
+    fn held_input_ack_then_stop_reaches_the_checker_cleanly() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let mut out = Vec::new();
+
+        let run = simulate_with_trace(Seed::from_u64(125), 2, &mut out).unwrap();
+
+        assert_eq!(
+            run.summary,
+            Summary {
+                steps: 2,
+                events: 1,
+                outcome: Outcome::Stopped,
+            }
+        );
+        assert_eq!(
+            run.trace.acked,
+            vec![String::from("timer:sim:1970-01-01T00:00:01Z")]
+        );
+        assert_eq!(run.trace.replayed, Vec::<String>::new());
+
+        let ack_loss: Vec<Violation> = Checker::check(&run.trace)
+            .into_iter()
+            .filter(|violation| {
+                violation.guarantee == Guarantee::NoAckLostBeforeHalt
+            })
+            .collect();
+
+        assert_eq!(ack_loss, Vec::<Violation>::new());
     }
 
     #[test]
