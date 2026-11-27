@@ -12,6 +12,7 @@ use sourcefed_core::{
 };
 use sourcefed_sim::{MemoryStore, Seed, SimClock};
 
+use crate::check::Trace;
 use crate::input::ScriptedInputs;
 
 const NO_PENDING: &str = "sim: missing pending queue";
@@ -35,12 +36,24 @@ pub struct Summary {
     pub outcome: Outcome,
 }
 
+/// A run's summary together with the observations it produced.
+#[derive(Debug)]
+pub struct Run {
+    pub summary: Summary,
+    pub trace: Trace,
+}
+
 /// Builds a real engine over a timer, the virtual clock and memory store.
 ///
 /// # Errors
 /// Returns the validation error when the monitor, interval or engine cannot
 /// be built.
+#[cfg(test)]
 pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
+    build_engine()
+}
+
+fn build_engine() -> Result<PollEngine<MemoryStore>, String> {
     let source = TimerSource::new("sim".into(), 1).map_err(|e| e.to_string())?;
     let config = MonitorConfig {
         id: MonitorId::new("sim".into()).map_err(|e| e.to_string())?,
@@ -57,14 +70,28 @@ pub fn engine() -> Result<PollEngine<MemoryStore>, String> {
 ///
 /// # Errors
 /// Returns the engine, store, serialisation or output error that ends the run.
+#[cfg(test)]
 pub fn simulate(
     seed: Seed,
     steps: u32,
     out: &mut impl Write,
 ) -> Result<Summary, Box<dyn Error>> {
-    let mut engine = engine()?;
+    Ok(simulate_with_trace(seed, steps, out)?.summary)
+}
+
+/// Runs the simulation and records what delivery can inspect.
+///
+/// # Errors
+/// Returns the engine, store, serialisation or output error that ends the run.
+pub fn simulate_with_trace(
+    seed: Seed,
+    steps: u32,
+    out: &mut impl Write,
+) -> Result<Run, Box<dyn Error>> {
+    let mut engine = build_engine()?;
     let mut inputs = ScriptedInputs::new();
     let mut printed = HashSet::new();
+    let mut trace = Trace::default();
     let mut draw = seed;
     let mut events = 0_usize;
     let mut taken = 0_u32;
@@ -85,10 +112,13 @@ pub fn simulate(
         let queued = engine.pending();
         let had_pending = queued.is_some();
         let pending: Vec<_> = pending_or_error(queued, index)?.into();
+        record_emitted(&mut trace, &pending);
 
         if had_pending {
-            let fresh = print_new(&engine, &mut printed, out)?;
-            events = events.saturating_add(fresh);
+            let fresh = fresh_ids(&pending, &printed);
+            let count = print_new(&engine, &mut printed, out)?;
+            events = events.saturating_add(count);
+            trace.printed.extend(fresh);
         }
 
         inputs.schedule(&mut draw, &pending, left);
@@ -99,6 +129,7 @@ pub fn simulate(
             inputs.apply_next(&mut engine)?
         };
 
+        record_acked(&mut trace, inputs.acked_ids());
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -107,11 +138,45 @@ pub fn simulate(
         }
     }
 
-    Ok(Summary {
-        steps: taken,
-        events,
-        outcome,
+    Ok(Run {
+        summary: Summary {
+            steps: taken,
+            events,
+            outcome,
+        },
+        trace,
     })
+}
+
+// IDs in this pending snapshot that have not been printed yet.
+fn fresh_ids(pending: &[Event], printed: &HashSet<EventId>) -> Vec<String> {
+    pending
+        .iter()
+        .filter(|event| !printed.contains(event.id()))
+        .map(|event| String::from(event.id().as_str()))
+        .collect()
+}
+
+// Records each pending ID the first time the engine exposes it.
+fn record_emitted(trace: &mut Trace, pending: &[Event]) {
+    for event in pending {
+        let id = String::from(event.id().as_str());
+
+        if !trace.emitted.contains(&id) {
+            trace.emitted.push(id);
+        }
+    }
+}
+
+// Records only the IDs of Ack inputs that were applied this run.
+fn record_acked(trace: &mut Trace, acked: &[EventId]) {
+    for id in acked {
+        let id = String::from(id.as_str());
+
+        if !trace.acked.contains(&id) {
+            trace.acked.push(id);
+        }
+    }
 }
 
 fn pending_or_error(
@@ -169,6 +234,20 @@ mod tests {
     };
 
     use super::*;
+
+    fn named_event(id: &str) -> Event {
+        let source = SourceName::new("sim".into()).unwrap();
+        let subject = EventSubject::new(source, "sim".into()).unwrap();
+
+        Event::new(
+            EventId::new(id.into()).unwrap(),
+            EventKind::TimerFired,
+            subject,
+            "fired".into(),
+            Timestamp::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
 
     fn engine_with_pending(events: &[Event]) -> PollEngine<MemoryStore> {
         let source = TimerSource::new("sim".into(), 1).unwrap();
@@ -428,5 +507,113 @@ mod tests {
         forget_acked(&engine, &mut seen);
 
         assert_eq!(seen, HashSet::from([second.id().clone()]));
+    }
+
+    #[test]
+    fn record_emitted_adds_each_new_id_once() {
+        let existing = named_event("existing");
+        let fresh = named_event("fresh");
+        let mut trace = Trace {
+            emitted: vec![String::from("existing")],
+            ..Default::default()
+        };
+
+        record_emitted(&mut trace, &[existing, fresh]);
+
+        assert_eq!(
+            trace.emitted,
+            vec![String::from("existing"), String::from("fresh")]
+        );
+        assert_eq!(trace.printed, Vec::<String>::new());
+        assert_eq!(trace.acked, Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_emitted_but_unprinted_id_reaches_the_checker_as_a_violation() {
+        use crate::check::Checker;
+
+        let event = named_event("emitted-only");
+        let mut trace = Trace::default();
+
+        record_emitted(&mut trace, std::slice::from_ref(&event));
+
+        assert_eq!(trace.emitted, vec![String::from("emitted-only")]);
+        assert_eq!(trace.printed, Vec::<String>::new());
+        assert_eq!(
+            Checker::check(&trace),
+            vec![crate::check::Violation {
+                guarantee: crate::check::Guarantee::AtLeastOnceDelivery,
+                reason: String::from(
+                    "emitted event emitted-only was neither printed nor acked"
+                ),
+            }]
+        );
+    }
+
+    #[test]
+    fn record_acked_adds_only_applied_ids_once() {
+        let acked = [
+            EventId::new("first".into()).unwrap(),
+            EventId::new("already-recorded".into()).unwrap(),
+        ];
+        let mut trace = Trace {
+            acked: vec![String::from("already-recorded")],
+            ..Default::default()
+        };
+
+        record_acked(&mut trace, &acked);
+
+        assert_eq!(
+            trace.acked,
+            vec![String::from("already-recorded"), String::from("first")]
+        );
+    }
+
+    #[test]
+    fn a_trace_records_only_acks_from_applied_inputs() {
+        let mut out = Vec::new();
+
+        let run = simulate_with_trace(Seed::from_u64(1), 3, &mut out).unwrap();
+
+        assert_eq!(
+            run.trace.acked,
+            vec![String::from("timer:sim:1970-01-01T00:00:01Z")]
+        );
+        assert_eq!(
+            run.trace.printed,
+            vec![
+                String::from("timer:sim:1970-01-01T00:00:01Z"),
+                String::from("timer:sim:1970-01-01T00:00:02Z")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_event_leaving_pending_without_an_ack_is_a_violation() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let event = named_event("vanished");
+        let id = String::from("vanished");
+        let mut engine = engine_with_pending(std::slice::from_ref(&event));
+        let mut trace = Trace {
+            emitted: vec![id.clone()],
+            ..Default::default()
+        };
+        let inputs = ScriptedInputs::new();
+
+        // The event leaves pending outside the applied Ack-input path.
+        assert_eq!(engine.ack(std::slice::from_ref(event.id())).unwrap(), 1);
+        assert_eq!(engine.pending(), Some(VecDeque::new()));
+
+        record_acked(&mut trace, inputs.acked_ids());
+
+        assert_eq!(trace.acked, Vec::<String>::new());
+        assert_eq!(
+            Checker::check(&trace),
+            vec![Violation {
+                guarantee: Guarantee::AtLeastOnceDelivery,
+                reason: format!("emitted event {id} was neither printed nor acked"),
+            }]
+        );
     }
 }
