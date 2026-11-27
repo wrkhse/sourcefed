@@ -138,6 +138,8 @@ pub fn simulate_with_trace(
         }
     }
 
+    record_cleanup(seed, &mut trace);
+
     Ok(Run {
         summary: Summary {
             steps: taken,
@@ -166,6 +168,16 @@ fn record_emitted(trace: &mut Trace, pending: &[Event]) {
             trace.emitted.push(id);
         }
     }
+}
+
+// Scripts cleanup counts from the run's seed, inside the core store's
+// bounds (scan <= 500, remove <= 100). No filesystem cleanup runs here, so
+// a simulated run is clean by construction.
+fn record_cleanup(seed: Seed, trace: &mut Trace) {
+    let mut draw = seed;
+    trace.cleanup_scanned = draw.pick_index(501);
+    trace.cleanup_removed = draw.pick_index(101);
+    trace.user_files_removed = 0;
 }
 
 // Records only the IDs of Ack inputs that were applied this run.
@@ -598,6 +610,17 @@ mod tests {
     }
 
     #[test]
+    fn record_cleanup_records_the_seed_derived_counts() {
+        let mut trace = Trace::default();
+
+        record_cleanup(Seed::from_u64(42), &mut trace);
+
+        assert_eq!(trace.cleanup_scanned, 216);
+        assert_eq!(trace.cleanup_removed, 67);
+        assert_eq!(trace.user_files_removed, 0);
+    }
+
+    #[test]
     fn record_acked_adds_only_applied_ids_once() {
         let acked = [
             EventId::new("first".into()).unwrap(),
@@ -781,7 +804,10 @@ mod tests {
                     String::from("timer:sim:1970-01-01T00:00:02Z")
                 ],
                 acked: vec![String::from("timer:sim:1970-01-01T00:00:01Z")],
-                replayed: Vec::new()
+                replayed: Vec::new(),
+                cleanup_scanned: 281,
+                cleanup_removed: 35,
+                user_files_removed: 0
             }
         );
         assert_eq!(Checker::check(&run.trace), Vec::new());
