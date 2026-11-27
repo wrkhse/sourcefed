@@ -306,6 +306,8 @@ pub struct Store {
     dir: PathBuf,
     path: PathBuf,
     state: State,
+    // How many directory entries the open's cleanup examined.
+    cleanup_scanned: usize,
     // Held for the store's lifetime so a second writer is refused.
     _lock: File,
 }
@@ -334,7 +336,7 @@ impl Store {
             source,
         })?;
         let lock = lock(dir)?;
-        cleanup_temp_files(dir);
+        let cleanup_scanned = cleanup_temp_files(dir);
         let path = dir.join(STORE_FILE);
         let state = State::load(&path)?;
 
@@ -342,8 +344,18 @@ impl Store {
             dir: dir.to_owned(),
             path,
             state,
+            cleanup_scanned,
             _lock: lock,
         })
+    }
+
+    /// Returns how many directory entries the open's cleanup examined.
+    ///
+    /// The count is at most 500. It includes entries that were unreadable
+    /// or not removed, and is fixed when the store opens.
+    #[must_use]
+    pub const fn cleanup_scanned(&self) -> usize {
+        self.cleanup_scanned
     }
 
     /// Returns the saved position for the key, if one exists.
@@ -1190,9 +1202,11 @@ mod tests {
             })
             .collect();
 
-        let opened = Store::open(dir.path()).map(drop).map_err(|e| e.to_string());
+        let scanned = Store::open(dir.path())
+            .map(|store| store.cleanup_scanned())
+            .map_err(|e| e.to_string());
 
-        assert_eq!(opened, Ok(()));
+        assert_eq!(scanned, Ok(MAX_TEMP_SCAN));
         assert_eq!(existing(&generated), 600 - MAX_TEMP_REMOVE);
     }
 

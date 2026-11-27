@@ -20,8 +20,9 @@ use crate::input::ScriptedInputs;
 const NO_PENDING: &str = "sim: missing pending queue";
 // Mirrors the core store's generated name: positions.json.<pid>.<count>.tmp.
 const STORE_FILE: &str = "positions.json";
-// Keeps the seeded set below the core store's 500-entry scan bound.
-const MAX_OFFERED: usize = 120;
+// Offers more entries than the core store's 500-entry scan bound so the
+// real cap is exercised on every open.
+const OFFERED: usize = 600;
 // User-named files, one of which resembles a generated temp name.
 const USER_NAMES: [&str; 3] = [
     "my-notes.txt",
@@ -150,10 +151,8 @@ pub fn simulate_with_trace(
         }
     }
 
-    let cleanup = observe_cleanup(seed)?;
-    // The core store does not expose its scan count through the public API,
-    // so this field is only populated by synthetic checker traces.
-    trace.cleanup_scanned = 0;
+    let cleanup = observe_cleanup()?;
+    trace.cleanup_scanned = cleanup.scanned;
     trace.cleanup_removed = cleanup.removed;
     trace.user_files_removed = cleanup.user_removed;
 
@@ -190,20 +189,17 @@ fn record_emitted(trace: &mut Trace, pending: &[Event]) {
 // What one real `Store::open` observed in a directory of leftover temps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CleanupObservation {
+    // Directory entries the real open examined during cleanup.
+    scanned: usize,
     // Generated temps that disappeared during the open.
     removed: usize,
     // User-named files that disappeared during the open.
     user_removed: usize,
 }
 
-// Writes the seeded generated temps and the user files into `dir`.
-fn seed_files(
-    dir: &Path,
-    seed: Seed,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Box<dyn Error>> {
-    let mut draw = seed;
-    let offered = draw.pick_index(MAX_OFFERED).saturating_add(1);
-    let generated: Vec<PathBuf> = (0..offered)
+// Writes more generated temps than one open can scan, plus user files.
+fn seed_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Box<dyn Error>> {
+    let generated: Vec<PathBuf> = (0..OFFERED)
         .map(|index| dir.join(format!("{STORE_FILE}.1.{index}.tmp")))
         .collect();
     let user_files: Vec<PathBuf> =
@@ -216,27 +212,30 @@ fn seed_files(
     Ok((generated, user_files))
 }
 
-// Opens a real store over `dir` and counts what its cleanup removed.
+// Opens a real store over `dir` and counts what its cleanup observed.
 fn observe_open(
     dir: &Path,
     generated: &[PathBuf],
     user_files: &[PathBuf],
 ) -> Result<CleanupObservation, Box<dyn Error>> {
-    Store::open(dir)?;
+    let store = Store::open(dir)?;
+    let scanned = store.cleanup_scanned();
+    drop(store);
 
     let removed = generated.iter().filter(|path| !path.exists()).count();
     let user_removed = user_files.iter().filter(|path| !path.exists()).count();
 
     Ok(CleanupObservation {
+        scanned,
         removed,
         user_removed,
     })
 }
 
 // Observes cleanup through the real store on a throwaway directory.
-fn observe_cleanup(seed: Seed) -> Result<CleanupObservation, Box<dyn Error>> {
+fn observe_cleanup() -> Result<CleanupObservation, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
-    let (generated, user_files) = seed_files(dir.path(), seed)?;
+    let (generated, user_files) = seed_files(dir.path())?;
 
     observe_open(dir.path(), &generated, &user_files)
 }
@@ -355,6 +354,8 @@ mod tests {
 
     use super::*;
 
+    // The core store examines at most this many directory entries per open.
+    const MAX_SCAN: usize = 500;
     // The core store removes at most this many generated temps per open.
     const MAX_REMOVE: usize = 100;
 
@@ -693,6 +694,7 @@ mod tests {
         assert_eq!(
             observed,
             CleanupObservation {
+                scanned: 4,
                 removed: 1,
                 user_removed: 0,
             }
@@ -703,14 +705,11 @@ mod tests {
     }
 
     #[test]
-    fn a_seeded_observation_reports_only_what_the_store_removed() {
-        let draw = Seed::from_u64(42);
-        let mut expected_draw = draw;
-        let expected = expected_draw.pick_index(MAX_OFFERED).saturating_add(1);
+    fn a_crowded_open_reports_only_what_the_store_observed() {
+        let observed = observe_cleanup().unwrap();
 
-        let observed = observe_cleanup(draw).unwrap();
-
-        assert_eq!(observed.removed, expected.min(MAX_REMOVE));
+        assert_eq!(observed.scanned, MAX_SCAN);
+        assert_eq!(observed.removed, MAX_REMOVE);
         assert_eq!(observed.user_removed, 0);
     }
 
@@ -906,10 +905,8 @@ mod tests {
         );
         assert_eq!(run.trace.replayed, Vec::<String>::new());
 
-        let mut draw = Seed::from_u64(1);
-        let offered = draw.pick_index(MAX_OFFERED).saturating_add(1);
-        assert_eq!(run.trace.cleanup_scanned, 0);
-        assert_eq!(run.trace.cleanup_removed, offered.min(MAX_REMOVE));
+        assert_eq!(run.trace.cleanup_scanned, MAX_SCAN);
+        assert_eq!(run.trace.cleanup_removed, MAX_REMOVE);
         assert_eq!(run.trace.user_files_removed, 0);
         assert_eq!(Checker::check(&run.trace), Vec::new());
     }
