@@ -16,6 +16,8 @@ use sourcefed_core::{
     MonitorConfig, MonitorId, PollEngine, PollInterval, Source, StopHandle,
     TimerSource,
 };
+#[cfg(test)]
+use sourcefed_sim::Seed;
 use sourcefed_sim::{MemoryStore, SimClock};
 
 use crate::check::{Checker, Trace};
@@ -287,11 +289,39 @@ fn engine() -> Result<PollEngine<MemoryStore>, Box<dyn Error>> {
     )?)
 }
 
+/// Proof seed supplied by CI. Panics when it is missing or invalid.
+#[cfg(test)]
+fn proof_seed() -> Seed {
+    const NAME: &str = "SOURCEFED_PROOF_SEED";
+    std::env::var(NAME)
+        .unwrap_or_else(|_| panic!("{NAME} must be set to a valid hex seed"))
+        .parse::<Seed>()
+        .unwrap_or_else(|_| panic!("{NAME} is set but is not a valid hex seed"))
+}
+
+/// Prints checker violations in the simulator's exact report format so a
+/// reverted fix surfaces the real violation line, not just the assert message.
+#[cfg(test)]
+fn report_violations(seed: Seed, trace: &Trace) {
+    let commit =
+        std::env::var("SOURCEFED_COMMIT").unwrap_or_else(|_| String::from("local"));
+    let violations = Checker::check(trace);
+
+    for violation in &violations {
+        eprintln!(
+            "sourcefed-sim: seed={seed} commit={commit} violation={violation}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const ID: &str = "timer:sim:1970-01-01T00:00:01Z";
+    // The reader discards a line past its own limit plus a discard budget.
+    const MAX_INPUT_LINE_LEN: usize = 512;
+    const MAX_DISCARD_BYTES: usize = 65_536;
 
     // The first poll sets the timer position; the second emits one event.
     fn with_pending() -> RawRun {
@@ -310,6 +340,7 @@ mod tests {
         run.feed(line.as_bytes()).unwrap();
         run.finish().unwrap();
 
+        report_violations(Seed::from_u64(1), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
@@ -323,6 +354,7 @@ mod tests {
 
         run.held_ack_at_halt(ID).unwrap();
 
+        report_violations(proof_seed(), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);
@@ -337,12 +369,15 @@ mod tests {
         // valid, different ack: if the reader ignored its limit, that extra
         // ack would be published and the assertions below would fail.
         let other = "timer:sim:1970-01-01T00:00:02Z";
-        let pad = " ".repeat(600);
+        let seed_offset = usize::try_from(proof_seed().as_u64() % 64).unwrap_or(0);
+        let pad =
+            " ".repeat(MAX_INPUT_LINE_LEN + MAX_DISCARD_BYTES + 1 + seed_offset);
         let lines = format!("ack {pad}{other}\nack {ID}\n");
 
         run.feed(lines.as_bytes()).unwrap();
         run.finish().unwrap();
 
+        report_violations(proof_seed(), run.trace());
         assert_eq!(run.trace().emitted, [ID]);
         assert_eq!(run.trace().acked, [ID]);
         assert_eq!(run.trace().printed, [ID]);

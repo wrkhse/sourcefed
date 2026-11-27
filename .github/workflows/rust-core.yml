@@ -23,6 +23,8 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SOURCEFED_PROOF_SEED: 1
     defaults:
       run:
         working-directory: rust
@@ -84,6 +86,14 @@ jobs:
             seed: 1
             steps: 8
             guarantee: BoundedCleanup
+          - proof: stdin-handoff
+            seed: 1
+            test: raw_input::tests::a_held_ack_is_applied_when_the_run_halts_in_the_handoff
+            guarantee: AtLeastOnceDelivery
+          - proof: overlong-line
+            seed: 1
+            test: raw_input::tests::an_overlong_line_is_discarded_and_the_next_ack_applied
+            guarantee: AtLeastOnceDelivery
     defaults:
       run:
         working-directory: rust
@@ -102,12 +112,30 @@ jobs:
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
       - name: Control (clean tree upholds the guarantee)
+        shell: bash --noprofile --norc {0}
         env:
           SOURCEFED_COMMIT: ${{ github.sha }}
+          SOURCEFED_PROOF_SEED: ${{ matrix.seed }}
         run: |
-          set -euo pipefail
-          cargo run --quiet --bin sourcefed-sim --locked -- \
-            --seed ${{ matrix.seed }} --steps ${{ matrix.steps }}
+          set -uo pipefail
+          if [ -n '${{ matrix.test }}' ]; then
+            output=$(cargo test -p sourcefed-sim --bin sourcefed-sim --locked -- \
+              --exact '${{ matrix.test }}' 2>&1)
+            status=$?
+            echo "$output"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::control: ${{ matrix.proof }} test exit=$status"
+              exit 1
+            fi
+            if ! printf '%s\n' "$output" \
+              | grep -Fq 'test result: ok. 1 passed'; then
+              echo "::error::control: ${{ matrix.proof }} did not run one test"
+              exit 1
+            fi
+          else
+            cargo run --quiet --bin sourcefed-sim --locked -- \
+              --seed ${{ matrix.seed }} --steps ${{ matrix.steps }}
+          fi
       - name: Revert the fix
         working-directory: .
         run: git apply rust/sim/reverted-fixes/${{ matrix.proof }}.patch
@@ -115,33 +143,59 @@ jobs:
         shell: bash --noprofile --norc {0}
         env:
           SOURCEFED_COMMIT: ${{ github.sha }}
+          SOURCEFED_PROOF_SEED: ${{ matrix.seed }}
         run: |
           set -uo pipefail
-          output=$(cargo run --quiet --bin sourcefed-sim --locked -- \
-            --seed ${{ matrix.seed }} --steps ${{ matrix.steps }} 2>&1)
-          status=$?
-          echo "$output"
-          if [ "$status" -eq 0 ]; then
-            echo "::error::reverted-fix: ${{ matrix.proof }} unexpectedly passed"
-            exit 1
-          fi
-          if [ "$status" -ne 1 ]; then
-            echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 1"
-            exit 1
-          fi
-          printf -v padded_seed '%016s' '${{ matrix.seed }}'
-          padded_seed=${padded_seed// /0}
-          expected="^sourcefed-sim: seed=$padded_seed commit=${{ github.sha }}"
-          expected+=' violation=${{ matrix.guarantee }}: '
-          if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
-            echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
-            exit 1
-          fi
-          violations=$(printf '%s\n' "$output" \
-            | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=') || violations=0
-          if [ "$violations" -ne 1 ]; then
-            echo "::error::reverted-fix: ${{ matrix.proof }} violations=$violations"
-            exit 1
+          if [ -n '${{ matrix.test }}' ]; then
+            output=$(cargo test -p sourcefed-sim --bin sourcefed-sim --locked -- \
+              --exact '${{ matrix.test }}' 2>&1)
+            status=$?
+            echo "$output"
+            if [ "$status" -ne 101 ]; then
+              echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 101"
+              exit 1
+            fi
+            printf -v padded_seed '%016s' '${{ matrix.seed }}'
+            padded_seed=${padded_seed// /0}
+            expected="^sourcefed-sim: seed=$padded_seed commit=${{ github.sha }}"
+            expected+=' violation=${{ matrix.guarantee }}: '
+            if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
+              echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
+              exit 1
+            fi
+            found=$(printf '%s\n' "$output" \
+              | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=') || found=0
+            if [ "$found" -ne 1 ]; then
+              echo "::error::reverted-fix: ${{ matrix.proof }} found=$found"
+              exit 1
+            fi
+          else
+            output=$(cargo run --quiet --bin sourcefed-sim --locked -- \
+              --seed ${{ matrix.seed }} --steps ${{ matrix.steps }} 2>&1)
+            status=$?
+            echo "$output"
+            if [ "$status" -eq 0 ]; then
+              echo "::error::reverted-fix: ${{ matrix.proof }} unexpectedly passed"
+              exit 1
+            fi
+            if [ "$status" -ne 1 ]; then
+              echo "::error::reverted-fix: ${{ matrix.proof }} exit=$status, want 1"
+              exit 1
+            fi
+            printf -v padded_seed '%016s' '${{ matrix.seed }}'
+            padded_seed=${padded_seed// /0}
+            expected="^sourcefed-sim: seed=$padded_seed commit=${{ github.sha }}"
+            expected+=' violation=${{ matrix.guarantee }}: '
+            if ! printf '%s\n' "$output" | grep -Eq "$expected"; then
+              echo "::error::reverted-fix: $expected absent in ${{ matrix.proof }}"
+              exit 1
+            fi
+            violations=$(printf '%s\n' "$output" \
+              | grep -Ec '^sourcefed-sim: seed=.* commit=.* violation=') || violations=0
+            if [ "$violations" -ne 1 ]; then
+              echo "::error::reverted-fix: ${{ matrix.proof }} violations=$violations"
+              exit 1
+            fi
           fi
 
   # Every viable mutant in the lines a pull request changes must be caught; an

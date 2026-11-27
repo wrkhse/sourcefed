@@ -1,0 +1,14 @@
+diff --git a/rust/crates/cli/src/lib.rs b/rust/crates/cli/src/lib.rs
+--- a/rust/crates/cli/src/lib.rs
++++ b/rust/crates/cli/src/lib.rs
+@@ -361,10 +361,6 @@ impl Inputs {
+         } else {
+             self.take(engine, limit)?;
+         }
+ 
+-        if let Some(input) = self.reader.close_held() {
+-            self.handle(engine, input)?;
+-        }
+-
+         Ok(self.stopped)
+     }

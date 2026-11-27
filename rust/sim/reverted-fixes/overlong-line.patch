@@ -1,0 +1,8 @@
+diff --git a/rust/crates/cli/src/lib.rs b/rust/crates/cli/src/lib.rs
+--- a/rust/crates/cli/src/lib.rs
++++ b/rust/crates/cli/src/lib.rs
+@@ -525,3 +525,3 @@ fn read_line(
+ 
+-    Ok(Line::Endless)
++    Err(io::Error::other("input line runs past the discard bound"))
+ }
