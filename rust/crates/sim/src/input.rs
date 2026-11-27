@@ -15,6 +15,7 @@ const MAX_QUEUED: usize = 8;
 #[derive(Debug)]
 pub struct ScriptedInputs {
     queued: VecDeque<Input>,
+    acked: Vec<EventId>,
 }
 
 impl Default for ScriptedInputs {
@@ -29,6 +30,7 @@ impl ScriptedInputs {
     pub fn new() -> Self {
         Self {
             queued: VecDeque::with_capacity(MAX_QUEUED),
+            acked: Vec::new(),
         }
     }
 
@@ -67,7 +69,8 @@ impl ScriptedInputs {
 
     /// Applies one queued input through the path the stdin reader uses.
     ///
-    /// Returns whether that input requested a stop; an empty queue does not.
+    /// Applied acks are recorded in `acked_ids`. Returns whether that input
+    /// requested a stop; an empty queue does not.
     ///
     /// # Errors
     /// Returns the store's error if an acknowledgement cannot be saved.
@@ -79,7 +82,24 @@ impl ScriptedInputs {
             return Ok(false);
         };
 
-        apply_input(engine, input)
+        let acked = match &input {
+            Input::Ack(id) => Some(id.clone()),
+            Input::Stop => None,
+        };
+
+        let stopped = apply_input(engine, input)?;
+
+        if let Some(id) = acked {
+            self.acked.push(id);
+        }
+
+        Ok(stopped)
+    }
+
+    /// Returns the IDs acknowledged by applied `Input::Ack` values.
+    #[must_use]
+    pub fn acked_ids(&self) -> &[EventId] {
+        &self.acked
     }
 
     /// Returns whether no input is waiting.
@@ -304,5 +324,37 @@ mod tests {
         assert!(inputs.apply_next(&mut engine).unwrap());
         assert_eq!(engine.pending(), Some(VecDeque::new()));
         assert_eq!(engine.state(), EngineState::Running);
+    }
+
+    #[test]
+    fn acked_ids_is_empty_before_an_ack_is_applied() {
+        let inputs = ScriptedInputs::new();
+
+        assert_eq!(inputs.acked_ids().to_vec(), Vec::<EventId>::new());
+    }
+
+    #[test]
+    fn acked_ids_lists_exactly_the_applied_ack_ids() {
+        let mut engine = engine().unwrap();
+        let mut inputs = ScriptedInputs::new();
+        let first = EventId::new("event-0".into()).unwrap();
+        let second = EventId::new("event-1".into()).unwrap();
+
+        inputs.queued.push_back(Input::Ack(first.clone()));
+        inputs.queued.push_back(Input::Ack(second.clone()));
+
+        assert!(!inputs.apply_all(&mut engine).unwrap());
+        assert_eq!(inputs.acked_ids().to_vec(), vec![first, second]);
+    }
+
+    #[test]
+    fn a_stop_never_adds_an_acked_id() {
+        let mut engine = engine().unwrap();
+        let mut inputs = ScriptedInputs::new();
+
+        inputs.queued.push_back(Input::Stop);
+
+        assert!(inputs.apply_all(&mut engine).unwrap());
+        assert_eq!(inputs.acked_ids().to_vec(), Vec::<EventId>::new());
     }
 }

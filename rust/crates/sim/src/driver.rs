@@ -129,7 +129,7 @@ pub fn simulate_with_trace(
             inputs.apply_next(&mut engine)?
         };
 
-        record_acked(&mut trace, &engine);
+        record_acked(&mut trace, inputs.acked_ids());
         forget_acked(&engine, &mut printed);
 
         if stopped {
@@ -168,17 +168,13 @@ fn record_emitted(trace: &mut Trace, pending: &[Event]) {
     }
 }
 
-// An emitted ID no longer queued has been acknowledged.
-fn record_acked(trace: &mut Trace, engine: &PollEngine<MemoryStore>) {
-    let Some(pending) = engine.pending() else {
-        return;
-    };
-    let present: HashSet<&str> =
-        pending.iter().map(|event| event.id().as_str()).collect();
+// Records only the IDs of Ack inputs that were applied this run.
+fn record_acked(trace: &mut Trace, acked: &[EventId]) {
+    for id in acked {
+        let id = String::from(id.as_str());
 
-    for id in &trace.emitted {
-        if !present.contains(id.as_str()) && !trace.acked.contains(id) {
-            trace.acked.push(id.clone());
+        if !trace.acked.contains(&id) {
+            trace.acked.push(id);
         }
     }
 }
@@ -555,24 +551,69 @@ mod tests {
     }
 
     #[test]
-    fn record_acked_adds_only_missing_ids_once() {
-        let present = named_event("present");
-        let engine = engine_with_pending(&[present]);
+    fn record_acked_adds_only_applied_ids_once() {
+        let acked = [
+            EventId::new("first".into()).unwrap(),
+            EventId::new("already-recorded".into()).unwrap(),
+        ];
         let mut trace = Trace {
-            emitted: vec![
-                String::from("present"),
-                String::from("acked-before"),
-                String::from("gone"),
-            ],
-            acked: vec![String::from("acked-before")],
+            acked: vec![String::from("already-recorded")],
             ..Default::default()
         };
 
-        record_acked(&mut trace, &engine);
+        record_acked(&mut trace, &acked);
 
         assert_eq!(
             trace.acked,
-            vec![String::from("acked-before"), String::from("gone")]
+            vec![String::from("already-recorded"), String::from("first")]
+        );
+    }
+
+    #[test]
+    fn a_trace_records_only_acks_from_applied_inputs() {
+        let mut out = Vec::new();
+
+        let run = simulate_with_trace(Seed::from_u64(1), 3, &mut out).unwrap();
+
+        assert_eq!(
+            run.trace.acked,
+            vec![String::from("timer:sim:1970-01-01T00:00:01Z")]
+        );
+        assert_eq!(
+            run.trace.printed,
+            vec![
+                String::from("timer:sim:1970-01-01T00:00:01Z"),
+                String::from("timer:sim:1970-01-01T00:00:02Z")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_event_leaving_pending_without_an_ack_is_a_violation() {
+        use crate::check::{Checker, Guarantee, Violation};
+
+        let event = named_event("vanished");
+        let id = String::from("vanished");
+        let mut engine = engine_with_pending(std::slice::from_ref(&event));
+        let mut trace = Trace {
+            emitted: vec![id.clone()],
+            ..Default::default()
+        };
+        let inputs = ScriptedInputs::new();
+
+        // The event leaves pending outside the applied Ack-input path.
+        assert_eq!(engine.ack(std::slice::from_ref(event.id())).unwrap(), 1);
+        assert_eq!(engine.pending(), Some(VecDeque::new()));
+
+        record_acked(&mut trace, inputs.acked_ids());
+
+        assert_eq!(trace.acked, Vec::<String>::new());
+        assert_eq!(
+            Checker::check(&trace),
+            vec![Violation {
+                guarantee: Guarantee::AtLeastOnceDelivery,
+                reason: format!("emitted event {id} was neither printed nor acked"),
+            }]
         );
     }
 }
