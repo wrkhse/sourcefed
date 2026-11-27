@@ -629,6 +629,9 @@ mod tests {
     // Ample for a few hundred inputs, yet a stuck drain or send fails the
     // test rather than hanging it.
     const WAIT: Duration = Duration::from_secs(3);
+    // A full queue drains through a real file store, which is slower on a
+    // loaded runner; keep this ample so the bound tests liveness, not speed.
+    const DRAIN_TEST_WAIT: Duration = Duration::from_secs(20);
 
     fn ack(id: &str) -> Input {
         Input::Ack(EventId::new(id.into()).unwrap())
@@ -679,11 +682,12 @@ mod tests {
         engine("deploy".into(), 1, dir).unwrap()
     }
 
-    // Runs `finish` on its own thread and waits at most `WAIT` for it.
-    fn finish_within(
+    // Runs `finish` on its own thread and waits at most `wait` for it.
+    fn finish_within_timeout(
         mut inputs: Inputs,
         mut engine: PollEngine,
         expected_stop: bool,
+        wait: Duration,
     ) -> (Inputs, PollEngine) {
         let (done, finished) = mpsc::channel();
 
@@ -693,15 +697,23 @@ mod tests {
             let _ = done.send((result, inputs, engine));
         });
 
-        let received = finished.recv_timeout(WAIT);
+        let received = finished.recv_timeout(wait);
 
-        assert!(received.is_ok(), "finish did not return within {WAIT:?}");
+        assert!(received.is_ok(), "finish did not return within {wait:?}");
 
         let (result, inputs, engine) = received.unwrap();
 
         assert_eq!(result, Ok(expected_stop));
 
         (inputs, engine)
+    }
+
+    fn finish_within(
+        inputs: Inputs,
+        engine: PollEngine,
+        expected_stop: bool,
+    ) -> (Inputs, PollEngine) {
+        finish_within_timeout(inputs, engine, expected_stop, WAIT)
     }
 
     // Waits at most `WAIT` for a phase change, yielding between checks.
@@ -873,7 +885,8 @@ mod tests {
 
         assert_eq!(read.recv_timeout(WAIT), Ok(()));
 
-        let (inputs, engine) = finish_within(inputs, engine, false);
+        let (inputs, engine) =
+            finish_within_timeout(inputs, engine, false, DRAIN_TEST_WAIT);
 
         assert!(inputs.reader.is_halted());
         assert_eq!(pending_ids(&engine), Vec::<&str>::new());
