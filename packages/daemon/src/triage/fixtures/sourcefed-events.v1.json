@@ -27,6 +27,22 @@
       },
       "elapsed_ms": 283
     },
+    "opencode-review-verdict": {
+      "params": {
+        "sessionID": "slice-2-triage-replay",
+        "monitorID": "slice-2-replay-42",
+        "source": "github",
+        "kind": "comment",
+        "summary": "github-actions[bot] commented on PR #42",
+        "body": "<!-- opencode-review --> Verdict: request changes. Please bound the request line before parsing and add a regression test.",
+        "actionable": true
+      },
+      "deliver": true,
+      "reply": {
+        "effects": []
+      },
+      "elapsed_ms": 338
+    },
     "approval": {
       "params": {
         "sessionID": "slice-2-triage-replay",

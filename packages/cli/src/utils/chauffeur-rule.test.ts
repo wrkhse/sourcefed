@@ -146,6 +146,26 @@ describe("installTriageRule", () => {
     assert.equal(readFileSync(second.path, "utf8"), '{"edited":true}\n');
   });
 
+  test("an explicit update overwrites a user-edited rule with the canonical text", async () => {
+    const env = environment();
+    const first = await installTriageRule({ name: "chauffeur-next", env });
+
+    writeFileSync(first.path, '{"edited":true}\n');
+    const updated = await installTriageRule({
+      name: "chauffeur-next",
+      env,
+      update: true,
+    });
+
+    assert.equal(updated.status, "updated");
+    assert.equal(updated.path, first.path);
+    assert.equal(
+      readFileSync(updated.path, "utf8"),
+      `${JSON.stringify(TRIAGE_RULE, null, 2)}\n`,
+    );
+    assert.equal(statSync(updated.path).mode & 0o777, 0o644);
+  });
+
   test("refuses the chauffeur name when no v2 daemon answers", async () => {
     const env = environment();
     const result = await installTriageRule({ name: "chauffeur", env });

@@ -29,7 +29,7 @@ export const TRIAGE_RULE = {
         outcomes: ["yes", "no"],
         evidence: ["event", "thread", "monitor"],
         instructions:
-          'A sourcefed event arrived for the coding agent\'s session. The event block gives its source, kind, summary and body, and whether sourcefed marks it actionable or informational; the thread block names the item it is about, when known; the monitor block says what this session\'s monitor follows. Should the agent be shown this event now? Answer yes for events that need the agent to do something: CI failures, requested changes, questions or requests addressed to it or its user, merge conflicts, a merged pull request with follow-up work, and new facts that change the work it is doing. Answer no for noise: bot comments, approvals, status or assignee changes nobody asked it to act on, thanks, and anything it has already handled. A chat message is noise unless it asks something, gives a task, or adds a fact the work needs: acknowledgements, side remarks and logistics between colleagues ("ok", "on it", "moving this to DM", "which doc?") are noise, and so is a message without text (body "[message without text]").',
+          'A sourcefed event arrived for the coding agent\'s session. The event block gives its source, kind, summary and body, and whether sourcefed marks it actionable or informational; the thread block names the item it is about, when known; the monitor block says what this session\'s monitor follows. Should the agent be shown this event now? Answer yes for events that need the agent to do something: CI failures, requested changes, questions or requests addressed to it or its user, merge conflicts, a merged pull request with follow-up work, and new facts that change the work it is doing. Answer yes for events whose body starts with the HTML comment marker <!-- opencode-review -->, even when the author is a bot, so the coder sees the review verdict. Answer no for noise: bot comments, approvals, status or assignee changes nobody asked it to act on, thanks, and anything it has already handled. A chat message is noise unless it asks something, gives a task, or adds a fact the work needs: acknowledgements, side remarks and logistics between colleagues ("ok", "on it", "moving this to DM", "which doc?") are noise, and so is a message without text (body "[message without text]").',
       },
     },
   ],
@@ -50,7 +50,7 @@ export const TRIAGE_RULE = {
 export const CHAUFFEUR_NAMES = ["chauffeur-next", "chauffeur"] as const;
 
 export type RuleInstall = {
-  status: "written" | "present" | "refused" | "skipped";
+  status: "written" | "present" | "updated" | "refused" | "skipped";
   path: string;
   reason?: string;
 };
@@ -69,20 +69,23 @@ export function triageRulePath(
 }
 
 /**
- * Installs the sourcefed/triage rule for one Chauffeur v2 install, never overwriting a rule that
- * is already there. Chauffeur v1 reads the same rules folder under its own name, so "chauffeur"
+ * Installs the sourcefed/triage rule for one Chauffeur v2 install. A rule that
+ * is already there is left alone; it can be updated only with explicit opt-in.
+ * Chauffeur v1 reads the same rules folder under its own name, so "chauffeur"
  * is only written when a v2 daemon answers on that name's socket.
  */
 export async function installTriageRule(options: {
   name: string;
   env?: Record<string, string | undefined>;
   requireConfigDir?: boolean;
+  update?: boolean;
   probe?: (socket: string) => Promise<unknown>;
 }): Promise<RuleInstall> {
   const {
     name,
     env = process.env,
     requireConfigDir = false,
+    update = false,
     probe = probeChauffeur,
   } = options;
 
@@ -116,7 +119,14 @@ export async function installTriageRule(options: {
     }
   }
 
-  if (existsSync(file)) return { status: "present", path: file };
+  if (existsSync(file)) {
+    if (!update) return { status: "present", path: file };
+
+    await writeFile(file, JSON.stringify(TRIAGE_RULE, null, 2) + "\n", {
+      mode: 0o644,
+    });
+    return { status: "updated", path: file };
+  }
 
   await mkdir(path.dirname(file), { recursive: true });
 

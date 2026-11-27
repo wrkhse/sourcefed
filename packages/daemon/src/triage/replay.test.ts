@@ -110,11 +110,11 @@ function replayEvent(replayCase: ReplayCase): MonitorEvent {
 }
 
 describe("sourcefed event replay", () => {
-  test("the fixture holds twelve cases with unique ids", () => {
-    assert.equal(fixture.cases.length, 12);
+  test("the fixture holds thirteen cases with unique ids", () => {
+    assert.equal(fixture.cases.length, 13);
     assert.equal(
       new Set(fixture.cases.map((replayCase) => replayCase.id)).size,
-      12,
+      13,
     );
   });
 

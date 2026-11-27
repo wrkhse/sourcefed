@@ -1,5 +1,5 @@
 {
-  "description": "Twelve synthetic labelled events from v1's event-gate categories. evidence is what sourcefed's evidence builder makes from v1.params, monitor_source and subject (wrkhse/sourcefed#27, sourcefed#29): event as five \"name: value\" lines, thread as \"<label>: <title>\", the label alone when the event has no title, the title alone when there is no label, and empty when neither, monitor as the source's describe(). The cases cover two of sourcefed's thread-table rows: label and title (GitHub and Jira) and label alone (Slack); none covers title alone or neither. v1 replies, each with the params it answered, are in sourcefed-events.v1.json.",
+  "description": "Thirteen synthetic labelled events from v1's event-gate categories. evidence is what sourcefed's evidence builder makes from v1.params, monitor_source and subject (wrkhse/sourcefed#27, sourcefed#29): event as five \"name: value\" lines, thread as \"<label>: <title>\", the label alone when the event has no title, the title alone when there is no label, and empty when neither, monitor as the source's describe(). The cases cover two of sourcefed's thread-table rows: label and title (GitHub and Jira) and label alone (Slack); none covers title alone or neither. v1 replies, each with the params it answered, are in sourcefed-events.v1.json.",
   "cases": [
     {
       "id": "bot-coverage",
@@ -28,6 +28,37 @@
       },
       "evidence": {
         "event": "source: github\nkind: comment\nsummary: codecov[bot] commented on PR #42\nbody: Coverage 81.2% (+0.3%).\nactionable: no (informational)",
+        "thread": "#42: Bound and cancel daemon navigations",
+        "monitor": "GitHub wrkhse/chauffeur#42"
+      }
+    },
+    {
+      "id": "opencode-review-verdict",
+      "expected": {
+        "deliver": true
+      },
+      "monitor_source": {
+        "type": "github",
+        "repo": "wrkhse/chauffeur",
+        "prNumber": 42
+      },
+      "subject": {
+        "title": "Bound and cancel daemon navigations"
+      },
+      "v1": {
+        "method": "chauffeur.gate",
+        "params": {
+          "sessionID": "slice-2-triage-replay",
+          "monitorID": "slice-2-replay-42",
+          "source": "github",
+          "kind": "comment",
+          "summary": "github-actions[bot] commented on PR #42",
+          "body": "<!-- opencode-review --> Verdict: request changes. Please bound the request line before parsing and add a regression test.",
+          "actionable": true
+        }
+      },
+      "evidence": {
+        "event": "source: github\nkind: comment\nsummary: github-actions[bot] commented on PR #42\nbody: <!-- opencode-review --> Verdict: request changes. Please bound the request line before parsing and add a regression test.\nactionable: yes",
         "thread": "#42: Bound and cancel daemon navigations",
         "monitor": "GitHub wrkhse/chauffeur#42"
       }

@@ -7,10 +7,10 @@ commit.
 
 | File                       | SHA-256                                                            |
 | -------------------------- | ------------------------------------------------------------------ |
-| `sourcefed-events.json`    | `d7b0beb75840ce02591e413e036027038bd4991c2c8ee12e15c22e2ab6ad89eb` |
-| `sourcefed-events.v1.json` | `6557fbeafeab0cf8345f806d4343314a66616f1dab2a914f6fc74e2a2a539cd9` |
+| `sourcefed-events.json`    | `a5da5d030cbc73f3cba867f94dd1e89eea38ce8935f8435c71b9136f72d3758e` |
+| `sourcefed-events.v1.json` | `9d0ff82288823d39828de26b1e1c3051ea2e289308613dc82d2c1108e13cb525` |
 
-`sourcefed-events.json` holds twelve labelled events from v1's event-gate
+`sourcefed-events.json` holds thirteen labelled events from v1's event-gate
 categories. Each case carries its `id`, the monitor's `monitor_source`, an
 optional `subject` title, the `v1.params` v1 was asked, the gate's
 `expected.deliver` verdict, and the `evidence` sourcefed's builder makes
