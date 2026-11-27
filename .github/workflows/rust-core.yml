@@ -544,11 +544,15 @@ jobs:
           failures=0
           for i in $(seq 1 50); do
             echo "iteration $i"
-            cargo test -p sourcefed-cli --lib --locked -- \
-              --exact 'tests::finish_applies_a_full_queue_the_reader_left_when_the_run_ends'
+            output=$(cargo test -p sourcefed-cli --lib --locked -- \
+              --exact 'tests::finish_applies_a_full_queue_the_reader_left_when_the_run_ends' 2>&1)
             status=$?
+            echo "$output"
             if [ "$status" -ne 0 ]; then
               echo "iteration $i failed (exit=$status)"
+              failures=$((failures + 1))
+            elif ! printf '%s\n' "$output" | grep -Fq '1 passed; 0 failed'; then
+              echo "iteration $i failed (test did not run: no '1 passed; 0 failed' in output)"
               failures=$((failures + 1))
             fi
           done
