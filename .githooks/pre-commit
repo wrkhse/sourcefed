@@ -101,6 +101,9 @@ if ((${#other_files[@]} > 0)); then
       fail 'tidy platform'
       ;;
   esac
+  if [[ ! "$tidy_sha" =~ ^[0-9a-f]{64}$ ]]; then
+    fail 'tidy pin'
+  fi
   tidy_url="$release_base/${TIDY_VERSION}/$asset"
   cache_dir="${TIDY_CACHE_ROOT:-$HOME/.cache/wrkhse}/tidy-${tidy_sha}"
   archive="$cache_dir/tidy.tar.gz"
