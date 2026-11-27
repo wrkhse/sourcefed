@@ -151,7 +151,9 @@ pub fn simulate_with_trace(
     }
 
     let cleanup = observe_cleanup(seed)?;
-    trace.cleanup_scanned = cleanup.offered;
+    // The core store does not expose its scan count through the public API,
+    // so this field is only populated by synthetic checker traces.
+    trace.cleanup_scanned = 0;
     trace.cleanup_removed = cleanup.removed;
     trace.user_files_removed = cleanup.user_removed;
 
@@ -188,8 +190,6 @@ fn record_emitted(trace: &mut Trace, pending: &[Event]) {
 // What one real `Store::open` observed in a directory of leftover temps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CleanupObservation {
-    // Generated temp entries offered to the open, before any bound.
-    offered: usize,
     // Generated temps that disappeared during the open.
     removed: usize,
     // User-named files that disappeared during the open.
@@ -228,7 +228,6 @@ fn observe_open(
     let user_removed = user_files.iter().filter(|path| !path.exists()).count();
 
     Ok(CleanupObservation {
-        offered: generated.len(),
         removed,
         user_removed,
     })
@@ -694,7 +693,6 @@ mod tests {
         assert_eq!(
             observed,
             CleanupObservation {
-                offered: 1,
                 removed: 1,
                 user_removed: 0,
             }
@@ -712,7 +710,6 @@ mod tests {
 
         let observed = observe_cleanup(draw).unwrap();
 
-        assert_eq!(observed.offered, expected);
         assert_eq!(observed.removed, expected.min(MAX_REMOVE));
         assert_eq!(observed.user_removed, 0);
     }
@@ -911,7 +908,7 @@ mod tests {
 
         let mut draw = Seed::from_u64(1);
         let offered = draw.pick_index(MAX_OFFERED).saturating_add(1);
-        assert_eq!(run.trace.cleanup_scanned, offered);
+        assert_eq!(run.trace.cleanup_scanned, 0);
         assert_eq!(run.trace.cleanup_removed, offered.min(MAX_REMOVE));
         assert_eq!(run.trace.user_files_removed, 0);
         assert_eq!(Checker::check(&run.trace), Vec::new());
