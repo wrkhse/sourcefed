@@ -235,7 +235,10 @@ impl Event {
 Every failure path has one named reason. The seam keeps the event for each.
 
 ```rust
+pub const HOOK_CONNECT_REASON: &str = "event-before-connect";
+pub const HOOK_CONNECT_TIMEOUT_REASON: &str = "event-before-connect-timeout";
 pub const HOOK_SOCKET_UNTRUSTED_REASON: &str = "event-before-socket-untrusted";
+pub const HOOK_ENCODE_REASON: &str = "event-before-encode";
 pub const HOOK_DECODE_REASON: &str = "event-before-decode";
 pub const HOOK_PEER_CLOSED_REASON: &str = "event-before-peer-closed";
 pub const HOOK_VERSION_REASON: &str = "event-before-version-mismatch";
@@ -243,6 +246,7 @@ pub const HOOK_ID_REASON: &str = "event-before-id-mismatch";
 pub const HOOK_UNKNOWN_OUTCOME_REASON: &str = "event-before-unknown-outcome";
 pub const HOOK_REWRITE_REFUSED_REASON: &str = "event-before-rewrite-refused";
 pub const HOOK_ANNOTATIONS_REASON: &str = "event-before-annotations-invalid";
+pub const HOOK_ANNOTATION_TYPE_REASON: &str = "event-before-annotation-type";
 pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
 ```
 
