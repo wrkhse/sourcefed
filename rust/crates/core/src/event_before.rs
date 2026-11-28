@@ -253,6 +253,22 @@ mod tests {
     }
 
     #[test]
+    fn allow_all_is_a_passthrough_hook() {
+        assert!(AllowAll.is_passthrough());
+
+        let flag = in_flight();
+        let decision = decide_before(
+            Arc::new(AllowAll),
+            &event("fired", None),
+            Duration::from_nanos(1),
+            &flag,
+        );
+
+        assert_eq!(decision, BeforeDecision::Keep { reason: None });
+        assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn allow_all_is_a_passthrough_that_keeps_every_event() {
         let flag = in_flight();
         let decision = decide_before(
