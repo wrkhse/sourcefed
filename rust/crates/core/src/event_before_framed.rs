@@ -521,7 +521,9 @@ mod tests {
     /// out.
     fn accept_with_deadline(listener: &UnixListener) -> UnixStream {
         listener.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or_else(Instant::now);
 
         loop {
             match listener.accept() {
