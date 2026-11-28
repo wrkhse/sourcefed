@@ -385,24 +385,21 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
             .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
         let mut fds = [PollFd::new(fd, PollFlags::OUT)];
 
-        if poll(&mut fds, Some(&timeout))
-            .map_err(|_| HOOK_CONNECT_REASON.to_owned())?
-            == 0
-        {
+        if poll_timed_out(
+            poll(&mut fds, Some(&timeout))
+                .map_err(|_| HOOK_CONNECT_REASON.to_owned())?,
+        ) {
             return Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned());
         }
 
         let [event] = fds;
-        if !event
-            .revents()
-            .intersects(PollFlags::OUT | PollFlags::ERR | PollFlags::HUP)
-        {
+        if revents_need_more_wait(event.revents()) {
             continue;
         }
 
         match socket_error(fd) {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(Errno::AGAIN | Errno::INPROGRESS)) => {
+            Ok(Err(errno)) if retryable_connected_socket_error(errno) => {
                 let _ = remaining(deadline)
                     .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
             }
@@ -412,6 +409,21 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
             Ok(Err(_)) | Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
         }
     }
+}
+
+// True when poll reported no ready descriptors before the deadline.
+fn poll_timed_out(ready: usize) -> bool {
+    ready == 0
+}
+
+// True when the polled events say the connect still needs more waiting.
+fn revents_need_more_wait(revents: PollFlags) -> bool {
+    !revents.intersects(PollFlags::OUT.union(PollFlags::ERR).union(PollFlags::HUP))
+}
+
+// True only while the connect is still in flight.
+fn retryable_connected_socket_error(errno: Errno) -> bool {
+    matches!(errno, Errno::AGAIN | Errno::INPROGRESS)
 }
 
 // A parent directory is trusted when it belongs to the socket's owner and
@@ -976,6 +988,30 @@ mod tests {
     #[test]
     fn retryable_connect_error_rejects_other_errnos() {
         assert!(!retryable_connect_error(Errno::ACCESS));
+    }
+
+    #[test]
+    fn poll_timed_out_means_poll_reported_no_ready_descriptors() {
+        assert!(poll_timed_out(0));
+        assert!(!poll_timed_out(1));
+    }
+
+    #[test]
+    fn revents_need_more_wait_only_for_unrelated_events() {
+        assert!(revents_need_more_wait(PollFlags::empty()));
+        assert!(revents_need_more_wait(PollFlags::IN));
+        assert!(!revents_need_more_wait(PollFlags::OUT));
+        assert!(!revents_need_more_wait(PollFlags::ERR));
+        assert!(!revents_need_more_wait(PollFlags::HUP));
+        assert!(!revents_need_more_wait(PollFlags::OUT.union(PollFlags::IN)));
+    }
+
+    #[test]
+    fn retryable_connected_socket_error_only_for_in_flight_connect() {
+        assert!(retryable_connected_socket_error(Errno::AGAIN));
+        assert!(retryable_connected_socket_error(Errno::INPROGRESS));
+        assert!(!retryable_connected_socket_error(Errno::CONNREFUSED));
+        assert!(!retryable_connected_socket_error(Errno::ACCESS));
     }
 
     #[test]
