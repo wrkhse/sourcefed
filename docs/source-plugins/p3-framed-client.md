@@ -269,6 +269,11 @@ pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
 The connect path uses the safe `net` and `event` functions `socket_with`,
 `connect`, `poll` and `socket_error` (docs.rs/rustix/1.1.6).
 
+Because `ECONNREFUSED` is retried until the deadline to keep macOS's
+full-backlog behavior consistent, a stale socket with no listener also spends
+the budget and reports `event-before-connect-timeout`; this is the accepted
+bounded fail-closed behavior.
+
 The post-connect peer check was declined because rustix's peer-cred API needs
 the unapproved `linux_kernel` feature; the parent-folder check closes the
 cross-user swap and symlink case on Linux and macOS.

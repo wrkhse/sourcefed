@@ -453,10 +453,7 @@ impl<S: StateStore> PollEngine<S> {
                         let hook_fields = annotations.into_inner();
                         let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
 
-                        if hook_fields.len() > room {
-                            reason = Some(HOOK_ANNOTATIONS_REASON.into());
-                        }
-
+                        reason = Some(HOOK_ANNOTATIONS_REASON.into());
                         fields.extend(hook_fields.into_iter().take(room));
 
                         event.with_annotations(fields).unwrap_or_else(|_| {
@@ -1536,6 +1533,71 @@ mod tests {
 
         assert_eq!(pending[0].annotations(), &expected);
         assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_that_fills_the_last_room_keeps_every_field() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook: BTreeMap<String, String> = (0..2)
+            .map(|index| (format!("hook-{index:02}"), "new".to_owned()))
+            .collect();
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([
+                ("hook-00".to_owned(), "new".to_owned()),
+                ("hook-01".to_owned(), "new".to_owned()),
+            ])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_below_the_last_room_keeps_every_field() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([("hook-00".to_owned(), "new".to_owned())]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([("hook-00".to_owned(), "new".to_owned())])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS - 1);
         assert!(f.engine.store.is_seen(&key(), fired.id()));
     }
 

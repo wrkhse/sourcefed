@@ -178,6 +178,16 @@ fn exchange_stream(
     read_frame(stream, deadline)
 }
 
+// Maps an I/O error to the reason callers see: a timeout for a blocked peer,
+// a connect error for anything else.
+fn io_error_reason(error: &std::io::Error) -> String {
+    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) {
+        HOOK_TIMEOUT_REASON.to_owned()
+    } else {
+        HOOK_CONNECT_REASON.to_owned()
+    }
+}
+
 fn write_frame(
     stream: &mut UnixStream,
     frame: &[u8],
@@ -197,15 +207,7 @@ fn write_frame(
         let count = match stream.write(slice) {
             Ok(0) => return Err(HOOK_CONNECT_REASON.to_owned()),
             Ok(count) => count,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock
-                ) =>
-            {
-                return Err(HOOK_TIMEOUT_REASON.to_owned());
-            }
-            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+            Err(error) => return Err(io_error_reason(&error)),
         };
 
         written = written.saturating_add(count);
@@ -226,15 +228,7 @@ fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Result<Value, Strin
 
         let read = match stream.read(&mut chunk) {
             Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock
-                ) =>
-            {
-                return Err(HOOK_TIMEOUT_REASON.to_owned());
-            }
-            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+            Err(error) => return Err(io_error_reason(&error)),
         };
 
         if read == 0 {
@@ -319,14 +313,23 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 }
 
 // A timeout below a millisecond can round down to zero, which blocks forever.
-fn io_budget(deadline: Instant) -> Result<Duration, String> {
-    let left = remaining(deadline)?;
-
+fn io_budget_for(left: Duration) -> Result<Duration, String> {
     if left < Duration::from_millis(1) {
         return Err(HOOK_TIMEOUT_REASON.to_owned());
     }
 
     Ok(left)
+}
+
+fn io_budget(deadline: Instant) -> Result<Duration, String> {
+    let left = remaining(deadline)?;
+
+    io_budget_for(left)
+}
+
+// Only a full backlog or an in-progress connect leaves the socket retryable.
+fn retryable_connect_error(errno: Errno) -> bool {
+    matches!(errno, Errno::AGAIN | Errno::INPROGRESS | Errno::CONNREFUSED)
 }
 
 // A peer is trusted only when its socket path and its owner both check out.
@@ -353,11 +356,12 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
 
         match connect(&fd, &address) {
             Ok(()) => break,
-            Err(Errno::INPROGRESS) => {
-                wait_for_connect(&fd, deadline)?;
-                break;
-            }
-            Err(Errno::AGAIN | Errno::CONNREFUSED) => {
+            Err(errno) if retryable_connect_error(errno) => {
+                if errno == Errno::INPROGRESS {
+                    wait_for_connect(&fd, deadline)?;
+                    break;
+                }
+
                 std::thread::sleep(Duration::from_millis(1).min(left));
             }
             Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
@@ -410,6 +414,12 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
     }
 }
 
+// A parent directory is trusted when it belongs to the socket's owner and
+// neither group nor other can write to it.
+fn parent_is_trusted(parent_uid: u32, expected_uid: u32, mode: u32) -> bool {
+    parent_uid == expected_uid && mode & 0o022 == 0
+}
+
 fn validate_socket(path: &Path) -> Result<(), String> {
     let untrusted = || HOOK_SOCKET_UNTRUSTED_REASON.to_owned();
 
@@ -422,7 +432,8 @@ fn validate_socket(path: &Path) -> Result<(), String> {
 
     let parent = path.parent().ok_or_else(untrusted)?;
     let parent = fs::symlink_metadata(parent).map_err(|_| untrusted())?;
-    if !parent.is_dir() || parent.uid() != expected || parent.mode() & 0o022 != 0 {
+    if !parent.is_dir() || !parent_is_trusted(parent.uid(), expected, parent.mode())
+    {
         return Err(untrusted());
     }
 
@@ -513,6 +524,9 @@ mod tests {
     {
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let request: Value = {
                 let mut reader = BufReader::new(&mut stream);
                 let frame = read_line(&mut reader).unwrap().unwrap();
@@ -887,7 +901,10 @@ mod tests {
         let daemon = Daemon::new();
         let client = daemon.client();
         let worker = thread::spawn(move || {
-            let (_stream, _) = daemon.listener.accept().unwrap();
+            let (stream, _) = daemon.listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
 
             thread::sleep(Duration::from_millis(200));
         });
@@ -904,6 +921,9 @@ mod tests {
         let client = daemon.client();
         let worker = thread::spawn(move || {
             let (mut stream, _) = daemon.listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             {
                 let mut reader = BufReader::new(&mut stream);
                 read_line(&mut reader).unwrap().unwrap();
@@ -920,6 +940,31 @@ mod tests {
 
         worker.join().unwrap();
         assert_eq!(verdict, Err(HOOK_TIMEOUT_REASON.to_owned()));
+    }
+
+    #[test]
+    fn retryable_connect_error_accepts_backlog_and_in_progress_errnos() {
+        assert!(retryable_connect_error(Errno::AGAIN));
+        assert!(retryable_connect_error(Errno::INPROGRESS));
+        assert!(retryable_connect_error(Errno::CONNREFUSED));
+    }
+
+    #[test]
+    fn retryable_connect_error_rejects_other_errnos() {
+        assert!(!retryable_connect_error(Errno::EACCES));
+    }
+
+    #[test]
+    fn a_closed_peer_with_a_spent_deadline_fails_the_connect_wait() {
+        let (client, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        let fd = OwnedFd::from(client);
+        let deadline = Instant::now();
+
+        assert_eq!(
+            wait_for_connect(&fd, deadline),
+            Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned())
+        );
     }
 
     #[test]
@@ -1026,6 +1071,62 @@ mod tests {
     }
 
     #[test]
+    fn a_blocked_write_times_out_with_a_named_reason() {
+        // The peer never reads, so the multi-megabyte frame cannot drain and
+        // the write deadline expires with a named timeout reason.
+        let (mut client, _peer) = UnixStream::pair().unwrap();
+        let frame = vec![b'x'; 16 * 1024 * 1024];
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(10))
+            .unwrap_or_else(Instant::now);
+
+        assert_eq!(
+            write_frame(&mut client, &frame, deadline),
+            Err(HOOK_TIMEOUT_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn io_budget_for_rejects_zero_and_sub_millisecond_durations() {
+        assert_eq!(
+            io_budget_for(Duration::ZERO),
+            Err(HOOK_TIMEOUT_REASON.to_owned())
+        );
+        assert_eq!(
+            io_budget_for(Duration::from_micros(1)),
+            Err(HOOK_TIMEOUT_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn io_budget_for_accepts_one_millisecond() {
+        assert_eq!(
+            io_budget_for(Duration::from_millis(1)),
+            Ok(Duration::from_millis(1))
+        );
+    }
+
+    #[test]
+    fn io_error_reason_maps_timeout_kinds_to_the_timeout_reason() {
+        assert_eq!(
+            io_error_reason(&std::io::Error::from(ErrorKind::TimedOut)),
+            HOOK_TIMEOUT_REASON.to_owned()
+        );
+        assert_eq!(
+            io_error_reason(&std::io::Error::from(ErrorKind::WouldBlock)),
+            HOOK_TIMEOUT_REASON.to_owned()
+        );
+    }
+
+    #[test]
+    fn io_error_reason_maps_other_errors_to_the_connect_reason() {
+        assert_eq!(
+            io_error_reason(&std::io::Error::from(ErrorKind::Other)),
+            HOOK_CONNECT_REASON.to_owned()
+        );
+    }
+
+    #[test]
     fn a_read_io_error_is_a_named_connect_error() {
         let dir = tempfile::tempdir().unwrap();
         let file = std::fs::File::open(dir.path()).unwrap();
@@ -1126,6 +1227,17 @@ mod tests {
             validate_socket(&socket),
             Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
         );
+    }
+
+    #[test]
+    fn parent_is_trusted_requires_the_owners_private_directory() {
+        let uid = 1_000_u32;
+
+        assert!(parent_is_trusted(uid, uid, 0o700));
+        assert!(!parent_is_trusted(uid, uid, 0o720));
+        assert!(!parent_is_trusted(uid, uid, 0o702));
+        assert!(!parent_is_trusted(uid, uid, 0o722));
+        assert!(!parent_is_trusted(uid + 1, uid, 0o700));
     }
 
     #[test]
