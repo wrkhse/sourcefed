@@ -75,7 +75,7 @@ let engine = PollEngine::new(config, source, store, clock)?
     .with_event_before(Arc::new(hook), EVENT_BEFORE_TIMEOUT);
 ```
 
-**Verified by** `a_missing_socket_is_a_connect_error`,
+**Verified by** `a_missing_socket_path_is_untrusted`,
 `a_closed_peer_is_a_named_error`, `a_malformed_reply_is_a_named_error`,
 `a_daemon_error_is_a_named_error` and `a_tool_reply_is_an_unknown_outcome`
 for the failure paths. `invalid_annotations_keep_the_event_without_fields`,
@@ -120,7 +120,7 @@ error, decode error, peer closed, and version or id mismatch.
 `a_version_mismatch_is_a_named_error`, `an_id_mismatch_is_a_named_error`,
 `a_daemon_error_is_a_named_error`, `a_closed_peer_is_a_named_error`,
 `a_malformed_reply_is_a_named_error` and
-`a_missing_socket_is_a_connect_error` for the boundaries.
+`a_missing_socket_path_is_untrusted` for the boundaries.
 
 ## Hook contract
 
@@ -231,7 +231,7 @@ impl Event {
 Every failure path has one named reason. The seam keeps the event for each.
 
 ```rust
-pub const HOOK_CONNECT_REASON: &str = "event-before-connect";
+pub const HOOK_SOCKET_UNTRUSTED_REASON: &str = "event-before-socket-untrusted";
 pub const HOOK_DECODE_REASON: &str = "event-before-decode";
 pub const HOOK_PEER_CLOSED_REASON: &str = "event-before-peer-closed";
 pub const HOOK_VERSION_REASON: &str = "event-before-version-mismatch";

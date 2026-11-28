@@ -4,30 +4,31 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufReader, ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use tack_protocol::MAX_FRAME_BYTES;
 use tack_protocol::wire::{
-    Outcome, PROTOCOL_VERSION, Reply, Request, ToolCall, WireError, encode_line,
-    read_line,
+    Outcome, PROTOCOL_VERSION, Reply, Request, ToolCall, encode_line,
 };
 
 use crate::event::Event;
 use crate::{
     BeforeVerdict, EventBefore, HOOK_ANNOTATION_TYPE_REASON,
-    HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_CONNECT_TIMEOUT_REASON,
-    HOOK_DAEMON_ERROR_REASON, HOOK_DECODE_REASON, HOOK_ENCODE_REASON,
-    HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON, HOOK_REWRITE_REFUSED_REASON,
+    HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_DAEMON_ERROR_REASON,
+    HOOK_DECODE_REASON, HOOK_ENCODE_REASON, HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON,
+    HOOK_REASON_INVALID_REASON, HOOK_REWRITE_REFUSED_REASON,
     HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON,
-    HOOK_VERSION_REASON,
+    HOOK_VERSION_REASON, validate_text,
 };
+
+/// Longest wire deny reason accepted before it is logged.
+const MAX_PLUGIN_REASON_LEN: usize = 256;
 
 /// Asks one named `eventBefore` hook for a verdict over one Unix socket.
 ///
@@ -104,9 +105,14 @@ impl FramedEventBefore {
             Outcome::Drop => Ok(BeforeVerdict::Drop {
                 reason: format!("plugin-drop:{}", self.hook_name),
             }),
-            Outcome::Deny { reason } => Ok(BeforeVerdict::Drop {
-                reason: format!("plugin-deny:{}:{}", self.hook_name, reason),
-            }),
+            Outcome::Deny { reason } => {
+                validate_text(&reason, "plugin reason", MAX_PLUGIN_REASON_LEN)
+                    .map_err(|_| HOOK_REASON_INVALID_REASON.to_owned())?;
+
+                Ok(BeforeVerdict::Drop {
+                    reason: format!("plugin-deny:{}:{}", self.hook_name, reason),
+                })
+            }
             Outcome::Rewrite { .. } => Err(HOOK_REWRITE_REFUSED_REASON.to_owned()),
             Outcome::Annotate { fields } => {
                 let fields = annotation_fields(fields)?;
@@ -162,22 +168,44 @@ fn write_frame(
 }
 
 fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Result<Value, String> {
-    let left = remaining(deadline)?;
-    stream
-        .set_read_timeout(Some(left))
-        .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
+    let mut frame = Vec::new();
+    let mut chunk = [0_u8; 512];
 
-    let frame = {
-        let mut reader = BufReader::new(&mut *stream);
-        let read = read_line(&mut reader);
-        let _ = remaining(deadline)?;
+    'frame: loop {
+        let left = remaining(deadline)?;
+        stream
+            .set_read_timeout(Some(left))
+            .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
 
-        match read {
-            Ok(Some(frame)) => frame,
-            Ok(None) => return Err(HOOK_PEER_CLOSED_REASON.to_owned()),
-            Err(error) => return Err(wire_reason(&error, deadline)),
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(HOOK_TIMEOUT_REASON.to_owned());
+            }
+            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+        };
+
+        if read == 0 {
+            return Err(HOOK_PEER_CLOSED_REASON.to_owned());
         }
-    };
+
+        for byte in chunk.iter().take(read) {
+            frame.push(*byte);
+
+            if frame.len() > MAX_FRAME_BYTES {
+                return Err(HOOK_DECODE_REASON.to_owned());
+            }
+
+            if *byte == b'\n' {
+                break 'frame;
+            }
+        }
+    }
 
     serde_json::from_slice(&frame).map_err(|_| HOOK_DECODE_REASON.to_owned())
 }
@@ -246,28 +274,13 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 // A peer is trusted only when its socket path and its owner both check out.
 fn connect_bounded(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
     validate_socket(path)?;
+    let _ = remaining(deadline)?;
 
-    let timeout = remaining(deadline)?;
-    let owned = path.to_owned();
-    let (sender, receiver) = mpsc::channel();
-    let worker = thread::Builder::new()
-        .name("event-before-connect".into())
-        .spawn(move || {
-            let _ = sender.send(UnixStream::connect(&owned));
-        })
-        .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
-
-    let stream = match receiver.recv_timeout(timeout) {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(_)) => return Err(HOOK_CONNECT_REASON.to_owned()),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            return Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned());
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            return Err(HOOK_CONNECT_REASON.to_owned());
-        }
-    };
-    let _ = worker.join();
+    // A validated absolute same-uid socket path makes this local connect
+    // OS-bounded, so no worker thread is needed to enforce the deadline.
+    let stream =
+        UnixStream::connect(path).map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
+    let _ = remaining(deadline)?;
 
     Ok(stream)
 }
@@ -293,20 +306,9 @@ fn validate_socket(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn wire_reason(error: &WireError, deadline: Instant) -> String {
-    match error {
-        WireError::Malformed | WireError::TooLarge => HOOK_DECODE_REASON.to_owned(),
-        WireError::Closed => HOOK_PEER_CLOSED_REASON.to_owned(),
-        WireError::Io if remaining(deadline).is_err() => {
-            HOOK_TIMEOUT_REASON.to_owned()
-        }
-        WireError::Io => HOOK_CONNECT_REASON.to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Shutdown;
+    use std::net::Shutdown;
 
     use super::*;
 

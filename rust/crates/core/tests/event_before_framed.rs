@@ -1,6 +1,10 @@
 //! Real-socket contract tests for the framed `eventBefore` client.
 
 #![cfg(unix)]
+#![allow(
+    clippy::unwrap_used,
+    reason = "test fixtures fail loudly on setup errors"
+)]
 
 use std::collections::BTreeMap;
 use std::io::{BufReader, Write};
@@ -15,8 +19,9 @@ use sourcefed_core::{
     BeforeVerdict, Event, EventBefore, EventId, EventKind, EventSubject,
     HOOK_ANNOTATION_TYPE_REASON, HOOK_ANNOTATIONS_REASON, HOOK_DAEMON_ERROR_REASON,
     HOOK_DECODE_REASON, HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON,
-    HOOK_REWRITE_REFUSED_REASON, HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON,
-    HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON, SourceName,
+    HOOK_REASON_INVALID_REASON, HOOK_REWRITE_REFUSED_REASON,
+    HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON,
+    HOOK_VERSION_REASON, SourceName,
 };
 use tack_protocol::wire::{
     MAX_FRAME_BYTES, PROTOCOL_VERSION, Request, ToolCall, encode_line, read_line,
@@ -108,7 +113,7 @@ where
     })
 }
 
-fn hook_reply(id: u64, outcome: Value) -> Vec<u8> {
+fn hook_reply(id: u64, outcome: &Value) -> Vec<u8> {
     let reply = json!({
         "kind": "hook",
         "id": id,
@@ -124,7 +129,7 @@ fn allow_keeps_the_event_and_sends_the_hook_request() {
     let daemon = Daemon::new();
     let client = daemon.client();
     let worker = serve(daemon.listener, |id| {
-        Some(hook_reply(id, json!({ "kind": "allow" })))
+        Some(hook_reply(id, &json!({ "kind": "allow" })))
     });
 
     let verdict = client.verdict(&event(), BUDGET);
@@ -139,7 +144,7 @@ fn drop_reports_the_hook_name() {
     let daemon = Daemon::new();
     let client = daemon.client();
     let worker = serve(daemon.listener, |id| {
-        Some(hook_reply(id, json!({ "kind": "drop" })))
+        Some(hook_reply(id, &json!({ "kind": "drop" })))
     });
 
     let verdict = client.verdict(&event(), BUDGET);
@@ -160,7 +165,7 @@ fn deny_reports_the_hook_name_and_the_reason() {
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "deny", "reason": "bot author" }),
+            &json!({ "kind": "deny", "reason": "bot author" }),
         ))
     });
 
@@ -176,13 +181,47 @@ fn deny_reports_the_hook_name_and_the_reason() {
 }
 
 #[test]
+fn a_deny_with_a_control_character_is_refused() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = serve(daemon.listener, |id| {
+        Some(hook_reply(
+            id,
+            &json!({ "kind": "deny", "reason": "line\nbreak" }),
+        ))
+    });
+
+    let verdict = client.verdict(&event(), BUDGET);
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_REASON_INVALID_REASON.to_owned()));
+}
+
+#[test]
+fn an_oversized_deny_reason_is_refused() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = serve(daemon.listener, |id| {
+        Some(hook_reply(
+            id,
+            &json!({ "kind": "deny", "reason": "x".repeat(257) }),
+        ))
+    });
+
+    let verdict = client.verdict(&event(), BUDGET);
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_REASON_INVALID_REASON.to_owned()));
+}
+
+#[test]
 fn annotate_converts_fields_to_validated_strings() {
     let daemon = Daemon::new();
     let client = daemon.client();
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "annotate", "fields": { "team": "core", "owner": "alice" } }),
+            &json!({ "kind": "annotate", "fields": { "team": "core", "owner": "alice" } }),
         ))
     });
 
@@ -203,7 +242,7 @@ fn non_string_annotation_fields_are_refused() {
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "annotate", "fields": { "count": 7 } }),
+            &json!({ "kind": "annotate", "fields": { "count": 7 } }),
         ))
     });
 
@@ -220,7 +259,7 @@ fn invalid_annotations_are_refused_with_a_named_reason() {
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "annotate", "fields": { "team": "" } }),
+            &json!({ "kind": "annotate", "fields": { "team": "" } }),
         ))
     });
 
@@ -237,7 +276,7 @@ fn rewrite_is_refused_with_a_named_reason() {
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "rewrite", "input": { "id": "evt-2" } }),
+            &json!({ "kind": "rewrite", "input": { "id": "evt-2" } }),
         ))
     });
 
@@ -337,7 +376,7 @@ fn an_unknown_outcome_kind_is_a_named_error() {
     let daemon = Daemon::new();
     let client = daemon.client();
     let worker = serve(daemon.listener, |id| {
-        Some(hook_reply(id, json!({ "kind": "surprise" })))
+        Some(hook_reply(id, &json!({ "kind": "surprise" })))
     });
 
     let verdict = client.verdict(&event(), BUDGET);
@@ -410,6 +449,30 @@ fn a_peer_that_never_answers_times_out() {
     });
 
     let verdict = client.verdict(&event(), Duration::from_millis(40));
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_TIMEOUT_REASON.to_owned()));
+}
+
+#[test]
+fn a_trickling_reply_stops_at_the_deadline() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = daemon.listener.accept().unwrap();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            read_line(&mut reader).unwrap().unwrap();
+        }
+
+        // Ten bytes at 20 ms intervals outlast the budget without a newline.
+        for _ in 0..10 {
+            let _ = stream.write_all(b"x");
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+
+    let verdict = client.verdict(&event(), Duration::from_millis(120));
 
     worker.join().unwrap();
     assert_eq!(verdict, Err(HOOK_TIMEOUT_REASON.to_owned()));
