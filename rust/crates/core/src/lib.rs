@@ -28,6 +28,8 @@
 pub mod event;
 /// The bounded pre-commit decision applied to each event.
 pub mod event_before;
+/// The framed pre-commit hook contract.
+pub mod event_before_framed;
 /// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
 /// Bounded polling and retry with durable pending events.
@@ -43,9 +45,13 @@ pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use event_before::{
-    AllowAll, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore, HOOK_BUSY_REASON,
-    HOOK_ERROR_REASON, HOOK_PANIC_REASON, HOOK_TIMEOUT_REASON,
+    AllowAll, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore,
+    HOOK_ANNOTATIONS_REASON, HOOK_BUSY_REASON, HOOK_CONNECT_REASON,
+    HOOK_DAEMON_ERROR_REASON, HOOK_DECODE_REASON, HOOK_ERROR_REASON, HOOK_ID_REASON,
+    HOOK_PANIC_REASON, HOOK_PEER_CLOSED_REASON, HOOK_REWRITE_REFUSED_REASON,
+    HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON,
 };
+pub use event_before_framed::FramedEventBefore;
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use poll::{
     Backoff, Clock, ClockError, DEFAULT_BACKOFF_CAP_SECS, EngineError, EngineState,
@@ -62,6 +68,12 @@ pub const MAX_ID_LEN: usize = 256;
 pub const MAX_POSITION_LEN: usize = 4096;
 /// Maximum length in bytes of an event summary.
 pub const MAX_SUMMARY_LEN: usize = 512;
+/// Maximum number of annotations on one event.
+pub const MAX_ANNOTATIONS: usize = 32;
+/// Maximum length in bytes of an annotation key.
+pub const MAX_ANNOTATION_KEY_LEN: usize = 64;
+/// Maximum length in bytes of an annotation value.
+pub const MAX_ANNOTATION_VALUE_LEN: usize = MAX_SUMMARY_LEN;
 
 /// Why a value fails validation; `field` names the value that failed.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

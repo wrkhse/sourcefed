@@ -12,6 +12,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+tack_protocol = { git = "https://github.com/wrkhse/tack", rev = "197ba009f88e296a8cab28b82ebb3db2b33833fb" }
 
 [dev-dependencies]
 proptest.workspace = true

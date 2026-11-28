@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use jiff::Timestamp;
 
-use crate::event_before::{BeforeDecision, decide_before};
+use crate::event_before::{BeforeDecision, HOOK_ANNOTATIONS_REASON, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
     AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId, ModelError,
@@ -440,7 +440,17 @@ impl<S: StateStore> PollEngine<S> {
                 budget,
                 &self.before_in_flight,
             ) {
-                BeforeDecision::Keep { reason } => {
+                BeforeDecision::Keep {
+                    reason,
+                    annotations,
+                } => {
+                    let (kept, reason) = match event.with_annotations(annotations) {
+                        Ok(annotated) => (annotated, reason),
+                        Err(_) => {
+                            (event.clone(), Some(HOOK_ANNOTATIONS_REASON.into()))
+                        }
+                    };
+
                     if let Some(reason) = reason {
                         tracing::warn!(
                             reason = %reason,
@@ -449,7 +459,7 @@ impl<S: StateStore> PollEngine<S> {
                         );
                     }
 
-                    events.push(event.clone());
+                    events.push(kept);
                 }
                 BeforeDecision::Drop { reason } => {
                     tracing::info!(
@@ -481,6 +491,7 @@ impl<S: StateStore> PollEngine<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
@@ -488,7 +499,7 @@ mod tests {
 
     use super::*;
     use crate::event_before::support::{
-        BlockingHook, BotFilter, FailingHook, event,
+        AnnotatingHook, BlockingHook, BotFilter, FailingHook, event,
     };
     use crate::{
         BeforeVerdict, MonitorId, PollError, PollInterval, Position, SourceName,
@@ -1422,5 +1433,25 @@ mod tests {
         );
 
         assert_eq!(f.engine.event_before_timeout, EVENT_BEFORE_TIMEOUT);
+    }
+
+    #[test]
+    fn an_annotating_hook_commits_the_event_with_its_fields() {
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let fired = event("fired", None);
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(fields.clone())),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations(), &fields);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
     }
 }

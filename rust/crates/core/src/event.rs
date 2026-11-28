@@ -1,9 +1,13 @@
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::{MAX_ID_LEN, MAX_SUMMARY_LEN, ModelError, SourceName, validate_text};
+use crate::{
+    MAX_ANNOTATION_KEY_LEN, MAX_ANNOTATION_VALUE_LEN, MAX_ANNOTATIONS, MAX_ID_LEN,
+    MAX_SUMMARY_LEN, ModelError, SourceName, validate_text,
+};
 
 const MAX_AUTHOR_LEN: usize = MAX_SUMMARY_LEN;
 
@@ -160,6 +164,12 @@ pub struct Event {
         skip_serializing_if = "Option::is_none"
     )]
     author: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_annotations"
+    )]
+    annotations: BTreeMap<String, String>,
 }
 
 impl PartialEq for Event {
@@ -196,6 +206,7 @@ impl Event {
             summary: validate_summary(summary)?,
             at,
             author: None,
+            annotations: BTreeMap::new(),
         })
     }
 
@@ -248,6 +259,48 @@ impl Event {
     pub fn author(&self) -> Option<&str> {
         self.author.as_deref()
     }
+
+    /// Returns the event's annotations, empty when none were attached.
+    #[must_use]
+    pub fn annotations(&self) -> &BTreeMap<String, String> {
+        &self.annotations
+    }
+
+    /// Returns a copy of this event with the given fields as its annotations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for too many annotations or an empty, oversized, or
+    /// control-containing key or value.
+    pub fn with_annotations(
+        &self,
+        fields: BTreeMap<String, String>,
+    ) -> Result<Self, ModelError> {
+        Self::validate_annotations(&fields)?;
+        let mut annotated = self.clone();
+        annotated.annotations = fields;
+
+        Ok(annotated)
+    }
+
+    /// Checks the count, keys and values before annotations are stored.
+    pub(crate) fn validate_annotations(
+        fields: &BTreeMap<String, String>,
+    ) -> Result<(), ModelError> {
+        if fields.len() > MAX_ANNOTATIONS {
+            return Err(ModelError::TooMany {
+                field: "annotations",
+                limit: MAX_ANNOTATIONS,
+            });
+        }
+
+        for (key, value) in fields {
+            validate_text(key, "annotation key", MAX_ANNOTATION_KEY_LEN)?;
+            validate_text(value, "annotation value", MAX_ANNOTATION_VALUE_LEN)?;
+        }
+
+        Ok(())
+    }
 }
 
 fn validate_summary(summary: String) -> Result<String, ModelError> {
@@ -279,6 +332,18 @@ where
         .map_err(de::Error::custom)
 }
 
+fn deserialize_annotations<'de, D>(
+    de: D,
+) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let fields = BTreeMap::<String, String>::deserialize(de)?;
+    Event::validate_annotations(&fields).map_err(de::Error::custom)?;
+
+    Ok(fields)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashSet, hash_map::DefaultHasher};
@@ -289,6 +354,15 @@ mod tests {
 
     use super::*;
     use crate::bounded_text;
+
+    fn deploy_event() -> Event {
+        let id = EventId::new("deploy-1".into()).unwrap();
+        let source = SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "deploy".into()).unwrap();
+        let at = "2026-01-01T00:00:00Z".parse().unwrap();
+
+        Event::new(id, EventKind::TimerFired, subject, "deploy".into(), at).unwrap()
+    }
 
     #[test]
     fn event_id_accepts_one_byte_and_the_maximum() {
@@ -577,6 +651,158 @@ mod tests {
             ),
         ] {
             let json = format!("{prefix}{author}}}");
+            let error = serde_json::from_str::<Event>(&json).unwrap_err();
+
+            assert_eq!(error.classify(), Category::Data);
+            assert_eq!(
+                error.to_string(),
+                format!("{expected} at line 1 column {}", json.len())
+            );
+        }
+    }
+
+    #[test]
+    fn annotations_default_to_an_empty_map() {
+        let event = deploy_event();
+
+        assert_eq!(event.annotations(), &BTreeMap::new());
+    }
+
+    #[test]
+    fn with_annotations_accepts_bounded_fields() {
+        let event = deploy_event();
+        let fields = BTreeMap::from([
+            ("agent".to_owned(), "deploy-bot".to_owned()),
+            (
+                "x".repeat(MAX_ANNOTATION_KEY_LEN),
+                "y".repeat(MAX_ANNOTATION_VALUE_LEN),
+            ),
+        ]);
+        let annotated = event.with_annotations(fields.clone()).unwrap();
+
+        assert_eq!(annotated.annotations(), &fields);
+        assert_eq!(event.annotations(), &BTreeMap::new());
+        assert_eq!(annotated, event);
+    }
+
+    #[test]
+    fn with_annotations_rejects_unbounded_fields() {
+        let event = deploy_event();
+        let too_many: BTreeMap<String, String> = (0..MAX_ANNOTATIONS + 1)
+            .map(|index| (format!("key-{index}"), "value".to_owned()))
+            .collect();
+        let long_key = BTreeMap::from([(
+            "x".repeat(MAX_ANNOTATION_KEY_LEN + 1),
+            "value".to_owned(),
+        )]);
+        let long_value = BTreeMap::from([(
+            "key".to_owned(),
+            "x".repeat(MAX_ANNOTATION_VALUE_LEN + 1),
+        )]);
+        let control_key = BTreeMap::from([("key\n".to_owned(), "value".to_owned())]);
+        let control_value =
+            BTreeMap::from([("key".to_owned(), "value\n".to_owned())]);
+
+        assert_eq!(
+            event.with_annotations(too_many),
+            Err(ModelError::TooMany {
+                field: "annotations",
+                limit: MAX_ANNOTATIONS,
+            })
+        );
+        assert_eq!(
+            event.with_annotations(long_key),
+            Err(ModelError::TooLong {
+                field: "annotation key",
+                limit: MAX_ANNOTATION_KEY_LEN,
+            })
+        );
+        assert_eq!(
+            event.with_annotations(long_value),
+            Err(ModelError::TooLong {
+                field: "annotation value",
+                limit: MAX_ANNOTATION_VALUE_LEN,
+            })
+        );
+        assert_eq!(
+            event.with_annotations(control_key),
+            Err(ModelError::Invalid {
+                field: "annotation key",
+                reason: "contains a control character",
+            })
+        );
+        assert_eq!(
+            event.with_annotations(control_value),
+            Err(ModelError::Invalid {
+                field: "annotation value",
+                reason: "contains a control character",
+            })
+        );
+    }
+
+    #[test]
+    fn annotations_default_and_round_trip_when_present() {
+        let json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z"}"#,
+        );
+        let older = serde_json::from_str::<Event>(json).unwrap();
+
+        assert_eq!(older.annotations(), &BTreeMap::new());
+        assert_eq!(serde_json::to_string(&older).unwrap(), json);
+
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let annotated = older.with_annotations(fields.clone()).unwrap();
+        let stored = serde_json::to_string(&annotated).unwrap();
+        let decoded = serde_json::from_str::<Event>(&stored).unwrap();
+        let annotated_json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z","#,
+            r#""annotations":{"agent":"deploy-bot"}}"#,
+        );
+
+        assert_eq!(stored, annotated_json);
+        assert_eq!(decoded.annotations(), &fields);
+        assert_eq!(decoded.annotations(), annotated.annotations());
+        assert_eq!(decoded, annotated);
+    }
+
+    #[test]
+    fn json_annotations_are_validated() {
+        let prefix = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z","annotations":"#,
+        );
+        let too_many: BTreeMap<String, String> = (0..MAX_ANNOTATIONS + 1)
+            .map(|index| (format!("key-{index}"), "value".to_owned()))
+            .collect();
+
+        for (fields, expected) in [
+            (
+                serde_json::to_string(&too_many).unwrap(),
+                format!("annotations exceeds {MAX_ANNOTATIONS} items"),
+            ),
+            (
+                serde_json::to_string(&BTreeMap::from([(
+                    "x".repeat(MAX_ANNOTATION_KEY_LEN + 1),
+                    "value".to_owned(),
+                )]))
+                .unwrap(),
+                format!("annotation key exceeds {MAX_ANNOTATION_KEY_LEN} bytes"),
+            ),
+            (
+                serde_json::to_string(&BTreeMap::from([(
+                    "key".to_owned(),
+                    "x".repeat(MAX_ANNOTATION_VALUE_LEN + 1),
+                )]))
+                .unwrap(),
+                format!("annotation value exceeds {MAX_ANNOTATION_VALUE_LEN} bytes"),
+            ),
+        ] {
+            let json = format!("{prefix}{fields}}}");
             let error = serde_json::from_str::<Event>(&json).unwrap_err();
 
             assert_eq!(error.classify(), Category::Data);
