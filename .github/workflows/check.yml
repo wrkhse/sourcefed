@@ -86,7 +86,7 @@ jobs:
       - name: The pinned tidy
         run: |
           pin() {
-            awk -F= -v key="$1" '$1==key { print substr($0, index($0,"=")+1); exit }' .github/tidy.env
+            awk -F= -v key="$1" '$1==key { v=substr($0, index($0,"=")+1); gsub(/\r/, "", v); print v; exit }' .github/tidy.env
           }
           archive="$RUNNER_TEMP/tidy.tar.gz"
           curl -fsSLo "$archive" "$(pin TIDY_RELEASE_BASE)/$(pin TIDY_VERSION)/$(pin TIDY_LINUX_ASSET)"
