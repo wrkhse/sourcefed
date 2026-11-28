@@ -16,6 +16,9 @@ pub const EVENT_BEFORE_TIMEOUT: Duration = Duration::from_millis(100);
 /// The log reason when a hook reports an error.
 pub const HOOK_ERROR_REASON: &str = "event-before-error";
 
+/// The log reason when a verdict hook is already running on another call.
+pub const HOOK_BUSY_REASON: &str = "event-before-busy";
+
 /// The log reason when a hook misses the verdict deadline.
 pub const HOOK_TIMEOUT_REASON: &str = "event-before-timeout";
 
@@ -92,10 +95,11 @@ impl Drop for HookGuard {
 ///
 /// The hook runs on its own thread, so a hook that never answers yields a
 /// timeout decision by the deadline and the caller never waits longer. A
-/// second call while a hook is still in flight is rejected with the timeout
-/// reason without spawning a thread. A panic keeps the event with the panic
-/// reason; an error keeps it with the error reason. A pass-through hook is
-/// never spawned.
+/// second call while a hook is still in flight is rejected with the busy
+/// reason without spawning a thread. A zero budget keeps the event with the
+/// timeout reason without claiming the in-flight slot or spawning a thread.
+/// A panic keeps the event with the panic reason; an error keeps it with the
+/// error reason. A pass-through hook is never spawned.
 pub(crate) fn decide_before(
     before: Arc<dyn EventBefore>,
     event: &Event,
@@ -106,12 +110,18 @@ pub(crate) fn decide_before(
         return BeforeDecision::Keep { reason: None };
     }
 
+    if timeout.is_zero() {
+        return BeforeDecision::Keep {
+            reason: Some(HOOK_TIMEOUT_REASON.into()),
+        };
+    }
+
     if in_flight
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         return BeforeDecision::Keep {
-            reason: Some(HOOK_TIMEOUT_REASON.into()),
+            reason: Some(HOOK_BUSY_REASON.into()),
         };
     }
 
@@ -122,8 +132,10 @@ pub(crate) fn decide_before(
         thread::Builder::new()
             .name("event-before".into())
             .spawn(move || {
-                let _guard = HookGuard(flag);
+                let guard = HookGuard(flag);
                 let result = before.verdict(&event, timeout);
+                drop(guard);
+
                 let _ = sender.send(result);
             });
 
@@ -269,20 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn allow_all_is_a_passthrough_that_keeps_every_event() {
-        let flag = in_flight();
-        let decision = decide_before(
-            Arc::new(AllowAll),
-            &event("fired", Some("bot")),
-            EVENT_BEFORE_TIMEOUT,
-            &flag,
-        );
-
-        assert_eq!(decision, BeforeDecision::Keep { reason: None });
-        assert!(!flag.load(Ordering::Relaxed));
-    }
-
-    #[test]
     fn a_hook_can_drop_a_bot_author() {
         let dropped = decide_before(
             Arc::new(BotFilter),
@@ -369,9 +367,28 @@ mod tests {
         assert_eq!(
             decision,
             BeforeDecision::Keep {
+                reason: Some(HOOK_BUSY_REASON.into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_zero_budget_keeps_the_event_without_calling_the_hook() {
+        let flag = in_flight();
+        let decision = decide_before(
+            Arc::new(FailingHook),
+            &event("fired", None),
+            Duration::ZERO,
+            &flag,
+        );
+
+        assert_eq!(
+            decision,
+            BeforeDecision::Keep {
                 reason: Some(HOOK_TIMEOUT_REASON.into()),
             }
         );
+        assert!(!flag.load(Ordering::Relaxed));
     }
 
     #[test]

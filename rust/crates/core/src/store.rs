@@ -624,9 +624,9 @@ pub trait StateStore: Send + Sync {
 
     /// Saves the position, fresh events and skipped IDs together.
     ///
-    /// Skipped IDs enter the seen ledger without entering the pending queue,
-    /// so a source that reports one again is treated as a repeat. Stores that
-    /// cannot separate skipped IDs keep the behaviour of [`Self::commit`].
+    /// Every [`StateStore`] must record skipped IDs in the seen ledger without
+    /// adding them to the pending queue, so a source that reports one again is
+    /// treated as a repeat. There is no fallback to [`Self::commit`].
     ///
     /// # Errors
     /// Returns the same errors as [`Self::commit`].
@@ -636,10 +636,7 @@ pub trait StateStore: Send + Sync {
         position: Position,
         events: &[Event],
         skipped: &[EventId],
-    ) -> Result<usize, StoreError> {
-        let _ = skipped;
-        self.commit(key, position, events)
-    }
+    ) -> Result<usize, StoreError>;
 }
 
 impl StateStore for Store {

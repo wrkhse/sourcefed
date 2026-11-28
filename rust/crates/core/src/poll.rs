@@ -258,7 +258,8 @@ impl<S: StateStore> PollEngine<S> {
     }
 
     /// Uses the supplied hook to decide which events reach the store, allowing
-    /// the given timeout for each verdict. An error or a timeout keeps the
+    /// at most EVENT_BEFORE_TIMEOUT for all verdicts in one commit; the
+    /// remaining budget passes to each hook. An error or a timeout keeps the
     /// event with a named reason in the log.
     #[must_use]
     pub fn with_event_before(
@@ -267,7 +268,7 @@ impl<S: StateStore> PollEngine<S> {
         timeout: Duration,
     ) -> Self {
         self.event_before = before;
-        self.event_before_timeout = timeout;
+        self.event_before_timeout = timeout.min(EVENT_BEFORE_TIMEOUT);
 
         self
     }
@@ -426,6 +427,8 @@ impl<S: StateStore> PollEngine<S> {
 
         for event in outcome.events() {
             if self.stop.is_stopped() {
+                self.schedule = Schedule::Stopped;
+
                 return Ok(());
             }
 
@@ -487,7 +490,9 @@ mod tests {
     use crate::event_before::support::{
         BlockingHook, BotFilter, FailingHook, event,
     };
-    use crate::{MonitorId, PollError, PollInterval, Position, SourceName};
+    use crate::{
+        BeforeVerdict, MonitorId, PollError, PollInterval, Position, SourceName,
+    };
 
     #[derive(Default)]
     struct FakeClock {
@@ -1207,6 +1212,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_after_a_human_is_still_dropped() {
+        let human = authored_event("human-1", "alice");
+        let bot = authored_event("bot-1", "bot");
+        let outcome =
+            PollOutcome::new(vec![human.clone(), bot.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(BotFilter),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([human.clone()])));
+        assert!(f.engine.store.is_seen(&key(), bot.id()));
+        assert!(!f.engine.pending().unwrap().contains(&bot));
+        assert!(f.engine.store.is_seen(&key(), human.id()));
+    }
+
+    #[test]
     fn the_default_hook_keeps_a_normal_event() {
         let human = authored_event("human-1", "alice");
         let outcome = PollOutcome::new(vec![human.clone()], cursor(), Next::Done);
@@ -1277,5 +1302,117 @@ mod tests {
         assert!(reopened.is_seen(&key(), bot.id()));
         assert!(!reopened.pending(&key()).unwrap().contains(&bot));
         assert!(reopened.is_seen(&key(), human.id()));
+    }
+
+    struct StopOnFirst {
+        stop: StopHandle,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl EventBefore for StopOnFirst {
+        fn verdict(
+            &self,
+            _event: &Event,
+            _budget: Duration,
+        ) -> Result<BeforeVerdict, String> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                self.stop.stop();
+            }
+
+            Ok(BeforeVerdict::Keep)
+        }
+    }
+
+    #[test]
+    fn a_stop_mid_batch_leaves_the_outcome_for_replay() {
+        let first = authored_event("first", "alice");
+        let second = authored_event("second", "alice");
+        let outcome = PollOutcome::new(
+            vec![first.clone(), second.clone()],
+            cursor(),
+            Next::Done,
+        );
+        let stop = StopHandle::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(StopOnFirst {
+                stop: stop.clone(),
+                calls: calls.clone(),
+            }),
+            EVENT_BEFORE_TIMEOUT,
+        );
+        // with_hook owns the engine, so give it the handle the hook stops.
+        f.engine.stop = stop;
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(f.engine.store.position(&key()), None);
+        assert_eq!(f.engine.pending(), None);
+        assert!(!f.engine.store.is_seen(&key(), first.id()));
+        assert!(!f.engine.store.is_seen(&key(), second.id()));
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+
+        let store = f.engine.into_store();
+        drop(store);
+        let reopened = Store::open(f.dir.path()).unwrap();
+        let replay = PollOutcome::new(
+            vec![first.clone(), second.clone()],
+            cursor(),
+            Next::Done,
+        )
+        .unwrap();
+        let source = Arc::new(FakeSource {
+            name: timer(),
+            results: Mutex::new(VecDeque::from([Ok(replay)])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let config = MonitorConfig {
+            id: key().monitor,
+            source: timer(),
+            poll_interval: PollInterval::from_secs(5).unwrap(),
+        };
+        let mut engine = PollEngine::new(
+            config,
+            source.clone(),
+            reopened,
+            Arc::new(FakeClock::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(
+            source.requests.lock().unwrap().as_slice(),
+            &[PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+        assert_eq!(engine.store.position(&key()), Some(&cursor()));
+        assert_eq!(
+            engine.pending(),
+            Some(VecDeque::from([first.clone(), second.clone()]))
+        );
+        assert!(engine.store.is_seen(&key(), first.id()));
+        assert!(engine.store.is_seen(&key(), second.id()));
+    }
+
+    #[test]
+    fn a_larger_timeout_is_clamped_to_the_batch_bound() {
+        let f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome(Next::Done))],
+            Arc::new(AllowAll),
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(f.engine.event_before_timeout, EVENT_BEFORE_TIMEOUT);
     }
 }

@@ -57,14 +57,19 @@ its exact wire shape.
 
 A trait supplies one `BeforeVerdict` per event: `Keep` or `Drop { reason }`.
 The engine bounds the whole commit's verdicts with `EVENT_BEFORE_TIMEOUT`,
-passing the remaining budget to each hook call; once it elapses, later events
-are kept without consulting the hook. The default hook, `AllowAll`, keeps
-every event. A hook error or a timeout keeps the event and
-logs under `HOOK_ERROR_REASON` or `HOOK_TIMEOUT_REASON`, so a filter cannot
-lose an event by failing. The hook runs on its own thread, so one that panics
-disconnects the channel and keeps the event under `HOOK_PANIC_REASON`. One
-trait serves every implementation: an in-process fake answers inline in tests
-and a framed client talks to a plugin process without a trait change.
+passing the remaining budget to each hook. Once that budget is zero it
+early-returns `Keep` under `HOOK_TIMEOUT_REASON` without claiming the in-flight
+slot or spawning a thread; a verdict already in flight gets `Keep` under
+`HOOK_BUSY_REASON`. The default hook, `AllowAll`, keeps every event. A hook
+runs on its own thread, so one that never answers is kept under
+`HOOK_TIMEOUT_REASON` at the deadline, and one that panics disconnects the
+channel and is kept under `HOOK_PANIC_REASON`. A hook error keeps the event
+under `HOOK_ERROR_REASON`, so a filter cannot lose an event by failing.
+
+One trait serves every implementation: tests use an in-process fake hook;
+production runs through tack's daemon socket, where sourcefed's own small
+framed client against the git-pinned `tack_protocol` crate implements the same
+trait. There is no plugin process and no tack-client crate.
 
 Files: `rust/crates/core/src/event_before.rs`, `rust/crates/core/src/poll.rs`,
 `rust/crates/core/src/lib.rs`.
@@ -89,18 +94,18 @@ let engine = PollEngine::new(config, source, store, clock)?
     .with_event_before(Arc::new(DropBots), EVENT_BEFORE_TIMEOUT);
 ```
 
-**Verified by** unit tests on `decide_before` for keep, drop, error and timeout,
-and poll engine tests that check the seen ledger and pending queue:
-`commit_with_skipped` records skipped IDs in the seen ledger, so a dropped
-event is seen but not pending. The poll tests assert `is_seen(bot.id())` for
-the dropped event, while a kept event survives a store reopen. A blocking hook
-keeps the event at a shortened deadline.
+**Verified by** `decide_before` tests for keep, drop, error, timeout, busy,
+zero-budget, panic and no-spawn; engine tests that a bot after a human is still
+dropped, that a stop mid-batch replays the whole outcome, and that a timeout is
+clamped to `EVENT_BEFORE_TIMEOUT`; store tests that skipped IDs are seen but
+not pending in both `Store` and the sim `MemoryStore`.
 
 ### 3. Framed plugin client
 
-The client that implements `EventBefore` over a framed protocol belongs to the
-framed proof against tack's SDK. It owns the `BeforeVerdict` wire names and the
-plugin entry point; no files for it live here.
+The client implements `EventBefore` over tack's daemon socket using the
+git-pinned `tack_protocol` crate. sourcefed writes the small framed client
+itself, no tack-client crate and no plugin entry point here; no files for it
+live in this slice.
 
 ## Decided
 

@@ -5,6 +5,8 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::{MAX_ID_LEN, MAX_SUMMARY_LEN, ModelError, SourceName, validate_text};
 
+const MAX_AUTHOR_LEN: usize = MAX_SUMMARY_LEN;
+
 /// Identifies one event: 1 to [`MAX_ID_LEN`] bytes with no control characters.
 ///
 /// Two events with the same ID are the same event. Deserializing applies the
@@ -262,7 +264,7 @@ where
 }
 
 fn validate_author(author: String) -> Result<String, ModelError> {
-    validate_text(&author, "author", MAX_SUMMARY_LEN)?;
+    validate_text(&author, "author", MAX_AUTHOR_LEN)?;
 
     Ok(author)
 }
@@ -528,7 +530,7 @@ mod tests {
         let event =
             Event::new(id, EventKind::TimerFired, subject, "deploy".into(), at)
                 .unwrap();
-        let oversized = "x".repeat(MAX_SUMMARY_LEN + 1);
+        let oversized = "x".repeat(MAX_AUTHOR_LEN + 1);
 
         assert_eq!(
             event.clone().with_author(Some(String::new())),
@@ -538,7 +540,7 @@ mod tests {
             event.clone().with_author(Some(oversized)),
             Err(ModelError::TooLong {
                 field: "author",
-                limit: MAX_SUMMARY_LEN,
+                limit: MAX_AUTHOR_LEN,
             })
         );
         assert_eq!(
@@ -553,7 +555,7 @@ mod tests {
 
     #[test]
     fn json_authors_are_validated() {
-        let oversized = "x".repeat(MAX_SUMMARY_LEN + 1);
+        let oversized = "x".repeat(MAX_AUTHOR_LEN + 1);
         let prefix = concat!(
             r#"{"id":"deploy-1","kind":"timer.fired","#,
             r#""subject":{"source":"timer","key":"deploy"},"#,
@@ -567,7 +569,7 @@ mod tests {
             ),
             (
                 serde_json::to_string(&oversized).unwrap(),
-                format!("author exceeds {MAX_SUMMARY_LEN} bytes"),
+                format!("author exceeds {MAX_AUTHOR_LEN} bytes"),
             ),
             (
                 serde_json::to_string("deploy\nbot").unwrap(),
@@ -578,7 +580,7 @@ mod tests {
             let error = serde_json::from_str::<Event>(&json).unwrap_err();
 
             assert_eq!(error.classify(), Category::Data);
-            assert!(error.to_string().starts_with(expected.as_str()));
+            assert_eq!(error.to_string(), expected);
         }
     }
 
