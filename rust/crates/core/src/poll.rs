@@ -449,25 +449,10 @@ impl<S: StateStore> PollEngine<S> {
                     } else if event.annotations().is_empty() {
                         event.with_validated_annotations(annotations)
                     } else {
-                        let mut fields = event.annotations().clone();
-                        let hook_fields = annotations.into_inner();
-                        let mut fresh = BTreeMap::new();
-                        for (key, value) in hook_fields {
-                            if fields.contains_key(&key) {
-                                fields.insert(key, value);
-                            } else {
-                                fresh.insert(key, value);
-                            }
-                        }
-                        let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
-
-                        reason = merge_annotations_reason(fresh.len(), room);
-                        fields.extend(fresh.into_iter().take(room));
-
-                        event.with_annotations(fields).unwrap_or_else(|_| {
-                            reason = Some(HOOK_ANNOTATIONS_REASON.into());
-                            event.clone()
-                        })
+                        let (merged, merge_reason) =
+                            merge_hook_annotations(event, annotations.into_inner());
+                        reason = merge_reason;
+                        merged
                     };
 
                     if let Some(reason) = reason {
@@ -514,6 +499,34 @@ fn merge_annotations_reason(hook_count: usize, room: usize) -> Option<String> {
         .checked_sub(room)
         .and_then(std::num::NonZeroUsize::new)
         .map(|_| HOOK_ANNOTATIONS_REASON.into())
+}
+
+// Applies hook fields: existing keys are overwritten, fresh keys use the room.
+fn merge_hook_annotations(
+    event: &Event,
+    hook: BTreeMap<String, String>,
+) -> (Event, Option<String>) {
+    let mut fields = event.annotations().clone();
+    let mut fresh = BTreeMap::new();
+
+    for (key, value) in hook {
+        if let Some(existing) = fields.get_mut(&key) {
+            *existing = value;
+        } else {
+            fresh.insert(key, value);
+        }
+    }
+
+    let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
+    let mut reason = merge_annotations_reason(fresh.len(), room);
+    fields.extend(fresh.into_iter().take(room));
+
+    let merged = event.with_annotations(fields).unwrap_or_else(|_| {
+        reason = Some(HOOK_ANNOTATIONS_REASON.into());
+        event.clone()
+    });
+
+    (merged, reason)
 }
 
 #[cfg(test)]
