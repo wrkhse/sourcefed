@@ -951,7 +951,7 @@ mod tests {
 
     #[test]
     fn retryable_connect_error_rejects_other_errnos() {
-        assert!(!retryable_connect_error(Errno::EACCES));
+        assert!(!retryable_connect_error(Errno::ACCESS));
     }
 
     #[test]
