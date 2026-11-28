@@ -66,9 +66,6 @@ pub const HOOK_ANNOTATION_TYPE_REASON: &str = "event-before-annotation-type";
 /// The log reason when the daemon reports an error.
 pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
 
-/// The log reason when a hook supplies an invalid reason.
-pub const HOOK_REASON_INVALID_REASON: &str = "event-before-reason-invalid";
-
 /// What to do with one event before it is committed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]

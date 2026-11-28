@@ -400,6 +400,7 @@ mod tests {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
+    use rustix::net::{bind, listen};
     use serde_json::{Value, json};
 
     use crate::{
@@ -879,13 +880,25 @@ mod tests {
 
     #[test]
     fn a_full_connect_backlog_times_out() {
-        let daemon = Daemon::new();
-        let client = daemon.client();
-        let address = SocketAddrUnix::new(daemon.socket.as_path()).unwrap();
-        let mut held = Vec::new();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("full.sock");
+        let address = SocketAddrUnix::new(&socket).unwrap();
+        let listener = socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&listener, &address).unwrap();
+        listen(&listener, 1).unwrap();
 
-        // Fill the listener's backlog without accepting any connection.
-        for _ in 0..512 {
+        let client = FramedEventBefore::new(&socket, "quiet-bots");
+        let mut held = Vec::new();
+        let mut backlog_full = false;
+
+        // Fill the listener's single-slot backlog without accepting anything.
+        for _ in 0..3 {
             let fd = socket_with(
                 AddressFamily::UNIX,
                 SocketType::STREAM,
@@ -895,15 +908,16 @@ mod tests {
             .unwrap();
             match connect(&fd, &address) {
                 Ok(()) => held.push(fd),
-                Err(Errno::AGAIN | Errno::INPROGRESS) => break,
+                Err(Errno::AGAIN | Errno::INPROGRESS) => backlog_full = true,
                 Err(error) => panic!("unexpected connect error: {error}"),
             }
         }
+        assert!(backlog_full, "the connect backlog never filled");
 
         let verdict = client.verdict(&event(), Duration::from_millis(120));
 
-        drop(held);
         assert_eq!(verdict, Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned()));
+        drop((listener, held, dir));
     }
 
     #[test]
