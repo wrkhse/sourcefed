@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -451,10 +451,18 @@ impl<S: StateStore> PollEngine<S> {
                     } else {
                         let mut fields = event.annotations().clone();
                         let hook_fields = annotations.into_inner();
+                        let mut fresh = BTreeMap::new();
+                        for (key, value) in hook_fields {
+                            if fields.contains_key(&key) {
+                                fields.insert(key, value);
+                            } else {
+                                fresh.insert(key, value);
+                            }
+                        }
                         let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
 
-                        reason = merge_annotations_reason(hook_fields.len(), room);
-                        fields.extend(hook_fields.into_iter().take(room));
+                        reason = merge_annotations_reason(fresh.len(), room);
+                        fields.extend(fresh.into_iter().take(room));
 
                         event.with_annotations(fields).unwrap_or_else(|_| {
                             reason = Some(HOOK_ANNOTATIONS_REASON.into());
@@ -1615,6 +1623,82 @@ mod tests {
         assert_eq!(merge_annotations_reason(1, 2), None);
         assert_eq!(
             merge_annotations_reason(3, 2),
+            Some(HOOK_ANNOTATIONS_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn an_overwrite_does_not_consume_annotation_room() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 1)
+            .map(|index| (format!("key-{index}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([
+            ("key-0".to_owned(), "hook-value".to_owned()),
+            ("fresh".to_owned(), "fresh-value".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert_eq!(
+            pending[0].annotations().get("key-0").map(String::as_str),
+            Some("hook-value")
+        );
+        assert_eq!(
+            pending[0].annotations().get("fresh").map(String::as_str),
+            Some("fresh-value")
+        );
+        // One fresh key fits the one room; the overwrite does not count.
+        assert_eq!(merge_annotations_reason(1, 1), None);
+    }
+
+    #[test]
+    fn fresh_fields_beyond_the_room_are_dropped_and_named() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 1)
+            .map(|index| (format!("key-{index}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([
+            ("key-0".to_owned(), "hook-value".to_owned()),
+            ("fresh-a".to_owned(), "a-value".to_owned()),
+            ("fresh-b".to_owned(), "b-value".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert_eq!(
+            pending[0].annotations().get("key-0").map(String::as_str),
+            Some("hook-value")
+        );
+        assert_eq!(
+            pending[0].annotations().get("fresh-a").map(String::as_str),
+            Some("a-value")
+        );
+        assert_eq!(pending[0].annotations().get("fresh-b"), None);
+        assert_eq!(
+            merge_annotations_reason(2, 1),
             Some(HOOK_ANNOTATIONS_REASON.to_owned())
         );
     }
