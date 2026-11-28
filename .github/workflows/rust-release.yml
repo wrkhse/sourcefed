@@ -804,7 +804,8 @@ jobs:
             }
             for tarball in "${tarballs[@]}"; do
               if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
-                if [[ $tarball == *aarch64-apple-darwin.tar.gz ]]; then
+                if [[ $TAG == core-v0.1.0-rc.1 &&
+                  $tarball == *aarch64-apple-darwin.tar.gz ]]; then
                   echo "::notice::release $TAG has no asset $tarball; that target is absent, skipping it"
                   rm -- "$tarball"
                   continue
