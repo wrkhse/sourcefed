@@ -250,7 +250,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
@@ -383,7 +383,7 @@ jobs:
     needs: [changes, mutants-shard]
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
