@@ -320,7 +320,8 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
     // time left, then hand the connected socket back to the timed exchange.
     match connect(&fd, &address) {
         Ok(()) => {}
-        Err(Errno::INPROGRESS | Errno::AGAIN) => {
+        // A full Unix listen backlog may surface as ECONNREFUSED.
+        Err(Errno::INPROGRESS | Errno::AGAIN | Errno::CONNREFUSED) => {
             wait_for_connect(&fd, deadline)?;
         }
         Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
@@ -360,7 +361,7 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
 
         match socket_error(fd) {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(Errno::AGAIN | Errno::INPROGRESS)) => {
+            Ok(Err(Errno::AGAIN | Errno::INPROGRESS | Errno::CONNREFUSED)) => {
                 let _ = remaining(deadline)
                     .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
             }
