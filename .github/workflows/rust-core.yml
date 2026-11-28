@@ -250,7 +250,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     env:
       FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
@@ -300,7 +300,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          args=(--no-shuffle -j 2 --shard "$SHARD/4")
+          args=(--no-shuffle -j 2 --timeout 60 --shard "$SHARD/4")
           if [[ "$FULL_TREE" == "false" ]]; then
             args+=(--in-diff pr.diff)
           fi
@@ -322,7 +322,7 @@ jobs:
           set -euo pipefail
 
           mkdir -p mutants.out
-          args=(--no-shuffle -j 2 --shard "$SHARD/4")
+          args=(--no-shuffle -j 2 --timeout 60 --shard "$SHARD/4")
           if [[ "$FULL_TREE" == "false" ]]; then
             args+=(--in-diff pr.diff)
           fi
@@ -383,7 +383,7 @@ jobs:
     needs: [changes, mutants-shard]
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     env:
       FULL_TREE: ${{ github.event_name == 'push' || inputs.full_tree == true }}
     steps:
