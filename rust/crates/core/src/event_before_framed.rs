@@ -328,7 +328,7 @@ fn io_budget(deadline: Instant) -> Result<Duration, String> {
 }
 
 // Only a full backlog or an in-progress connect leaves the socket retryable.
-fn retryable_connect_error(errno: Errno) -> bool {
+const fn retryable_connect_error(errno: Errno) -> bool {
     matches!(errno, Errno::AGAIN | Errno::INPROGRESS | Errno::CONNREFUSED)
 }
 
@@ -416,7 +416,7 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
 
 // A parent directory is trusted when it belongs to the socket's owner and
 // neither group nor other can write to it.
-fn parent_is_trusted(parent_uid: u32, expected_uid: u32, mode: u32) -> bool {
+const fn parent_is_trusted(parent_uid: u32, expected_uid: u32, mode: u32) -> bool {
     parent_uid == expected_uid && mode & 0o022 == 0
 }
 
