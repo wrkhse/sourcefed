@@ -516,6 +516,28 @@ mod tests {
         event.with_author(Some("steven".into())).unwrap()
     }
 
+    /// Accepts one client within a bounded window. A daemon that never gets a
+    /// connection fails its worker instead of blocking until the harness times
+    /// out.
+    fn accept_with_deadline(listener: &UnixListener) -> UnixStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "fake daemon saw no connection within the accept deadline"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("fake daemon accept failed: {error}"),
+            }
+        }
+    }
+
     /// Reads one request, asserts the whole hook request, then writes the reply.
     /// Joining the worker returns the request for further assertions.
     fn serve<F>(listener: UnixListener, reply: F) -> JoinHandle<Value>
@@ -523,7 +545,7 @@ mod tests {
         F: FnOnce(u64) -> Option<Vec<u8>> + Send + 'static,
     {
         thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_with_deadline(&listener);
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -901,7 +923,7 @@ mod tests {
         let daemon = Daemon::new();
         let client = daemon.client();
         let worker = thread::spawn(move || {
-            let (stream, _) = daemon.listener.accept().unwrap();
+            let stream = accept_with_deadline(&daemon.listener);
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -920,7 +942,7 @@ mod tests {
         let daemon = Daemon::new();
         let client = daemon.client();
         let worker = thread::spawn(move || {
-            let (mut stream, _) = daemon.listener.accept().unwrap();
+            let mut stream = accept_with_deadline(&daemon.listener);
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
