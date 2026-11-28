@@ -5,7 +5,7 @@ import {
   InMemoryMonitorStore,
   type QueuedMonitorEvent,
 } from "@sourcefed/core";
-import { serveHttp } from "./utils";
+import { serveHttp, targetKey } from "./utils";
 import { connectDaemonClient } from "./client.ts";
 import {
   ADMITTED_LIMIT,
@@ -319,8 +319,10 @@ test("a poll does not replay an older webhook verdict that was already delivered
   assert.ok(record);
 
   let deliveries = 0;
-  const listener = await client.subscribe(target, async () => {
+  const deliveredIDs: string[] = [];
+  const listener = await client.subscribe(target, async (events) => {
     deliveries += 1;
+    deliveredIDs.push(...events.map((event) => event.id));
   });
 
   const warnings: unknown[][] = [];
@@ -355,6 +357,92 @@ test("a poll does not replay an older webhook verdict that was already delivered
     assert.ok(text.includes("issue:7209240257"));
     assert.ok(text.includes("webhook"));
     assert.ok(text.includes("poll"));
+
+    assert.equal(
+      (await daemon.readEvents(target)).length,
+      0,
+      "a suppressed duplicate must be dropped, not left to warn on every emit",
+    );
+    const admitted = (
+      daemon as unknown as {
+        admitted: Map<string, Map<string, string>>;
+      }
+    ).admitted.get(targetKey(target));
+    assert.ok(admitted?.has("issue:7209240257"));
+
+    await daemon.runtime.context.sink.deliver({
+      monitor: record,
+      event: {
+        ...queued.event,
+        id: "issue:7209343856",
+        source: record.source,
+      },
+    });
+    await until(() => deliveredIDs.includes("issue:7209343856"));
+    assert.deepEqual(deliveredIDs, ["issue:7209240257", "issue:7209343856"]);
+    assert.equal(deliveries, 2);
+  } finally {
+    console.warn = originalWarn;
+    await listener.close();
+  }
+});
+
+test("two poll cycles wake once for one comment id", async (t) => {
+  const daemon = new SourcefedDaemon({
+    store: new InMemoryMonitorStore(),
+    eventQueue: new InMemoryMonitorEventQueue(),
+  });
+  const client = await http(t, (request) =>
+    handleDaemonHttpRequest(daemon, request),
+  );
+  const created = await daemon.createMonitor(target, {
+    name: "test",
+    sourceType: "jira",
+    issueKey: "TEST-1",
+  });
+  assert.ok("monitor" in created && created.monitor);
+  const monitor = created.monitor;
+  await daemon.service.setDelivery(monitor.id, "poll");
+  const record = await daemon.service.get(monitor.id);
+  assert.ok(record);
+
+  let deliveries = 0;
+  const listener = await client.subscribe(target, async () => {
+    deliveries += 1;
+  });
+
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    const event = {
+      ...queued.event,
+      id: "issue:7209240257",
+      source: record.source,
+    };
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+    assert.equal(deliveries, 1);
+
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(
+      () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1,
+    );
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+
+    assert.equal(deliveries, 1, "two poll cycles must wake the host once");
+    assert.equal(
+      warnings.filter((args) =>
+        String(args[0]).includes("duplicate delivery suppressed"),
+      ).length,
+      1,
+    );
+    assert.equal((await daemon.readEvents(target)).length, 0);
   } finally {
     console.warn = originalWarn;
     await listener.close();

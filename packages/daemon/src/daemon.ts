@@ -255,9 +255,9 @@ export class SourcefedDaemon {
     const queued = await this.queue.read(target);
     const acked = queued.filter((event) => eventIDs.includes(event.id));
     await this.queue.acknowledge(target, eventIDs);
-    const liveMonitors = (await this.service.list()).filter(isLive);
+    const monitors = await this.service.list();
     const deliveryByMonitor = new Map(
-      liveMonitors.map((monitor) => [monitor.id, monitor.delivery] as const),
+      monitors.map((monitor) => [monitor.id, monitor.delivery] as const),
     );
     this.admit(targetKey(target), acked, deliveryByMonitor);
     if (acked.length > 0) this.appendLog(target, acked);
@@ -341,10 +341,13 @@ export class SourcefedDaemon {
 
     // A stopped or removed monitor must go silent: drop its still-queued events
     // instead of replaying them to subscribers. An ended one still owes its last events.
-    const liveMonitors = (await this.service.list()).filter(isLive);
+    const monitors = await this.service.list();
+    const liveMonitors = monitors.filter(isLive);
     const live = new Set(liveMonitors.map((monitor) => monitor.id));
+    // Ended monitors still owe their last events, so their delivery source is
+    // needed when an acknowledgement admits an id.
     const deliveryByMonitor = new Map(
-      liveMonitors.map((monitor) => [monitor.id, monitor.delivery] as const),
+      monitors.map((monitor) => [monitor.id, monitor.delivery] as const),
     );
     await this.dropQueued(
       target,
@@ -368,10 +371,13 @@ export class SourcefedDaemon {
     if (fresh.length === 0) return;
 
     // The queue can offer the same id again after an ack, or through another
-    // delivery source after a switch; a warning is the whole suppression.
+    // delivery source after a switch; warn, then drop the stale copy so it does
+    // not linger and warn again on every emit.
     const ledger = this.admitted.get(key);
+    const suppressed: QueuedMonitorEvent[] = [];
     for (const event of fresh) {
       if (!ledger?.has(event.id)) continue;
+      suppressed.push(event);
       const admittedVia = ledger.get(event.id);
       const receivedVia = deliveryByMonitor.get(event.monitorID);
       console.warn(
@@ -379,6 +385,11 @@ export class SourcefedDaemon {
         { id: event.id, admittedVia, receivedVia },
       );
     }
+    if (suppressed.length > 0)
+      await this.dropQueued(
+        target,
+        suppressed.map((event) => event.id),
+      );
     const deliverable = fresh.filter((event) => !ledger?.has(event.id));
     if (deliverable.length === 0) return;
 
