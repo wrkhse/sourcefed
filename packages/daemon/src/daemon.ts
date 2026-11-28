@@ -237,7 +237,14 @@ export class SourcefedDaemon {
       };
     await this.service.remove(id);
     await this.purgeMonitorEvents(monitor.target, id);
-    this.admitted.delete(targetKey(monitor.target));
+    const key = targetKey(monitor.target);
+    const ledger = this.admitted.get(key);
+    if (ledger) {
+      for (const admittedID of ledger.keys()) {
+        if (admittedID.startsWith(`${id}:`)) ledger.delete(admittedID);
+      }
+      if (ledger.size === 0) this.admitted.delete(key);
+    }
     return { ok: true, removed: true };
   }
 
@@ -426,8 +433,13 @@ export class SourcefedDaemon {
       this.admitted.set(key, ledger);
     }
     for (const event of events) {
-      const source = deliveryByMonitor.get(event.monitorID);
-      if (!source) continue;
+      let source = deliveryByMonitor.get(event.monitorID);
+      if (!source) {
+        console.warn(
+          `[sourcefed] admitted event with unknown delivery source: monitor ${event.monitorID}, event ${event.id}; assuming poll`,
+        );
+        source = "poll";
+      }
       ledger.set(event.id, source);
       evictOldestAdmitted(ledger);
     }

@@ -342,7 +342,12 @@ test("a poll does not replay an older webhook verdict that was already delivered
 
     await daemon.service.setDelivery(monitor.id, "poll");
     await daemon.runtime.context.sink.deliver({ monitor: record, event });
-    await delay(50);
+    await until(
+      async () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1 && (await daemon.readEvents(target)).length === 0,
+    );
 
     assert.equal(
       deliveries,
@@ -446,6 +451,104 @@ test("two poll cycles wake once for one comment id", async (t) => {
       1,
     );
     assert.equal((await daemon.readEvents(target)).length, 0);
+  } finally {
+    console.warn = originalWarn;
+    await listener.close();
+  }
+});
+
+test("removing one of two monitors on a target keeps the other's admitted id", async (t) => {
+  const daemon = new SourcefedDaemon({
+    store: new InMemoryMonitorStore(),
+    eventQueue: new InMemoryMonitorEventQueue(),
+  });
+  const client = await http(t, (request) =>
+    handleDaemonHttpRequest(daemon, request),
+  );
+  const first = await daemon.createMonitor(target, {
+    name: "first",
+    sourceType: "jira",
+    issueKey: "TEST-1",
+  });
+  assert.ok("monitor" in first && first.monitor);
+  const firstMonitor = first.monitor;
+  const second = await daemon.createMonitor(target, {
+    name: "second",
+    sourceType: "jira",
+    issueKey: "TEST-2",
+  });
+  assert.ok("monitor" in second && second.monitor);
+  const secondMonitor = second.monitor;
+  const firstRecord = await daemon.service.get(firstMonitor.id);
+  const secondRecord = await daemon.service.get(secondMonitor.id);
+  assert.ok(firstRecord && secondRecord);
+
+  let deliveries = 0;
+  const deliveredIDs: string[] = [];
+  const listener = await client.subscribe(target, async (events) => {
+    deliveries += 1;
+    deliveredIDs.push(...events.map((event) => event.id));
+  });
+
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    await daemon.runtime.context.sink.deliver({
+      monitor: firstRecord,
+      event: { ...queued.event, id: "issue:first", source: firstRecord.source },
+    });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+    await daemon.runtime.context.sink.deliver({
+      monitor: secondRecord,
+      event: {
+        ...queued.event,
+        id: "issue:second",
+        source: secondRecord.source,
+      },
+    });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+
+    const admittedIDs = () =>
+      (
+        daemon as unknown as {
+          admitted: Map<string, Map<string, string>>;
+        }
+      ).admitted.get(targetKey(target));
+    assert.ok(admittedIDs()?.has(`${firstMonitor.id}:issue:first`));
+    assert.ok(admittedIDs()?.has(`${secondMonitor.id}:issue:second`));
+
+    await daemon.removeMonitor(target, firstMonitor.id);
+
+    assert.equal(admittedIDs()?.has(`${firstMonitor.id}:issue:first`), false);
+    assert.ok(admittedIDs()?.has(`${secondMonitor.id}:issue:second`));
+
+    await daemon.runtime.context.sink.deliver({
+      monitor: secondRecord,
+      event: {
+        ...queued.event,
+        id: "issue:second",
+        source: secondRecord.source,
+      },
+    });
+    await until(
+      async () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1 && (await daemon.readEvents(target)).length === 0,
+    );
+
+    assert.equal(
+      deliveries,
+      2,
+      "a replay of the remaining monitor is suppressed",
+    );
+    assert.deepEqual(deliveredIDs, [
+      `${firstMonitor.id}:issue:first`,
+      `${secondMonitor.id}:issue:second`,
+    ]);
   } finally {
     console.warn = originalWarn;
     await listener.close();
