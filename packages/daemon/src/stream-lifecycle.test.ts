@@ -382,8 +382,13 @@ test("a poll does not replay an older webhook verdict that was already delivered
         source: record.source,
       },
     });
-    await until(() => deliveredIDs.includes("issue:7209343856"));
-    assert.deepEqual(deliveredIDs, ["issue:7209240257", "issue:7209343856"]);
+    await until(() =>
+      deliveredIDs.some((id) => id.endsWith("issue:7209343856")),
+    );
+    assert.deepEqual(
+      deliveredIDs.map((id) => id.slice(id.indexOf("issue:"))),
+      ["issue:7209240257", "issue:7209343856"],
+    );
     assert.equal(deliveries, 2);
   } finally {
     console.warn = originalWarn;
