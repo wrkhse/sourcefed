@@ -580,7 +580,10 @@ mod tests {
             let error = serde_json::from_str::<Event>(&json).unwrap_err();
 
             assert_eq!(error.classify(), Category::Data);
-            assert_eq!(error.to_string(), expected);
+            assert_eq!(
+                error.to_string(),
+                format!("{expected} at line 1 column {}", json.len())
+            );
         }
     }
 
