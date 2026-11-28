@@ -327,9 +327,22 @@ fn io_budget(deadline: Instant) -> Result<Duration, String> {
     io_budget_for(left)
 }
 
-// Only a full backlog or an in-progress connect leaves the socket retryable.
-const fn retryable_connect_error(errno: Errno) -> bool {
-    matches!(errno, Errno::AGAIN | Errno::INPROGRESS | Errno::CONNREFUSED)
+// How one nonblocking connect result should be handled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectRetry {
+    Connected,
+    InProgress,
+    Backlog,
+    Failed,
+}
+
+fn connect_retry(result: Result<(), Errno>) -> ConnectRetry {
+    match result {
+        Ok(()) => ConnectRetry::Connected,
+        Err(Errno::INPROGRESS) => ConnectRetry::InProgress,
+        Err(Errno::AGAIN | Errno::CONNREFUSED) => ConnectRetry::Backlog,
+        Err(_) => ConnectRetry::Failed,
+    }
 }
 
 // A peer is trusted only when its socket path and its owner both check out.
@@ -342,7 +355,7 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
     let fd = socket_with(
         AddressFamily::UNIX,
         SocketType::STREAM,
-        SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+        SocketFlags::NONBLOCK.union(SocketFlags::CLOEXEC),
         None,
     )
     .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
@@ -354,17 +367,16 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
         let left = remaining(deadline)
             .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
 
-        match connect(&fd, &address) {
-            Ok(()) => break,
-            Err(errno) if retryable_connect_error(errno) => {
-                if errno == Errno::INPROGRESS {
-                    wait_for_connect(&fd, deadline)?;
-                    break;
-                }
-
+        match connect_retry(connect(&fd, &address)) {
+            ConnectRetry::Connected => break,
+            ConnectRetry::InProgress => {
+                wait_for_connect(&fd, deadline)?;
+                break;
+            }
+            ConnectRetry::Backlog => {
                 std::thread::sleep(Duration::from_millis(1).min(left));
             }
-            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+            ConnectRetry::Failed => return Err(HOOK_CONNECT_REASON.to_owned()),
         }
     }
 
@@ -397,16 +409,16 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
             continue;
         }
 
-        match socket_error(fd) {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(errno)) if retryable_connected_socket_error(errno) => {
+        match classify_socket_error(socket_error(fd)) {
+            SocketError::Connected => return Ok(()),
+            SocketError::InProgress => {
                 let _ = remaining(deadline)
                     .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
             }
-            Ok(Err(Errno::CONNREFUSED)) => {
+            SocketError::Refused => {
                 return Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned());
             }
-            Ok(Err(_)) | Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+            SocketError::Failed => return Err(HOOK_CONNECT_REASON.to_owned()),
         }
     }
 }
@@ -421,9 +433,24 @@ const fn revents_need_more_wait(revents: PollFlags) -> bool {
     !revents.intersects(PollFlags::OUT.union(PollFlags::ERR).union(PollFlags::HUP))
 }
 
-// True only while the connect is still in flight.
-const fn retryable_connected_socket_error(errno: Errno) -> bool {
-    matches!(errno, Errno::AGAIN | Errno::INPROGRESS)
+// The state a polled connect reports through SO_ERROR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SocketError {
+    Connected,
+    InProgress,
+    Refused,
+    Failed,
+}
+
+fn classify_socket_error(
+    result: rustix::io::Result<Result<(), Errno>>,
+) -> SocketError {
+    match result {
+        Ok(Ok(())) => SocketError::Connected,
+        Ok(Err(Errno::AGAIN | Errno::INPROGRESS)) => SocketError::InProgress,
+        Ok(Err(Errno::CONNREFUSED)) => SocketError::Refused,
+        Ok(Err(_)) | Err(_) => SocketError::Failed,
+    }
 }
 
 // A parent directory is trusted when it belongs to the socket's owner and
@@ -979,15 +1006,43 @@ mod tests {
     }
 
     #[test]
-    fn retryable_connect_error_accepts_backlog_and_in_progress_errnos() {
-        assert!(retryable_connect_error(Errno::AGAIN));
-        assert!(retryable_connect_error(Errno::INPROGRESS));
-        assert!(retryable_connect_error(Errno::CONNREFUSED));
+    fn connect_retry_classifies_every_outcome() {
+        assert_eq!(connect_retry(Ok(())), ConnectRetry::Connected);
+        assert_eq!(connect_retry(Err(Errno::AGAIN)), ConnectRetry::Backlog);
+        assert_eq!(
+            connect_retry(Err(Errno::CONNREFUSED)),
+            ConnectRetry::Backlog
+        );
+        assert_eq!(
+            connect_retry(Err(Errno::INPROGRESS)),
+            ConnectRetry::InProgress
+        );
+        assert_eq!(connect_retry(Err(Errno::ACCESS)), ConnectRetry::Failed);
     }
 
     #[test]
-    fn retryable_connect_error_rejects_other_errnos() {
-        assert!(!retryable_connect_error(Errno::ACCESS));
+    fn classify_socket_error_covers_every_outcome() {
+        assert_eq!(classify_socket_error(Ok(Ok(()))), SocketError::Connected);
+        assert_eq!(
+            classify_socket_error(Ok(Err(Errno::AGAIN))),
+            SocketError::InProgress
+        );
+        assert_eq!(
+            classify_socket_error(Ok(Err(Errno::INPROGRESS))),
+            SocketError::InProgress
+        );
+        assert_eq!(
+            classify_socket_error(Ok(Err(Errno::CONNREFUSED))),
+            SocketError::Refused
+        );
+        assert_eq!(
+            classify_socket_error(Ok(Err(Errno::ACCESS))),
+            SocketError::Failed
+        );
+        assert_eq!(
+            classify_socket_error(Err(Errno::INVAL)),
+            SocketError::Failed
+        );
     }
 
     #[test]
@@ -1004,14 +1059,6 @@ mod tests {
         assert!(!revents_need_more_wait(PollFlags::ERR));
         assert!(!revents_need_more_wait(PollFlags::HUP));
         assert!(!revents_need_more_wait(PollFlags::OUT.union(PollFlags::IN)));
-    }
-
-    #[test]
-    fn retryable_connected_socket_error_only_for_in_flight_connect() {
-        assert!(retryable_connected_socket_error(Errno::AGAIN));
-        assert!(retryable_connected_socket_error(Errno::INPROGRESS));
-        assert!(!retryable_connected_socket_error(Errno::CONNREFUSED));
-        assert!(!retryable_connected_socket_error(Errno::ACCESS));
     }
 
     #[test]
