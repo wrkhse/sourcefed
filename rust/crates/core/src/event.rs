@@ -266,7 +266,7 @@ impl Event {
 
     /// Returns the event's annotations, empty when none were attached.
     #[must_use]
-    pub fn annotations(&self) -> &BTreeMap<String, String> {
+    pub const fn annotations(&self) -> &BTreeMap<String, String> {
         &self.annotations
     }
 

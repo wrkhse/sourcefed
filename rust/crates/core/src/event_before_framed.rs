@@ -175,7 +175,7 @@ fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Result<Value, Strin
         match read {
             Ok(Some(frame)) => frame,
             Ok(None) => return Err(HOOK_PEER_CLOSED_REASON.to_owned()),
-            Err(error) => return Err(wire_reason(error, deadline)),
+            Err(error) => return Err(wire_reason(&error, deadline)),
         }
     };
 
@@ -293,7 +293,7 @@ fn validate_socket(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn wire_reason(error: WireError, deadline: Instant) -> String {
+fn wire_reason(error: &WireError, deadline: Instant) -> String {
     match error {
         WireError::Malformed | WireError::TooLarge => HOOK_DECODE_REASON.to_owned(),
         WireError::Closed => HOOK_PEER_CLOSED_REASON.to_owned(),

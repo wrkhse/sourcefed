@@ -211,13 +211,13 @@ pub(crate) fn decide_before(
         Ok(Ok(BeforeVerdict::Keep)) => keep(None),
         Ok(Ok(BeforeVerdict::Drop { reason })) => BeforeDecision::Drop { reason },
         Ok(Ok(BeforeVerdict::Annotate { fields })) => {
-            match ValidatedAnnotations::new(fields) {
-                Ok(annotations) => BeforeDecision::Keep {
+            ValidatedAnnotations::new(fields).map_or_else(
+                |_| keep(Some(HOOK_ANNOTATIONS_REASON.into())),
+                |annotations| BeforeDecision::Keep {
                     reason: None,
                     annotations,
                 },
-                Err(_) => keep(Some(HOOK_ANNOTATIONS_REASON.into())),
-            }
+            )
         }
         Ok(Err(message)) => keep(Some(hook_error_reason(&message))),
         Err(mpsc::RecvTimeoutError::Timeout) => {
