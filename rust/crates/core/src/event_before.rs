@@ -6,7 +6,11 @@ use std::time::Duration;
 
 use crate::Event;
 
-/// Longest time the poll engine waits for one pre-commit verdict.
+/// Longest time the poll engine spends on pre-commit verdicts in one commit.
+///
+/// The engine divides this budget among the commit's events, passing the
+/// remaining time to each hook call. Once it elapses, later events are kept
+/// without consulting the hook.
 pub const EVENT_BEFORE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// The log reason when a hook reports an error.
@@ -156,7 +160,7 @@ pub(crate) mod support {
     use crate::{Event, EventId, EventKind, EventSubject, SourceName};
 
     /// Builds an event with the given ID and optional author.
-    pub(crate) fn event(id: &str, author: Option<&str>) -> Event {
+    pub fn event(id: &str, author: Option<&str>) -> Event {
         let source = SourceName::new("timer".into()).unwrap();
         let subject = EventSubject::new(source, "subject".into()).unwrap();
         let at = "2026-01-01T00:00:00Z".parse().unwrap();
@@ -173,7 +177,7 @@ pub(crate) mod support {
     }
 
     /// Drops events whose author is bot.
-    pub(crate) struct BotFilter;
+    pub struct BotFilter;
 
     impl EventBefore for BotFilter {
         fn verdict(
@@ -192,7 +196,7 @@ pub(crate) mod support {
     }
 
     /// Always reports an error instead of a verdict.
-    pub(crate) struct FailingHook;
+    pub struct FailingHook;
 
     impl EventBefore for FailingHook {
         fn verdict(
@@ -205,7 +209,7 @@ pub(crate) mod support {
     }
 
     /// Sleeps past any ordinary deadline before answering.
-    pub(crate) struct BlockingHook;
+    pub struct BlockingHook;
 
     impl EventBefore for BlockingHook {
         fn verdict(

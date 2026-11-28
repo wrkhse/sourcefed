@@ -475,6 +475,7 @@ mod tests {
 
         assert_eq!(stored, authored_json);
         assert_eq!(decoded.author(), Some("deploy-bot"));
+        assert_eq!(decoded.author(), authored.author());
         assert_eq!(decoded, authored);
     }
 

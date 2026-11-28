@@ -56,8 +56,10 @@ its exact wire shape.
 ### 2. EventBefore trait
 
 A trait supplies one `BeforeVerdict` per event: `Keep` or `Drop { reason }`.
-The engine bounds each verdict with `EVENT_BEFORE_TIMEOUT`; the default hook,
-`AllowAll`, keeps every event. A hook error or a timeout keeps the event and
+The engine bounds the whole commit's verdicts with `EVENT_BEFORE_TIMEOUT`,
+passing the remaining budget to each hook call; once it elapses, later events
+are kept without consulting the hook. The default hook, `AllowAll`, keeps
+every event. A hook error or a timeout keeps the event and
 logs under `HOOK_ERROR_REASON` or `HOOK_TIMEOUT_REASON`, so a filter cannot
 lose an event by failing. The hook runs on its own thread, so one that panics
 disconnects the channel and keeps the event under `HOOK_PANIC_REASON`. One

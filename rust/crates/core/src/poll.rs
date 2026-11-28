@@ -420,7 +420,7 @@ impl<S: StateStore> PollEngine<S> {
     fn commit(&mut self, outcome: &PollOutcome) -> Result<(), StoreError> {
         let deadline = Instant::now()
             .checked_add(self.event_before_timeout)
-            .unwrap_or(Instant::now());
+            .unwrap_or_else(Instant::now);
         let mut events = Vec::with_capacity(outcome.events().len());
         let mut skipped = Vec::new();
 
