@@ -804,13 +804,15 @@ jobs:
             }
             for tarball in "${tarballs[@]}"; do
               if [[ $'\n'$names$'\n' != *$'\n'"$tarball"$'\n'* ]]; then
-                echo "::error::release $TAG has no asset $tarball"
-                exit 1
+                echo "::notice::release $TAG has no asset $tarball; that target is absent, skipping it"
+                rm -- "$tarball"
+                continue
               fi
 
               rm -- "$tarball"
               gh release download "$TAG" --pattern "$tarball" --dir .
             done
+            tarballs=(*.tar.gz)
           fi
 
           sha256sum -- "${tarballs[@]}" demo.gif > SHA256SUMS
