@@ -183,7 +183,7 @@ fn write_frame(
     frame: &[u8],
     deadline: Instant,
 ) -> Result<(), String> {
-    let left = remaining(deadline)?;
+    let left = io_budget(deadline)?;
     stream
         .set_write_timeout(Some(left))
         .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
@@ -202,7 +202,7 @@ fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Result<Value, Strin
     let mut chunk = [0_u8; 512];
 
     'frame: loop {
-        let left = remaining(deadline)?;
+        let left = io_budget(deadline)?;
         stream
             .set_read_timeout(Some(left))
             .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
@@ -295,6 +295,17 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
     let left = deadline.saturating_duration_since(Instant::now());
 
     if left.is_zero() {
+        return Err(HOOK_TIMEOUT_REASON.to_owned());
+    }
+
+    Ok(left)
+}
+
+// A timeout below a millisecond can round down to zero, which blocks forever.
+fn io_budget(deadline: Instant) -> Result<Duration, String> {
+    let left = remaining(deadline)?;
+
+    if left < Duration::from_millis(1) {
         return Err(HOOK_TIMEOUT_REASON.to_owned());
     }
 
@@ -922,10 +933,7 @@ mod tests {
         let verdict = client.verdict(&event(), Duration::from_millis(120));
 
         assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(
-            verdict == Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned())
-                || verdict == Err(HOOK_CONNECT_REASON.to_owned())
-        );
+        assert_eq!(verdict, Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned()));
         drop((listener, held, dir));
     }
 
@@ -985,6 +993,53 @@ mod tests {
         assert_eq!(
             exchange_stream(&mut client, frame, deadline),
             Err(HOOK_CONNECT_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_read_io_error_is_a_named_connect_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::open(dir.path()).unwrap();
+        let fd = OwnedFd::from(file);
+        let mut stream = UnixStream::from(fd);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or_else(Instant::now);
+
+        assert_eq!(
+            read_frame(&mut stream, deadline),
+            Err(HOOK_CONNECT_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_frame_at_the_byte_cap_is_accepted() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let text = "x".repeat(MAX_FRAME_BYTES - 3);
+        let frame = format!("\"{text}\"\n");
+        assert_eq!(frame.len(), MAX_FRAME_BYTES);
+        writer.write_all(frame.as_bytes()).unwrap();
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or_else(Instant::now);
+
+        assert_eq!(read_frame(&mut reader, deadline), Ok(Value::String(text)));
+    }
+
+    #[test]
+    fn an_oversized_frame_is_a_named_decode_error() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let mut frame = vec![b'x'; MAX_FRAME_BYTES];
+        frame.push(b'\n');
+        assert_eq!(frame.len(), MAX_FRAME_BYTES + 1);
+        writer.write_all(&frame).unwrap();
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or_else(Instant::now);
+
+        assert_eq!(
+            read_frame(&mut reader, deadline),
+            Err(HOOK_DECODE_REASON.to_owned())
         );
     }
 
