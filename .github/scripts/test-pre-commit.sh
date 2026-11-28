@@ -202,15 +202,34 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 fi
 git commit -qm 'fmt: system bash probe'
 
-printf 'probe\n' > link-target.md
-ln -s link-target.md staged-link.md
+printf 'probe\n' > "$work/outside-target.md"
+ln -s "$work/outside-target.md" staged-link.md
 git add staged-link.md
-if git commit -qm 'fmt: staged symlink' > "$work/symlink.out" 2>&1; then
-  echo 'staged symlink commit unexpectedly succeeded' >&2
+if git commit -qm 'fmt: staged symlink md' > "$work/symlink-md.out" 2>&1; then
+  echo 'staged symlink md commit unexpectedly succeeded' >&2
   exit 1
 fi
-grep -q 'FAILED at staged path' "$work/symlink.out"
+grep -q 'FAILED at staged path' "$work/symlink-md.out"
+if [[ "$(cat "$work/outside-target.md")" != 'probe' ]]; then
+  echo 'tidy wrote through staged symlink md' >&2
+  exit 1
+fi
 git restore --staged staged-link.md
-rm -f staged-link.md link-target.md
+rm -f staged-link.md "$work/outside-target.md"
+
+printf 'probe\n' > "$work/outside-target.rs"
+ln -s "$work/outside-target.rs" staged-link.rs
+git add staged-link.rs
+if git commit -qm 'fmt: staged symlink rs' > "$work/symlink-rs.out" 2>&1; then
+  echo 'staged symlink rs commit unexpectedly succeeded' >&2
+  exit 1
+fi
+grep -q 'FAILED at staged path' "$work/symlink-rs.out"
+if [[ "$(cat "$work/outside-target.rs")" != 'probe' ]]; then
+  echo 'rustfmt wrote through staged symlink rs' >&2
+  exit 1
+fi
+git restore --staged staged-link.rs
+rm -f staged-link.rs "$work/outside-target.rs"
 
 echo 'pre-commit hook selftest: all cases passed'
