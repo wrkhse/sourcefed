@@ -295,63 +295,70 @@ test(
   },
 );
 
-test("a poll does not replay an older webhook verdict that was already delivered", async (t) => {
-  const daemon = new SourcefedDaemon({
-    store: new InMemoryMonitorStore(),
-    eventQueue: new InMemoryMonitorEventQueue(),
-  });
-  const client = await http(t, (request) =>
-    handleDaemonHttpRequest(daemon, request),
-  );
-  const created = await daemon.createMonitor(target, {
-    name: "test",
-    sourceType: "jira",
-    issueKey: "TEST-1",
-  });
-  assert.ok("monitor" in created && created.monitor);
-  const monitor = created.monitor;
-  await daemon.service.setDelivery(monitor.id, "webhook");
-  const record = await daemon.service.get(monitor.id);
-  assert.ok(record);
-
-  let deliveries = 0;
-  const listener = await client.subscribe(target, async () => {
-    deliveries += 1;
-  });
-
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
-  try {
-    const event = {
-      ...queued.event,
-      id: "issue:7209240257",
-      source: record.source,
-    };
-    await daemon.runtime.context.sink.deliver({ monitor: record, event });
-    await until(async () => (await daemon.readEvents(target)).length === 0);
-    assert.equal(deliveries, 1);
-
-    await daemon.service.setDelivery(monitor.id, "poll");
-    await daemon.runtime.context.sink.deliver({ monitor: record, event });
-    await delay(50);
-
-    assert.equal(deliveries, 1, "a poll must not replay a delivered webhook verdict");
-    const warning = warnings.find((args) =>
-      String(args[0]).includes("duplicate delivery suppressed"),
+test(
+  "a poll does not replay an older webhook verdict that was already delivered",
+  async (t) => {
+    const daemon = new SourcefedDaemon({
+      store: new InMemoryMonitorStore(),
+      eventQueue: new InMemoryMonitorEventQueue(),
+    });
+    const client = await http(t, (request) =>
+      handleDaemonHttpRequest(daemon, request),
     );
-    assert.ok(warning, "expected a duplicate-delivery warning");
-    const text = warning.map((part) => String(part)).join(" ");
-    assert.ok(text.includes("issue:7209240257"));
-    assert.ok(text.includes("webhook"));
-    assert.ok(text.includes("poll"));
-  } finally {
-    console.warn = originalWarn;
-    await listener.close();
-  }
-});
+    const created = await daemon.createMonitor(target, {
+      name: "test",
+      sourceType: "jira",
+      issueKey: "TEST-1",
+    });
+    assert.ok("monitor" in created && created.monitor);
+    const monitor = created.monitor;
+    await daemon.service.setDelivery(monitor.id, "webhook");
+    const record = await daemon.service.get(monitor.id);
+    assert.ok(record);
+
+    let deliveries = 0;
+    const listener = await client.subscribe(target, async () => {
+      deliveries += 1;
+    });
+
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const event = {
+        ...queued.event,
+        id: "issue:7209240257",
+        source: record.source,
+      };
+      await daemon.runtime.context.sink.deliver({ monitor: record, event });
+      await until(async () => (await daemon.readEvents(target)).length === 0);
+      assert.equal(deliveries, 1);
+
+      await daemon.service.setDelivery(monitor.id, "poll");
+      await daemon.runtime.context.sink.deliver({ monitor: record, event });
+      await delay(50);
+
+      assert.equal(
+        deliveries,
+        1,
+        "a poll must not replay a delivered webhook verdict",
+      );
+      const warning = warnings.find((args) =>
+        String(args[0]).includes("duplicate delivery suppressed"),
+      );
+      assert.ok(warning, "expected a duplicate-delivery warning");
+      const text = warning.map((part) => String(part)).join(" ");
+      assert.ok(text.includes("issue:7209240257"));
+      assert.ok(text.includes("webhook"));
+      assert.ok(text.includes("poll"));
+    } finally {
+      console.warn = originalWarn;
+      await listener.close();
+    }
+  },
+);
 
 test("the admitted-id ledger is bounded", () => {
   const ledger = new Map<string, string>(
