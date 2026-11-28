@@ -344,15 +344,24 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
     )
     .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
 
-    // A nonblocking connect cannot outlive the deadline: poll for only the
-    // time left, then hand the connected socket back to the timed exchange.
-    match connect(&fd, &address) {
-        Ok(()) => {}
-        // A full Unix listen backlog may surface as ECONNREFUSED.
-        Err(Errno::INPROGRESS | Errno::AGAIN | Errno::CONNREFUSED) => {
-            wait_for_connect(&fd, deadline)?;
+    // A full Unix listen backlog can report EAGAIN or ECONNREFUSED before any
+    // connect is in progress, so retry both until the single deadline. Only
+    // EINPROGRESS starts a real connect, which the poll path completes.
+    loop {
+        let left = remaining(deadline)
+            .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
+
+        match connect(&fd, &address) {
+            Ok(()) => break,
+            Err(Errno::INPROGRESS) => {
+                wait_for_connect(&fd, deadline)?;
+                break;
+            }
+            Err(Errno::AGAIN | Errno::CONNREFUSED) => {
+                std::thread::sleep(Duration::from_millis(1).min(left));
+            }
+            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
         }
-        Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
     }
 
     let stream = UnixStream::from(fd);
@@ -1038,12 +1047,18 @@ mod tests {
         let text = "x".repeat(MAX_FRAME_BYTES - 3);
         let frame = format!("\"{text}\"\n");
         assert_eq!(frame.len(), MAX_FRAME_BYTES);
-        writer.write_all(frame.as_bytes()).unwrap();
+        writer
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let worker = thread::spawn(move || writer.write_all(frame.as_bytes()));
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(2))
             .unwrap_or_else(Instant::now);
 
-        assert_eq!(read_frame(&mut reader, deadline), Ok(Value::String(text)));
+        let verdict = read_frame(&mut reader, deadline);
+
+        worker.join().unwrap().unwrap();
+        assert_eq!(verdict, Ok(Value::String(text)));
     }
 
     #[test]
@@ -1052,15 +1067,18 @@ mod tests {
         let mut frame = vec![b'x'; MAX_FRAME_BYTES];
         frame.push(b'\n');
         assert_eq!(frame.len(), MAX_FRAME_BYTES + 1);
-        writer.write_all(&frame).unwrap();
+        writer
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let worker = thread::spawn(move || writer.write_all(&frame));
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(2))
             .unwrap_or_else(Instant::now);
 
-        assert_eq!(
-            read_frame(&mut reader, deadline),
-            Err(HOOK_DECODE_REASON.to_owned())
-        );
+        let verdict = read_frame(&mut reader, deadline);
+
+        worker.join().unwrap().unwrap();
+        assert_eq!(verdict, Err(HOOK_DECODE_REASON.to_owned()));
     }
 
     #[test]
