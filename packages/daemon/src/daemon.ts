@@ -27,6 +27,9 @@ import type {
 import { NotifyingEventSink, targetKey } from "./utils";
 
 const DELIVERY_LOG_LIMIT = 100;
+/** Acknowledged deliveries remembered per target within one run; a restart is allowed to re-deliver. */
+export const ADMITTED_LIMIT = 2048;
+type DeliverySource = MonitorRecord["delivery"];
 
 export class SourcefedDaemon {
   readonly runtime: MonitorRuntime;
@@ -44,6 +47,8 @@ export class SourcefedDaemon {
   >();
   private readonly emitChains = new Map<string, Promise<void>>();
   private readonly deliveryLog = new Map<string, QueuedMonitorEvent[]>();
+  /** Acknowledged event ids per target and the delivery source that admitted them, oldest first. */
+  private readonly admitted = new Map<string, Map<string, DeliverySource>>();
   private releaseExclusive?: () => Promise<void>;
   private stopHearingEndings?: () => void;
   private started = false;
@@ -232,6 +237,14 @@ export class SourcefedDaemon {
       };
     await this.service.remove(id);
     await this.purgeMonitorEvents(monitor.target, id);
+    const key = targetKey(monitor.target);
+    const ledger = this.admitted.get(key);
+    if (ledger) {
+      for (const admittedID of ledger.keys()) {
+        if (admittedID.startsWith(`${id}:`)) ledger.delete(admittedID);
+      }
+      if (ledger.size === 0) this.admitted.delete(key);
+    }
     return { ok: true, removed: true };
   }
 
@@ -250,6 +263,11 @@ export class SourcefedDaemon {
     const queued = await this.queue.read(target);
     const acked = queued.filter((event) => eventIDs.includes(event.id));
     await this.queue.acknowledge(target, eventIDs);
+    const monitors = await this.service.list();
+    const deliveryByMonitor = new Map(
+      monitors.map((monitor) => [monitor.id, monitor.delivery] as const),
+    );
+    this.admit(targetKey(target), acked, deliveryByMonitor);
     if (acked.length > 0) this.appendLog(target, acked);
     const receivedByListener = this.received.get(targetKey(target));
     if (receivedByListener) {
@@ -331,8 +349,13 @@ export class SourcefedDaemon {
 
     // A stopped or removed monitor must go silent: drop its still-queued events
     // instead of replaying them to subscribers. An ended one still owes its last events.
-    const live = new Set(
-      (await this.service.list()).filter(isLive).map((monitor) => monitor.id),
+    const monitors = await this.service.list();
+    const liveMonitors = monitors.filter(isLive);
+    const live = new Set(liveMonitors.map((monitor) => monitor.id));
+    // Ended monitors still owe their last events, so their delivery source is
+    // needed when an acknowledgement admits an id.
+    const deliveryByMonitor = new Map(
+      monitors.map((monitor) => [monitor.id, monitor.delivery] as const),
     );
     await this.dropQueued(
       target,
@@ -355,23 +378,70 @@ export class SourcefedDaemon {
     );
     if (fresh.length === 0) return;
 
+    // The queue can offer the same id again after an ack, or through another
+    // delivery source after a switch; warn, then drop the stale copy so it does
+    // not linger and warn again on every emit.
+    const ledger = this.admitted.get(key);
+    const suppressed: QueuedMonitorEvent[] = [];
+    for (const event of fresh) {
+      if (!ledger?.has(event.id)) continue;
+      suppressed.push(event);
+      const admittedVia = ledger.get(event.id);
+      const receivedVia = deliveryByMonitor.get(event.monitorID);
+      console.warn(
+        `[sourcefed] duplicate delivery suppressed: ${event.id} (admitted via ${admittedVia ?? "unknown"}, received via ${receivedVia ?? "unknown"})`,
+        { id: event.id, admittedVia, receivedVia },
+      );
+    }
+    if (suppressed.length > 0)
+      await this.dropQueued(
+        target,
+        suppressed.map((event) => event.id),
+      );
+    const deliverable = fresh.filter((event) => !ledger?.has(event.id));
+    if (deliverable.length === 0) return;
+
     for (const listener of [...listeners]) {
       let received = receivedByListener.get(listener);
       if (!received) {
         received = new Set();
         receivedByListener.set(listener, received);
       }
-      for (const event of fresh) received.add(event.id);
+      for (const event of deliverable) received.add(event.id);
       try {
-        await listener(fresh);
+        await listener(deliverable);
         return;
       } catch (error) {
         console.error(
           `[sourcefed] event delivery failed: ${error instanceof Error ? error.message : String(error)}`,
         );
-        for (const event of fresh) received.delete(event.id);
+        for (const event of deliverable) received.delete(event.id);
         if (received.size === 0) receivedByListener.delete(listener);
       }
+    }
+  }
+
+  /** Remember only acknowledged deliveries, so an unacknowledged event is still delivered on reconnect. */
+  private admit(
+    key: string,
+    events: QueuedMonitorEvent[],
+    deliveryByMonitor: Map<string, DeliverySource>,
+  ): void {
+    let ledger = this.admitted.get(key);
+    if (!ledger) {
+      ledger = new Map();
+      this.admitted.set(key, ledger);
+    }
+    for (const event of events) {
+      let source = deliveryByMonitor.get(event.monitorID);
+      if (!source) {
+        console.warn(
+          `[sourcefed] admitted event with unknown delivery source: monitor ${event.monitorID}, event ${event.id}; assuming poll`,
+        );
+        source = "poll";
+      }
+      ledger.set(event.id, source);
+      evictOldestAdmitted(ledger);
     }
   }
 
@@ -431,6 +501,18 @@ export class SourcefedDaemon {
         .filter((event) => event.monitorID === monitorID)
         .map((event) => event.id),
     );
+  }
+}
+
+/** Map iteration is insertion order, so the oldest admission is the first key. */
+export function evictOldestAdmitted<T>(
+  ledger: Map<string, T>,
+  limit = ADMITTED_LIMIT,
+): void {
+  while (ledger.size > limit) {
+    const oldest = ledger.keys().next().value;
+    if (oldest === undefined) return;
+    ledger.delete(oldest);
   }
 }
 

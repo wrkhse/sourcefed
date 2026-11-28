@@ -5,9 +5,13 @@ import {
   InMemoryMonitorStore,
   type QueuedMonitorEvent,
 } from "@sourcefed/core";
-import { serveHttp } from "./utils";
+import { serveHttp, targetKey } from "./utils";
 import { connectDaemonClient } from "./client.ts";
-import { SourcefedDaemon } from "./daemon.ts";
+import {
+  ADMITTED_LIMIT,
+  evictOldestAdmitted,
+  SourcefedDaemon,
+} from "./daemon.ts";
 import { handleDaemonHttpRequest } from "./http.ts";
 
 const target = { kind: "test", id: "session_lifecycle" };
@@ -294,3 +298,272 @@ test(
     }
   },
 );
+
+test("a poll does not replay an older webhook verdict that was already delivered", async (t) => {
+  const daemon = new SourcefedDaemon({
+    store: new InMemoryMonitorStore(),
+    eventQueue: new InMemoryMonitorEventQueue(),
+  });
+  const client = await http(t, (request) =>
+    handleDaemonHttpRequest(daemon, request),
+  );
+  const created = await daemon.createMonitor(target, {
+    name: "test",
+    sourceType: "jira",
+    issueKey: "TEST-1",
+  });
+  assert.ok("monitor" in created && created.monitor);
+  const monitor = created.monitor;
+  await daemon.service.setDelivery(monitor.id, "webhook");
+  const record = await daemon.service.get(monitor.id);
+  assert.ok(record);
+
+  let deliveries = 0;
+  const deliveredIDs: string[] = [];
+  const listener = await client.subscribe(target, async (events) => {
+    deliveries += 1;
+    deliveredIDs.push(...events.map((event) => event.id));
+  });
+
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    const event = {
+      ...queued.event,
+      id: "issue:7209240257",
+      source: record.source,
+    };
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+    assert.equal(deliveries, 1);
+
+    await daemon.service.setDelivery(monitor.id, "poll");
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(
+      async () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1 && (await daemon.readEvents(target)).length === 0,
+    );
+
+    assert.equal(
+      deliveries,
+      1,
+      "a poll must not replay a delivered webhook verdict",
+    );
+    const warning = warnings.find((args) =>
+      String(args[0]).includes("duplicate delivery suppressed"),
+    );
+    assert.ok(warning, "expected a duplicate-delivery warning");
+    const text = warning.map((part) => String(part)).join(" ");
+    assert.ok(text.includes("issue:7209240257"));
+    assert.ok(text.includes("webhook"));
+    assert.ok(text.includes("poll"));
+
+    assert.equal(
+      (await daemon.readEvents(target)).length,
+      0,
+      "a suppressed duplicate must be dropped, not left to warn on every emit",
+    );
+    const admitted = (
+      daemon as unknown as {
+        admitted: Map<string, Map<string, string>>;
+      }
+    ).admitted.get(targetKey(target));
+    assert.ok(admitted?.has(`${monitor.id}:issue:7209240257`));
+
+    await daemon.runtime.context.sink.deliver({
+      monitor: record,
+      event: {
+        ...queued.event,
+        id: "issue:7209343856",
+        source: record.source,
+      },
+    });
+    await until(() => deliveredIDs.includes(`${monitor.id}:issue:7209343856`));
+    assert.deepEqual(deliveredIDs, [
+      `${monitor.id}:issue:7209240257`,
+      `${monitor.id}:issue:7209343856`,
+    ]);
+    assert.equal(deliveries, 2);
+  } finally {
+    console.warn = originalWarn;
+    await listener.close();
+  }
+});
+
+test("two poll cycles wake once for one comment id", async (t) => {
+  const daemon = new SourcefedDaemon({
+    store: new InMemoryMonitorStore(),
+    eventQueue: new InMemoryMonitorEventQueue(),
+  });
+  const client = await http(t, (request) =>
+    handleDaemonHttpRequest(daemon, request),
+  );
+  const created = await daemon.createMonitor(target, {
+    name: "test",
+    sourceType: "jira",
+    issueKey: "TEST-1",
+  });
+  assert.ok("monitor" in created && created.monitor);
+  const monitor = created.monitor;
+  await daemon.service.setDelivery(monitor.id, "poll");
+  const record = await daemon.service.get(monitor.id);
+  assert.ok(record);
+
+  let deliveries = 0;
+  const listener = await client.subscribe(target, async () => {
+    deliveries += 1;
+  });
+
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    const event = {
+      ...queued.event,
+      id: "issue:7209240257",
+      source: record.source,
+    };
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+    assert.equal(deliveries, 1);
+
+    await daemon.runtime.context.sink.deliver({ monitor: record, event });
+    await until(
+      () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1,
+    );
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+
+    assert.equal(deliveries, 1, "two poll cycles must wake the host once");
+    assert.equal(
+      warnings.filter((args) =>
+        String(args[0]).includes("duplicate delivery suppressed"),
+      ).length,
+      1,
+    );
+    assert.equal((await daemon.readEvents(target)).length, 0);
+  } finally {
+    console.warn = originalWarn;
+    await listener.close();
+  }
+});
+
+test("removing one of two monitors on a target keeps the other's admitted id", async (t) => {
+  const daemon = new SourcefedDaemon({
+    store: new InMemoryMonitorStore(),
+    eventQueue: new InMemoryMonitorEventQueue(),
+  });
+  const client = await http(t, (request) =>
+    handleDaemonHttpRequest(daemon, request),
+  );
+  const first = await daemon.createMonitor(target, {
+    name: "first",
+    sourceType: "jira",
+    issueKey: "TEST-1",
+  });
+  assert.ok("monitor" in first && first.monitor);
+  const firstMonitor = first.monitor;
+  const second = await daemon.createMonitor(target, {
+    name: "second",
+    sourceType: "jira",
+    issueKey: "TEST-2",
+  });
+  assert.ok("monitor" in second && second.monitor);
+  const secondMonitor = second.monitor;
+  const firstRecord = await daemon.service.get(firstMonitor.id);
+  const secondRecord = await daemon.service.get(secondMonitor.id);
+  assert.ok(firstRecord && secondRecord);
+
+  let deliveries = 0;
+  const deliveredIDs: string[] = [];
+  const listener = await client.subscribe(target, async (events) => {
+    deliveries += 1;
+    deliveredIDs.push(...events.map((event) => event.id));
+  });
+
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    await daemon.runtime.context.sink.deliver({
+      monitor: firstRecord,
+      event: { ...queued.event, id: "issue:first", source: firstRecord.source },
+    });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+    await daemon.runtime.context.sink.deliver({
+      monitor: secondRecord,
+      event: {
+        ...queued.event,
+        id: "issue:second",
+        source: secondRecord.source,
+      },
+    });
+    await until(async () => (await daemon.readEvents(target)).length === 0);
+
+    const admittedIDs = () =>
+      (
+        daemon as unknown as {
+          admitted: Map<string, Map<string, string>>;
+        }
+      ).admitted.get(targetKey(target));
+    assert.ok(admittedIDs()?.has(`${firstMonitor.id}:issue:first`));
+    assert.ok(admittedIDs()?.has(`${secondMonitor.id}:issue:second`));
+
+    await daemon.removeMonitor(target, firstMonitor.id);
+
+    assert.equal(admittedIDs()?.has(`${firstMonitor.id}:issue:first`), false);
+    assert.ok(admittedIDs()?.has(`${secondMonitor.id}:issue:second`));
+
+    await daemon.runtime.context.sink.deliver({
+      monitor: secondRecord,
+      event: {
+        ...queued.event,
+        id: "issue:second",
+        source: secondRecord.source,
+      },
+    });
+    await until(
+      async () =>
+        warnings.filter((args) =>
+          String(args[0]).includes("duplicate delivery suppressed"),
+        ).length === 1 && (await daemon.readEvents(target)).length === 0,
+    );
+
+    assert.equal(
+      deliveries,
+      2,
+      "a replay of the remaining monitor is suppressed",
+    );
+    assert.deepEqual(deliveredIDs, [
+      `${firstMonitor.id}:issue:first`,
+      `${secondMonitor.id}:issue:second`,
+    ]);
+  } finally {
+    console.warn = originalWarn;
+    await listener.close();
+  }
+});
+
+test("the admitted-id ledger is bounded", () => {
+  const ledger = new Map<string, string>(
+    Array.from(
+      { length: ADMITTED_LIMIT + 10 },
+      (_, index) => ["issue:" + index, "poll"] as const,
+    ),
+  );
+  evictOldestAdmitted(ledger);
+  assert.equal(ledger.size, ADMITTED_LIMIT);
+  assert.equal(ledger.has("issue:0"), false);
+  assert.equal(ledger.has("issue:10"), true);
+});
