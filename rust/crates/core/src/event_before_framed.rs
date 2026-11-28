@@ -336,7 +336,7 @@ enum ConnectRetry {
     Failed,
 }
 
-fn connect_retry(result: Result<(), Errno>) -> ConnectRetry {
+const fn connect_retry(result: Result<(), Errno>) -> ConnectRetry {
     match result {
         Ok(()) => ConnectRetry::Connected,
         Err(Errno::INPROGRESS) => ConnectRetry::InProgress,
@@ -442,7 +442,7 @@ enum SocketError {
     Failed,
 }
 
-fn classify_socket_error(
+const fn classify_socket_error(
     result: rustix::io::Result<Result<(), Errno>>,
 ) -> SocketError {
     match result {
