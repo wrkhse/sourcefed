@@ -9,8 +9,8 @@ use crate::event_before::{BeforeDecision, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
     AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId,
-    HOOK_ANNOTATIONS_REASON, ModelError, MonitorConfig, Next, PollOutcome,
-    PollRequest, PositionKey, Source, StateStore, Store, StoreError,
+    HOOK_ANNOTATIONS_REASON, MAX_ANNOTATIONS, ModelError, MonitorConfig, Next,
+    PollOutcome, PollRequest, PositionKey, Source, StateStore, Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -450,7 +450,14 @@ impl<S: StateStore> PollEngine<S> {
                         event.with_validated_annotations(annotations)
                     } else {
                         let mut fields = event.annotations().clone();
-                        fields.extend(annotations.into_inner());
+                        let hook_fields = annotations.into_inner();
+                        let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
+
+                        if hook_fields.len() > room {
+                            reason = Some(HOOK_ANNOTATIONS_REASON.into());
+                        }
+
+                        fields.extend(hook_fields.into_iter().take(room));
 
                         event.with_annotations(fields).unwrap_or_else(|_| {
                             reason = Some(HOOK_ANNOTATIONS_REASON.into());
@@ -1494,6 +1501,41 @@ mod tests {
                 ("reviewer".to_owned(), "alice".to_owned()),
             ])
         );
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_fills_only_the_remaining_annotation_room() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook: BTreeMap<String, String> = (0..4)
+            .map(|index| (format!("hook-{index:02}"), "new".to_owned()))
+            .collect();
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([
+                ("hook-00".to_owned(), "new".to_owned()),
+                ("hook-01".to_owned(), "new".to_owned()),
+            ])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
         assert!(f.engine.store.is_seen(&key(), fired.id()));
     }
 

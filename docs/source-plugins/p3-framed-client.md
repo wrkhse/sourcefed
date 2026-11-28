@@ -84,7 +84,10 @@ for the failure paths. `invalid_annotations_keep_the_event_without_fields`,
 `a_named_hook_error_is_used_as_the_reason_verbatim` cover the seam in
 `event_before.rs`; `with_annotations_accepts_bounded_fields`,
 `with_annotations_rejects_unbounded_fields` and
-`annotations_default_and_round_trip_when_present` cover `event.rs`.
+`annotations_default_and_round_trip_when_present` cover `event.rs`. The
+hand-written `read_frame` resets the timeout from the remaining deadline
+before each read while using tack_protocol's `MAX_FRAME_BYTES` cap, and tack's
+`read_line` is used in the fake-daemon tests.
 
 ### 3. Daemon hook and barn stall
 
@@ -107,6 +110,10 @@ The joint proof waits on tack#23 PR4.
 | `rewrite { input }`   | Keep original; reason `event-before-rewrite-refused` |
 | Unknown outcome kind  | Keep with its own named reason, logged and counted   |
 | Boundary failure      | Keep with its own named reason, logged and counted   |
+
+When an `Annotate` verdict exceeds `MAX_ANNOTATIONS` on an already-annotated
+event, the engine applies the fields that fit and logs
+`HOOK_ANNOTATIONS_REASON`.
 
 Wire `drop` carries no reason. An explicit `deny` always drops, using
 `plugin-deny:<plugin>:invalid-reason` when the wire reason is malformed.
