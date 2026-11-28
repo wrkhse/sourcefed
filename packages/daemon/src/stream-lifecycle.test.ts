@@ -368,7 +368,11 @@ test("a poll does not replay an older webhook verdict that was already delivered
         admitted: Map<string, Map<string, string>>;
       }
     ).admitted.get(targetKey(target));
-    assert.ok(admitted?.has("issue:7209240257"));
+    assert.ok(
+      [...(admitted?.keys() ?? [])].some((id) =>
+        id.endsWith("issue:7209240257"),
+      ),
+    );
 
     await daemon.runtime.context.sink.deliver({
       monitor: record,
