@@ -368,11 +368,7 @@ test("a poll does not replay an older webhook verdict that was already delivered
         admitted: Map<string, Map<string, string>>;
       }
     ).admitted.get(targetKey(target));
-    assert.ok(
-      [...(admitted?.keys() ?? [])].some((id) =>
-        id.endsWith("issue:7209240257"),
-      ),
-    );
+    assert.ok(admitted?.has(`${monitor.id}:issue:7209240257`));
 
     await daemon.runtime.context.sink.deliver({
       monitor: record,
@@ -382,13 +378,11 @@ test("a poll does not replay an older webhook verdict that was already delivered
         source: record.source,
       },
     });
-    await until(() =>
-      deliveredIDs.some((id) => id.endsWith("issue:7209343856")),
-    );
-    assert.deepEqual(
-      deliveredIDs.map((id) => id.slice(id.indexOf("issue:"))),
-      ["issue:7209240257", "issue:7209343856"],
-    );
+    await until(() => deliveredIDs.includes(`${monitor.id}:issue:7209343856`));
+    assert.deepEqual(deliveredIDs, [
+      `${monitor.id}:issue:7209240257`,
+      `${monitor.id}:issue:7209343856`,
+    ]);
     assert.equal(deliveries, 2);
   } finally {
     console.warn = originalWarn;

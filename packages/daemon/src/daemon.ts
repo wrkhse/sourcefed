@@ -237,6 +237,7 @@ export class SourcefedDaemon {
       };
     await this.service.remove(id);
     await this.purgeMonitorEvents(monitor.target, id);
+    this.admitted.delete(targetKey(monitor.target));
     return { ok: true, removed: true };
   }
 
