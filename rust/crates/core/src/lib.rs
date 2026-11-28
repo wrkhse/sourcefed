@@ -26,6 +26,8 @@
 
 /// Events a source reports, with their IDs, kinds and subjects.
 pub mod event;
+/// The bounded pre-commit decision applied to each event.
+pub mod event_before;
 /// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
 /// Bounded polling and retry with durable pending events.
@@ -40,6 +42,10 @@ pub mod sources;
 pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
+pub use event_before::{
+    AllowAll, BeforeDecision, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore,
+    HOOK_ERROR_REASON, HOOK_TIMEOUT_REASON, decide_before,
+};
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use poll::{
     Backoff, Clock, ClockError, DEFAULT_BACKOFF_CAP_SECS, EngineError, EngineState,

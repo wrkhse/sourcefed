@@ -152,6 +152,8 @@ pub struct Event {
     #[serde(deserialize_with = "deserialize_summary")]
     summary: String,
     at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
 }
 
 impl PartialEq for Event {
@@ -187,6 +189,7 @@ impl Event {
             subject,
             summary: validate_summary(summary)?,
             at,
+            author: None,
         })
     }
 
@@ -218,6 +221,20 @@ impl Event {
     #[must_use]
     pub const fn at(&self) -> Timestamp {
         self.at
+    }
+
+    /// Returns a copy of this event with the author attached.
+    #[must_use]
+    pub fn with_author(mut self, author: Option<String>) -> Self {
+        self.author = author;
+
+        self
+    }
+
+    /// Returns the author of the event, when one is recorded.
+    #[must_use]
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
     }
 }
 
@@ -406,6 +423,33 @@ mod tests {
         assert_eq!(decoded.subject().key(), "deploy");
         assert_eq!(decoded.summary(), "deploy");
         assert_eq!(decoded.at(), at);
+    }
+
+    #[test]
+    fn author_defaults_to_none_and_round_trips_when_present() {
+        let json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z"}"#,
+        );
+        let older = serde_json::from_str::<Event>(json).unwrap();
+
+        assert_eq!(older.author(), None);
+        assert_eq!(serde_json::to_string(&older).unwrap(), json);
+
+        let authored = older.with_author(Some("deploy-bot".into()));
+        let stored = serde_json::to_string(&authored).unwrap();
+        let decoded = serde_json::from_str::<Event>(&stored).unwrap();
+        let authored_json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z","#,
+            r#""author":"deploy-bot"}"#,
+        );
+
+        assert_eq!(stored, authored_json);
+        assert_eq!(decoded.author(), Some("deploy-bot"));
+        assert_eq!(decoded, authored);
     }
 
     #[test]
