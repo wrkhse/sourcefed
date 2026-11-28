@@ -258,7 +258,7 @@ impl<S: StateStore> PollEngine<S> {
     }
 
     /// Uses the supplied hook to decide which events reach the store, allowing
-    /// at most EVENT_BEFORE_TIMEOUT for all verdicts in one commit; the
+    /// at most `EVENT_BEFORE_TIMEOUT` for all verdicts in one commit; the
     /// remaining budget passes to each hook. An error or a timeout keeps the
     /// event with a named reason in the log.
     #[must_use]
@@ -1323,46 +1323,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_stop_mid_batch_leaves_the_outcome_for_replay() {
-        let first = authored_event("first", "alice");
-        let second = authored_event("second", "alice");
-        let outcome = PollOutcome::new(
-            vec![first.clone(), second.clone()],
-            cursor(),
-            Next::Done,
-        );
-        let stop = StopHandle::default();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let mut f = Fixture::with_hook(
-            5,
-            vec![Ok(outcome.unwrap())],
-            Arc::new(StopOnFirst {
-                stop: stop.clone(),
-                calls: calls.clone(),
-            }),
-            EVENT_BEFORE_TIMEOUT,
-        );
-        // with_hook owns the engine, so give it the handle the hook stops.
-        f.engine.stop = stop;
-
-        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert_eq!(f.engine.store.position(&key()), None);
-        assert_eq!(f.engine.pending(), None);
-        assert!(!f.engine.store.is_seen(&key(), first.id()));
-        assert!(!f.engine.store.is_seen(&key(), second.id()));
-        assert_eq!(
-            f.requests(),
-            [PollRequest {
-                now: at(0),
-                position: None,
-            }]
-        );
-
-        let store = f.engine.into_store();
-        drop(store);
-        let reopened = Store::open(f.dir.path()).unwrap();
+    fn assert_replayed_outcome(
+        dir: &std::path::Path,
+        first: &Event,
+        second: &Event,
+    ) {
+        let reopened = Store::open(dir).unwrap();
         let replay = PollOutcome::new(
             vec![first.clone(), second.clone()],
             cursor(),
@@ -1402,6 +1368,48 @@ mod tests {
         );
         assert!(engine.store.is_seen(&key(), first.id()));
         assert!(engine.store.is_seen(&key(), second.id()));
+    }
+
+    #[test]
+    fn a_stop_mid_batch_leaves_the_outcome_for_replay() {
+        let first = authored_event("first", "alice");
+        let second = authored_event("second", "alice");
+        let outcome = PollOutcome::new(
+            vec![first.clone(), second.clone()],
+            cursor(),
+            Next::Done,
+        );
+        let stop = StopHandle::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(StopOnFirst {
+                stop: stop.clone(),
+                calls: calls.clone(),
+            }),
+            EVENT_BEFORE_TIMEOUT,
+        );
+        // with_hook owns the engine, so give it the handle the hook stops.
+        f.engine.stop = stop;
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(f.engine.store.position(&key()), None);
+        assert_eq!(f.engine.pending(), None);
+        assert!(!f.engine.store.is_seen(&key(), first.id()));
+        assert!(!f.engine.store.is_seen(&key(), second.id()));
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+
+        let store = f.engine.into_store();
+        drop(store);
+        assert_replayed_outcome(f.dir.path(), &first, &second);
     }
 
     #[test]
