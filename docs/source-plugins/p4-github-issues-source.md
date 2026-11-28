@@ -1,10 +1,11 @@
 # P4: github-issues Luau source
 
-**Status: Planned.** The github-issues source becomes a plain Luau table in a
+**Status: Planned.** The github-issues source is a plain Luau table in a
 barn stall, filling `author` on each emitted issue event so quiet-bots can drop
 `[bot]` authors. It follows [P3][p3] and waits on tack#23's later PRs and
 barn#72/#74; no code lands until the plan is approved. The [RFC][rfc] tracks
 the work.
+The golden transcripts and real-socket proof wait on tack's hook.
 
 ## You can
 
@@ -18,47 +19,44 @@ session, while a human issue is delivered.
 flowchart LR
     GitHub["GitHub issues API"] --> Source["github-issues Luau table<br/>barn stall"]
     Source -->|"ctx.emit with author"| Core["sourcefed core<br/>eventBefore hook"]
-    Core -->|"Drop bot / Keep"| Daemon["tack daemon"]
-    Daemon -->|"delivery"| Session["agent session"]
-    Core -->|"eventBefore"| Stall["quiet-bots Luau plugin"]
-    Stall -->|"BeforeVerdict"| Core
+    Core -->|"framed eventBefore"| Daemon["tack daemon"]
+    Daemon -->|"stall call"| Stall["quiet-bots Luau stall"]
+    Stall -->|"BeforeVerdict"| Daemon
+    Daemon -->|"reply"| Core
+    Core -->|"delivery"| Session["agent session"]
 ```
 
 ## Parts
 
 ### 1. Luau source table
 
-The github-issues source is declared as a plain Luau table in a barn stall. It
-registers a poll trigger and an `http` capability, keeps a bounded cursor, and
-emits issue events carrying `author`.
+The github-issues source is a plain Luau table in a barn stall. It declares a
+poll trigger and an `http` need that the host grants, and emits issue events
+carrying `author`. The cursor bound is an open question in [P3][p3].
 
-Files it will create: `sources/github-issues/plugin.luau` and its recorded
-fixtures.
+Files: `sources/github-issues/plugin.luau`, its recorded fixtures, and the
+golden transcript tests under `sources/github-issues/fixtures/`.
 
 ```luau
 ctx.emit({
     kind = "issueLabeled",
     author = issue.user.login,
-    ...
+    …
 })
 ```
 
 **Verified by** golden transcript tests over recorded GitHub issue payloads.
 
-### 2. tack SDK and barn dependencies
+### 2. Dependencies
 
 The table uses hook tables, grants and the contract version from tack#23's
-later PRs, and runs in a barn stall from barn#72/#74; sourcefed never launches
-barn.
+later PRs and runs in a barn stall from barn#72/#74. tack#20 owns the stall
+loader; barn owns the startup and bounded-call tests. sourcefed never launches
+barn and passes no names to the loader.
 
-Files it will create: the source's SDK type declarations and the loader entry
-owned by tack#20; no config file exists in this repo yet.
+Files: none in this repo.
 
-Usage: the source registers as `github-issues` and quiet-bots registers as
-`quiet-bots`; both names are passed to the stall loader at startup.
-
-**Verified by** a stall startup test with a bounded call deadline and no
-default capabilities.
+**Verified by** tack#20 and barn's own tests.
 
 ### 3. Author through eventBefore
 
@@ -66,7 +64,7 @@ Each issue carries `author`, so [P3][p3]'s framed client sends it to the tack
 daemon hook (the [P2][p2] `eventBefore` seam) and quiet-bots drops names
 ending in `[bot]`.
 
-Files: the source table and the P3 contract test.
+Files: the source table and `rust/crates/core/tests/event_before_framed.rs`.
 
 Usage: the quiet-bots `eventBefore` hook from #56.
 
@@ -78,20 +76,26 @@ eventBefore = function(event)
 end,
 ```
 
-**Verified by** a real socket contract test with a barn stall asserting the
-`[bot]` issue is dropped and the human issue is delivered.
+tack's wire `drop` carries no reason, so sourcefed maps it to
+`Drop { reason = "plugin-drop:quiet-bots" }`.
+
+**Verified by** the joint tack#23 PR4 proof over a real socket with a barn
+stall.
 
 ## Decided
 
-[#56][rfc] moves this port from Later work to P4, right after [P3][p3]. The
-[RFC][rfc] is the canonical record.
+Open questions for this slice live in [P3][p3]: the emit shape and the cursor
+bound.
+
+| Choice     | Decision                                     |
+| ---------- | -------------------------------------------- |
+| Port order | [#56][rfc] places this port at P4, after P3. |
 
 ## End to end
 
-Approve this plan; land P3's framed client and tack#23/barn#72/#74; install the
-source table and quiet-bots; poll one `[bot]` and one human issue; run Rust
-gates, provider transcript tests and a real daemon socket; assert only the
-human issue reaches the agent session.
+The single joint proof is owned with tack#23 PR4 and hosted in tack's CI.
+sourcefed supplies the source table and client. A bot issue is dropped, a
+non-bot issue is annotated with its fields, and assertion runs in that one job.
 
 [p2]: p2-event-before.md
 [p3]: p3-framed-client.md

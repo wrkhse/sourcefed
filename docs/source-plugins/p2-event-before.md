@@ -38,7 +38,7 @@ Every event carries an optional author, so a filter can name who wrote it.
 The field is `author: Option<String>` with a serde default: an event stored
 without the key loads as `None`, and older state files keep their meaning. A
 source sets the author when it builds the event. GitHub and Slack are
-TypeScript providers today; #56 ports sources to Luau tables in barn stalls,
+TypeScript providers; #56 ports them to Luau tables in barn stalls,
 so author population follows the github-issues and Slack ports.
 
 Files: `rust/crates/core/src/event.rs`.
