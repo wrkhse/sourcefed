@@ -499,8 +499,10 @@ version = "0.1.0-rc.1"
 dependencies = [
  "jiff",
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
+ "tack_protocol",
  "tempfile",
  "thiserror",
  "tracing",
@@ -526,6 +528,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tack_protocol"
+version = "0.1.0-rc.6"
+source = "git+https://github.com/wrkhse/tack?rev=197ba009f88e296a8cab28b82ebb3db2b33833fb#197ba009f88e296a8cab28b82ebb3db2b33833fb"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

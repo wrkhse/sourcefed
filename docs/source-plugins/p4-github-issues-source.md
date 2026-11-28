@@ -64,7 +64,8 @@ Each issue carries `author`, so [P3][p3]'s framed client sends it to the tack
 daemon hook (the [P2][p2] `eventBefore` seam) and quiet-bots drops names
 ending in `[bot]`.
 
-Files: the source table and `rust/crates/core/tests/event_before_framed.rs`.
+Files: the source table and the framed client's local socket tests in
+`rust/crates/core/src/event_before_framed.rs`.
 
 Usage: the quiet-bots `eventBefore` hook from #56.
 

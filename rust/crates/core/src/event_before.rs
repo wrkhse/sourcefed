@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -5,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::Event;
+use crate::event::ValidatedAnnotations;
 
 /// Longest time the poll engine spends on pre-commit verdicts in one commit.
 ///
@@ -25,6 +27,45 @@ pub const HOOK_TIMEOUT_REASON: &str = "event-before-timeout";
 /// The log reason when a hook panics before it answers.
 pub const HOOK_PANIC_REASON: &str = "event-before-panic";
 
+/// The log reason when connecting to the hook peer fails.
+pub const HOOK_CONNECT_REASON: &str = "event-before-connect";
+
+/// The log reason when the hook peer does not connect before the deadline.
+pub const HOOK_CONNECT_TIMEOUT_REASON: &str = "event-before-connect-timeout";
+
+/// The log reason when the hook socket path is not trusted.
+pub const HOOK_SOCKET_UNTRUSTED_REASON: &str = "event-before-socket-untrusted";
+
+/// The log reason when encoding a request for the hook fails.
+pub const HOOK_ENCODE_REASON: &str = "event-before-encode";
+
+/// The log reason when decoding a hook reply fails.
+pub const HOOK_DECODE_REASON: &str = "event-before-decode";
+
+/// The log reason when the hook peer closes the connection.
+pub const HOOK_PEER_CLOSED_REASON: &str = "event-before-peer-closed";
+
+/// The log reason when the reply version does not match.
+pub const HOOK_VERSION_REASON: &str = "event-before-version-mismatch";
+
+/// The log reason when the reply call ID does not match.
+pub const HOOK_ID_REASON: &str = "event-before-id-mismatch";
+
+/// The log reason when the reply carries an unknown outcome kind.
+pub const HOOK_UNKNOWN_OUTCOME_REASON: &str = "event-before-unknown-outcome";
+
+/// The log reason when a rewrite outcome is refused.
+pub const HOOK_REWRITE_REFUSED_REASON: &str = "event-before-rewrite-refused";
+
+/// The log reason when a hook's annotation fields fail validation.
+pub const HOOK_ANNOTATIONS_REASON: &str = "event-before-annotations-invalid";
+
+/// The log reason when an annotation field has a non-string wire value.
+pub const HOOK_ANNOTATION_TYPE_REASON: &str = "event-before-annotation-type";
+
+/// The log reason when the daemon reports an error.
+pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
+
 /// What to do with one event before it is committed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -33,13 +74,19 @@ pub enum BeforeVerdict {
     Keep,
     /// Leave the event out of the commit; reason says why.
     Drop { reason: String },
+    /// Commit the event with the given fields applied as annotations.
+    Annotate { fields: BTreeMap<String, String> },
 }
 
 /// The decision applied to one event before the poll outcome is committed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BeforeDecision {
-    /// Commit the event. reason names a hook failure that kept it, if any.
-    Keep { reason: Option<String> },
+    /// Commit the event. reason names a hook failure that kept it, if any;
+    /// annotations holds validated fields for the engine to apply.
+    Keep {
+        reason: Option<String>,
+        annotations: ValidatedAnnotations,
+    },
     /// Leave the event out of the commit; reason says why.
     Drop { reason: String },
 }
@@ -91,6 +138,25 @@ impl Drop for HookGuard {
     }
 }
 
+// A hook that already names its failure supplies the reason verbatim. Other
+// messages are reported under the generic hook error reason.
+fn hook_error_reason(message: &str) -> String {
+    if message.starts_with("event-before-") {
+        message.to_owned()
+    } else {
+        format!("{HOOK_ERROR_REASON}: {message}")
+    }
+}
+
+// An empty annotation map is always valid, so a keep without fields needs
+// no validation.
+fn keep(reason: Option<String>) -> BeforeDecision {
+    BeforeDecision::Keep {
+        reason,
+        annotations: ValidatedAnnotations::default(),
+    }
+}
+
 /// Asks a hook for one verdict within a deadline and applies the policy.
 ///
 /// The hook runs on its own thread, so a hook that never answers yields a
@@ -107,22 +173,18 @@ pub(crate) fn decide_before(
     in_flight: &Arc<AtomicBool>,
 ) -> BeforeDecision {
     if before.is_passthrough() {
-        return BeforeDecision::Keep { reason: None };
+        return keep(None);
     }
 
     if timeout.is_zero() {
-        return BeforeDecision::Keep {
-            reason: Some(HOOK_TIMEOUT_REASON.into()),
-        };
+        return keep(Some(HOOK_TIMEOUT_REASON.into()));
     }
 
     if in_flight
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return BeforeDecision::Keep {
-            reason: Some(HOOK_BUSY_REASON.into()),
-        };
+        return keep(Some(HOOK_BUSY_REASON.into()));
     }
 
     let event = event.clone();
@@ -142,29 +204,35 @@ pub(crate) fn decide_before(
     if let Err(error) = worker {
         in_flight.store(false, Ordering::Release);
 
-        return BeforeDecision::Keep {
-            reason: Some(format!("{HOOK_ERROR_REASON}: {error}")),
-        };
+        return keep(Some(hook_error_reason(&error.to_string())));
     }
 
     match receiver.recv_timeout(timeout) {
-        Ok(Ok(BeforeVerdict::Keep)) => BeforeDecision::Keep { reason: None },
+        Ok(Ok(BeforeVerdict::Keep)) => keep(None),
         Ok(Ok(BeforeVerdict::Drop { reason })) => BeforeDecision::Drop { reason },
-        Ok(Err(message)) => BeforeDecision::Keep {
-            reason: Some(format!("{HOOK_ERROR_REASON}: {message}")),
-        },
-        Err(mpsc::RecvTimeoutError::Timeout) => BeforeDecision::Keep {
-            reason: Some(HOOK_TIMEOUT_REASON.into()),
-        },
-        Err(mpsc::RecvTimeoutError::Disconnected) => BeforeDecision::Keep {
-            reason: Some(HOOK_PANIC_REASON.into()),
-        },
+        Ok(Ok(BeforeVerdict::Annotate { fields })) => {
+            ValidatedAnnotations::new(fields).map_or_else(
+                |_| keep(Some(HOOK_ANNOTATIONS_REASON.into())),
+                |annotations| BeforeDecision::Keep {
+                    reason: None,
+                    annotations,
+                },
+            )
+        }
+        Ok(Err(message)) => keep(Some(hook_error_reason(&message))),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            keep(Some(HOOK_TIMEOUT_REASON.into()))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            keep(Some(HOOK_PANIC_REASON.into()))
+        }
     }
 }
 
 // Shared fakes for the hook tests in this module and in poll.rs.
 #[cfg(test)]
 pub(crate) mod support {
+    use std::collections::BTreeMap;
     use std::thread;
     use std::time::Duration;
 
@@ -220,6 +288,34 @@ pub(crate) mod support {
         }
     }
 
+    /// Attaches the given fields to every event it keeps.
+    pub struct AnnotatingHook(pub BTreeMap<String, String>);
+
+    impl EventBefore for AnnotatingHook {
+        fn verdict(
+            &self,
+            _event: &Event,
+            _budget: Duration,
+        ) -> Result<BeforeVerdict, String> {
+            Ok(BeforeVerdict::Annotate {
+                fields: self.0.clone(),
+            })
+        }
+    }
+
+    /// Reports an already-named failure instead of a verdict.
+    pub struct NamedErrorHook(pub &'static str);
+
+    impl EventBefore for NamedErrorHook {
+        fn verdict(
+            &self,
+            _event: &Event,
+            _budget: Duration,
+        ) -> Result<BeforeVerdict, String> {
+            Err(self.0.into())
+        }
+    }
+
     /// Sleeps past any ordinary deadline before answering.
     pub struct BlockingHook;
 
@@ -255,8 +351,11 @@ pub(crate) mod support {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::support::{
-        BlockingHook, BotFilter, FailingHook, PanickingHook, event,
+        AnnotatingHook, BlockingHook, BotFilter, FailingHook, NamedErrorHook,
+        PanickingHook, event,
     };
     use super::*;
 
@@ -276,7 +375,13 @@ mod tests {
             &flag,
         );
 
-        assert_eq!(decision, BeforeDecision::Keep { reason: None });
+        assert_eq!(
+            decision,
+            BeforeDecision::Keep {
+                reason: None,
+                annotations: ValidatedAnnotations::default(),
+            }
+        );
         assert!(!flag.load(Ordering::Relaxed));
     }
 
@@ -301,7 +406,13 @@ mod tests {
                 reason: "bot author".into(),
             }
         );
-        assert_eq!(kept, BeforeDecision::Keep { reason: None });
+        assert_eq!(
+            kept,
+            BeforeDecision::Keep {
+                reason: None,
+                annotations: ValidatedAnnotations::default(),
+            }
+        );
     }
 
     #[test]
@@ -317,6 +428,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(format!("{HOOK_ERROR_REASON}: hook unavailable")),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -334,6 +446,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_TIMEOUT_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -351,6 +464,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_PANIC_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -368,6 +482,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_BUSY_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -386,6 +501,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_TIMEOUT_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
             }
         );
         assert!(!flag.load(Ordering::Relaxed));
@@ -413,5 +529,61 @@ mod tests {
             }
         );
         assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn an_annotating_hook_keeps_validated_fields() {
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let decision = decide_before(
+            Arc::new(AnnotatingHook(fields.clone())),
+            &event("fired", None),
+            EVENT_BEFORE_TIMEOUT,
+            &in_flight(),
+        );
+
+        assert_eq!(
+            decision,
+            BeforeDecision::Keep {
+                reason: None,
+                annotations: ValidatedAnnotations::new(fields).unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_annotations_keep_the_event_without_fields() {
+        let fields = BTreeMap::from([(String::new(), "value".to_owned())]);
+        let decision = decide_before(
+            Arc::new(AnnotatingHook(fields)),
+            &event("fired", None),
+            EVENT_BEFORE_TIMEOUT,
+            &in_flight(),
+        );
+
+        assert_eq!(
+            decision,
+            BeforeDecision::Keep {
+                reason: Some(HOOK_ANNOTATIONS_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_named_hook_error_is_used_as_the_reason_verbatim() {
+        let decision = decide_before(
+            Arc::new(NamedErrorHook(HOOK_CONNECT_REASON)),
+            &event("fired", None),
+            EVENT_BEFORE_TIMEOUT,
+            &in_flight(),
+        );
+
+        assert_eq!(
+            decision,
+            BeforeDecision::Keep {
+                reason: Some(HOOK_CONNECT_REASON.into()),
+                annotations: ValidatedAnnotations::default(),
+            }
+        );
     }
 }

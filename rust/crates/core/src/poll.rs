@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -8,9 +8,9 @@ use jiff::Timestamp;
 use crate::event_before::{BeforeDecision, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
-    AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId, ModelError,
-    MonitorConfig, Next, PollOutcome, PollRequest, PositionKey, Source, StateStore,
-    Store, StoreError,
+    AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId,
+    HOOK_ANNOTATIONS_REASON, MAX_ANNOTATIONS, ModelError, MonitorConfig, Next,
+    PollOutcome, PollRequest, PositionKey, Source, StateStore, Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -440,7 +440,21 @@ impl<S: StateStore> PollEngine<S> {
                 budget,
                 &self.before_in_flight,
             ) {
-                BeforeDecision::Keep { reason } => {
+                BeforeDecision::Keep {
+                    mut reason,
+                    annotations,
+                } => {
+                    let kept = if annotations.is_empty() {
+                        event.clone()
+                    } else if event.annotations().is_empty() {
+                        event.with_validated_annotations(annotations)
+                    } else {
+                        let (merged, merge_reason) =
+                            merge_hook_annotations(event, annotations.into_inner());
+                        reason = merge_reason;
+                        merged
+                    };
+
                     if let Some(reason) = reason {
                         tracing::warn!(
                             reason = %reason,
@@ -449,7 +463,7 @@ impl<S: StateStore> PollEngine<S> {
                         );
                     }
 
-                    events.push(event.clone());
+                    events.push(kept);
                 }
                 BeforeDecision::Drop { reason } => {
                     tracing::info!(
@@ -479,8 +493,45 @@ impl<S: StateStore> PollEngine<S> {
     }
 }
 
+// The reason is logged only when hook fields exceed the room that fits.
+fn merge_annotations_reason(hook_count: usize, room: usize) -> Option<String> {
+    hook_count
+        .checked_sub(room)
+        .and_then(std::num::NonZeroUsize::new)
+        .map(|_| HOOK_ANNOTATIONS_REASON.into())
+}
+
+// Applies hook fields: existing keys are overwritten, fresh keys use the room.
+fn merge_hook_annotations(
+    event: &Event,
+    hook: BTreeMap<String, String>,
+) -> (Event, Option<String>) {
+    let mut fields = event.annotations().clone();
+    let mut fresh = BTreeMap::new();
+
+    for (key, value) in hook {
+        if let Some(existing) = fields.get_mut(&key) {
+            *existing = value;
+        } else {
+            fresh.insert(key, value);
+        }
+    }
+
+    let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
+    let mut reason = merge_annotations_reason(fresh.len(), room);
+    fields.extend(fresh.into_iter().take(room));
+
+    let merged = event.with_annotations(fields).unwrap_or_else(|_| {
+        reason = Some(HOOK_ANNOTATIONS_REASON.into());
+        event.clone()
+    });
+
+    (merged, reason)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
@@ -488,7 +539,7 @@ mod tests {
 
     use super::*;
     use crate::event_before::support::{
-        BlockingHook, BotFilter, FailingHook, event,
+        AnnotatingHook, BlockingHook, BotFilter, FailingHook, event,
     };
     use crate::{
         BeforeVerdict, MonitorId, PollError, PollInterval, Position, SourceName,
@@ -1422,5 +1473,262 @@ mod tests {
         );
 
         assert_eq!(f.engine.event_before_timeout, EVENT_BEFORE_TIMEOUT);
+    }
+
+    #[test]
+    fn an_annotating_hook_commits_the_event_with_its_fields() {
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let fired = event("fired", None);
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(fields.clone())),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations(), &fields);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_merges_fields_into_existing_annotations() {
+        let old_fields = BTreeMap::from([
+            ("agent".to_owned(), "deploy-bot".to_owned()),
+            ("env".to_owned(), "prod".to_owned()),
+        ]);
+        let new_fields = BTreeMap::from([
+            ("reviewer".to_owned(), "alice".to_owned()),
+            ("env".to_owned(), "staging".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(old_fields).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(new_fields)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(
+            pending[0].annotations(),
+            &BTreeMap::from([
+                ("agent".to_owned(), "deploy-bot".to_owned()),
+                ("env".to_owned(), "staging".to_owned()),
+                ("reviewer".to_owned(), "alice".to_owned()),
+            ])
+        );
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_fills_only_the_remaining_annotation_room() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook: BTreeMap<String, String> = (0..4)
+            .map(|index| (format!("hook-{index:02}"), "new".to_owned()))
+            .collect();
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([
+                ("hook-00".to_owned(), "new".to_owned()),
+                ("hook-01".to_owned(), "new".to_owned()),
+            ])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_that_fills_the_last_room_keeps_every_field() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook: BTreeMap<String, String> = (0..2)
+            .map(|index| (format!("hook-{index:02}"), "new".to_owned()))
+            .collect();
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([
+                ("hook-00".to_owned(), "new".to_owned()),
+                ("hook-01".to_owned(), "new".to_owned()),
+            ])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_below_the_last_room_keeps_every_field() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 2)
+            .map(|index| (format!("existing-{index:02}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([("hook-00".to_owned(), "new".to_owned())]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        let expected: BTreeMap<String, String> = existing
+            .into_iter()
+            .chain([("hook-00".to_owned(), "new".to_owned())])
+            .collect();
+
+        assert_eq!(pending[0].annotations(), &expected);
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS - 1);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn merge_annotations_reason_names_only_the_overflow() {
+        assert_eq!(merge_annotations_reason(2, 2), None);
+        assert_eq!(merge_annotations_reason(1, 2), None);
+        assert_eq!(
+            merge_annotations_reason(3, 2),
+            Some(HOOK_ANNOTATIONS_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn an_overwrite_does_not_consume_annotation_room() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 1)
+            .map(|index| (format!("key-{index}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([
+            ("key-0".to_owned(), "hook-value".to_owned()),
+            ("fresh".to_owned(), "fresh-value".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert_eq!(
+            pending[0].annotations().get("key-0").map(String::as_str),
+            Some("hook-value")
+        );
+        assert_eq!(
+            pending[0].annotations().get("fresh").map(String::as_str),
+            Some("fresh-value")
+        );
+        // One fresh key fits the one room; the overwrite does not count.
+        assert_eq!(merge_annotations_reason(1, 1), None);
+    }
+
+    #[test]
+    fn fresh_fields_beyond_the_room_are_dropped_and_named() {
+        let existing: BTreeMap<String, String> = (0..MAX_ANNOTATIONS - 1)
+            .map(|index| (format!("key-{index}"), "kept".to_owned()))
+            .collect();
+        let hook = BTreeMap::from([
+            ("key-0".to_owned(), "hook-value".to_owned()),
+            ("fresh-a".to_owned(), "a-value".to_owned()),
+            ("fresh-b".to_owned(), "b-value".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(existing).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(hook)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS);
+        assert_eq!(
+            pending[0].annotations().get("key-0").map(String::as_str),
+            Some("hook-value")
+        );
+        assert_eq!(
+            pending[0].annotations().get("fresh-a").map(String::as_str),
+            Some("a-value")
+        );
+        assert_eq!(pending[0].annotations().get("fresh-b"), None);
+        assert_eq!(
+            merge_annotations_reason(2, 1),
+            Some(HOOK_ANNOTATIONS_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn the_default_hook_preserves_existing_annotations() {
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(fields.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(outcome.unwrap())]);
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations(), &fields);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
     }
 }
