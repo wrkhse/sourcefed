@@ -5,11 +5,19 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::Errno;
+use rustix::net::{
+    AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
+    sockopt::socket_error,
+};
 
 use serde_json::Value;
 use tack_protocol::MAX_FRAME_BYTES;
@@ -20,10 +28,11 @@ use tack_protocol::wire::{
 use crate::event::Event;
 use crate::{
     BeforeVerdict, EventBefore, HOOK_ANNOTATION_TYPE_REASON,
-    HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_DAEMON_ERROR_REASON,
-    HOOK_DECODE_REASON, HOOK_ENCODE_REASON, HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON,
-    HOOK_REWRITE_REFUSED_REASON, HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON,
-    HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON, validate_text,
+    HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_CONNECT_TIMEOUT_REASON,
+    HOOK_DAEMON_ERROR_REASON, HOOK_DECODE_REASON, HOOK_ENCODE_REASON,
+    HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON, HOOK_REWRITE_REFUSED_REASON,
+    HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON,
+    HOOK_VERSION_REASON, validate_text,
 };
 
 /// Longest wire deny reason accepted before it is logged.
@@ -92,6 +101,20 @@ impl FramedEventBefore {
 
     fn decide(&self, value: Value, id: u64) -> Result<BeforeVerdict, String> {
         verify(&value, id)?;
+
+        let outcome = value.get("outcome");
+        let deny_without_reason = outcome
+            .and_then(|outcome| outcome.get("kind"))
+            .and_then(Value::as_str)
+            == Some("deny")
+            && !outcome
+                .and_then(|outcome| outcome.get("reason"))
+                .is_some_and(Value::is_string);
+        if deny_without_reason {
+            return Ok(BeforeVerdict::Drop {
+                reason: format!("plugin-deny:{}:invalid-reason", self.hook_name),
+            });
+        }
 
         let reply: Reply = serde_json::from_value(value)
             .map_err(|_| HOOK_DECODE_REASON.to_owned())?;
@@ -283,13 +306,67 @@ fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, String> 
     validate_socket(path)?;
     let _ = remaining(deadline)?;
 
-    // A validated absolute same-uid socket path makes this local connect
-    // OS-bounded, so no worker thread is needed to enforce the deadline.
-    let stream =
-        UnixStream::connect(path).map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
-    let _ = remaining(deadline)?;
+    let address = SocketAddrUnix::new(path)
+        .map_err(|_| HOOK_SOCKET_UNTRUSTED_REASON.to_owned())?;
+    let fd = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+        None,
+    )
+    .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
+
+    // A nonblocking connect cannot outlive the deadline: poll for only the
+    // time left, then hand the connected socket back to the timed exchange.
+    match connect(&fd, &address) {
+        Ok(()) => {}
+        Err(Errno::INPROGRESS | Err(Errno::AGAIN)) => {
+            wait_for_connect(&fd, deadline)?;
+        }
+        Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+    }
+
+    let stream = UnixStream::from(fd);
+    stream
+        .set_nonblocking(false)
+        .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
 
     Ok(stream)
+}
+
+// Waits for a nonblocking connect, retrying only while the budget allows.
+fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
+    loop {
+        let left = remaining(deadline)
+            .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
+        let timeout = Timespec::try_from(left)
+            .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
+        let mut fds = [PollFd::new(fd, PollFlags::OUT)];
+
+        if poll(&mut fds, Some(&timeout))
+            .map_err(|_| HOOK_CONNECT_REASON.to_owned())?
+            == 0
+        {
+            return Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned());
+        }
+
+        let [event] = fds;
+        if !event
+            .revents()
+            .intersects(PollFlags::OUT | PollFlags::ERR | PollFlags::HUP)
+        {
+            continue;
+        }
+
+        match socket_error(fd) {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(Errno::AGAIN | Err(Errno::INPROGRESS))) => {
+                let _ = remaining(deadline)
+                    .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
+            }
+            Ok(Err(_)) | Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+        }
+    }
 }
 
 fn validate_socket(path: &Path) -> Result<(), String> {
@@ -798,6 +875,54 @@ mod tests {
 
         worker.join().unwrap();
         assert_eq!(verdict, Err(HOOK_TIMEOUT_REASON.to_owned()));
+    }
+
+    #[test]
+    fn a_full_connect_backlog_times_out() {
+        let daemon = Daemon::new();
+        let client = daemon.client();
+        let address = SocketAddrUnix::new(daemon.socket.as_path()).unwrap();
+        let mut held = Vec::new();
+
+        // Fill the listener's backlog without accepting any connection.
+        for _ in 0..512 {
+            let fd = socket_with(
+                AddressFamily::UNIX,
+                SocketType::STREAM,
+                SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+                None,
+            )
+            .unwrap();
+            match connect(&fd, &address) {
+                Ok(()) => held.push(fd),
+                Err(Errno::AGAIN | Err(Errno::INPROGRESS)) => break,
+                Err(error) => panic!("unexpected connect error: {error}"),
+            }
+        }
+
+        let verdict = client.verdict(&event(), Duration::from_millis(120));
+
+        drop(held);
+        assert_eq!(verdict, Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned()));
+    }
+
+    #[test]
+    fn a_deny_without_a_reason_drops() {
+        let daemon = Daemon::new();
+        let client = daemon.client();
+        let worker = serve(daemon.listener, |id| {
+            Some(hook_reply(id, &json!({ "kind": "deny" })))
+        });
+
+        let verdict = client.verdict(&event(), BUDGET);
+
+        worker.join().unwrap();
+        assert_eq!(
+            verdict,
+            Ok(BeforeVerdict::Drop {
+                reason: "plugin-deny:quiet-bots:invalid-reason".into(),
+            })
+        );
     }
 
     #[test]
