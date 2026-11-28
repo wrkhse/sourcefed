@@ -164,6 +164,10 @@ pub struct Event {
         skip_serializing_if = "Option::is_none"
     )]
     author: Option<String>,
+    /// String fields attached to the event, empty when none are present.
+    /// The framed client accepts only string annotation keys and values; a
+    /// non-string wire value is refused with the named reason
+    /// `event-before-annotation-type`.
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
@@ -283,6 +287,18 @@ impl Event {
         Ok(annotated)
     }
 
+    /// Returns a copy of this event with pre-validated fields as its
+    /// annotations.
+    pub(crate) fn with_validated_annotations(
+        &self,
+        annotations: ValidatedAnnotations,
+    ) -> Self {
+        let mut annotated = self.clone();
+        annotated.annotations = annotations.into_inner();
+
+        annotated
+    }
+
     /// Checks the count, keys and values before annotations are stored.
     pub(crate) fn validate_annotations(
         fields: &BTreeMap<String, String>,
@@ -300,6 +316,28 @@ impl Event {
         }
 
         Ok(())
+    }
+}
+
+/// Annotation fields that have passed validation and need no recheck.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ValidatedAnnotations(BTreeMap<String, String>);
+
+impl ValidatedAnnotations {
+    /// Checks `fields` before wrapping it; an empty map is always valid.
+    ///
+    /// # Errors
+    /// Returns an error for too many annotations or an empty, oversized, or
+    /// control-containing key or value.
+    pub(crate) fn new(fields: BTreeMap<String, String>) -> Result<Self, ModelError> {
+        Event::validate_annotations(&fields)?;
+
+        Ok(Self(fields))
+    }
+
+    /// Returns the fields that passed validation.
+    pub(crate) fn into_inner(self) -> BTreeMap<String, String> {
+        self.0
     }
 }
 

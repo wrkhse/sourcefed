@@ -29,6 +29,7 @@ pub mod event;
 /// The bounded pre-commit decision applied to each event.
 pub mod event_before;
 /// The framed pre-commit hook contract.
+#[cfg(unix)]
 pub mod event_before_framed;
 /// Monitors: their IDs, configuration, poll interval and status.
 pub mod monitor;
@@ -46,11 +47,14 @@ pub mod store;
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use event_before::{
     AllowAll, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore,
-    HOOK_ANNOTATIONS_REASON, HOOK_BUSY_REASON, HOOK_CONNECT_REASON,
-    HOOK_DAEMON_ERROR_REASON, HOOK_DECODE_REASON, HOOK_ERROR_REASON, HOOK_ID_REASON,
+    HOOK_ANNOTATION_TYPE_REASON, HOOK_ANNOTATIONS_REASON, HOOK_BUSY_REASON,
+    HOOK_CONNECT_REASON, HOOK_CONNECT_TIMEOUT_REASON, HOOK_DAEMON_ERROR_REASON,
+    HOOK_DECODE_REASON, HOOK_ENCODE_REASON, HOOK_ERROR_REASON, HOOK_ID_REASON,
     HOOK_PANIC_REASON, HOOK_PEER_CLOSED_REASON, HOOK_REWRITE_REFUSED_REASON,
-    HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON,
+    HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON,
+    HOOK_VERSION_REASON,
 };
+#[cfg(unix)]
 pub use event_before_framed::FramedEventBefore;
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use poll::{

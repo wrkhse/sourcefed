@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::Event;
+use crate::event::ValidatedAnnotations;
 
 /// Longest time the poll engine spends on pre-commit verdicts in one commit.
 ///
@@ -29,6 +30,15 @@ pub const HOOK_PANIC_REASON: &str = "event-before-panic";
 /// The log reason when connecting to the hook peer fails.
 pub const HOOK_CONNECT_REASON: &str = "event-before-connect";
 
+/// The log reason when the hook peer does not connect before the deadline.
+pub const HOOK_CONNECT_TIMEOUT_REASON: &str = "event-before-connect-timeout";
+
+/// The log reason when the hook socket path is not trusted.
+pub const HOOK_SOCKET_UNTRUSTED_REASON: &str = "event-before-socket-untrusted";
+
+/// The log reason when encoding a request for the hook fails.
+pub const HOOK_ENCODE_REASON: &str = "event-before-encode";
+
 /// The log reason when decoding a hook reply fails.
 pub const HOOK_DECODE_REASON: &str = "event-before-decode";
 
@@ -49,6 +59,9 @@ pub const HOOK_REWRITE_REFUSED_REASON: &str = "event-before-rewrite-refused";
 
 /// The log reason when a hook's annotation fields fail validation.
 pub const HOOK_ANNOTATIONS_REASON: &str = "event-before-annotations-invalid";
+
+/// The log reason when an annotation field has a non-string wire value.
+pub const HOOK_ANNOTATION_TYPE_REASON: &str = "event-before-annotation-type";
 
 /// The log reason when the daemon reports an error.
 pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
@@ -72,7 +85,7 @@ pub(crate) enum BeforeDecision {
     /// annotations holds validated fields for the engine to apply.
     Keep {
         reason: Option<String>,
-        annotations: BTreeMap<String, String>,
+        annotations: ValidatedAnnotations,
     },
     /// Leave the event out of the commit; reason says why.
     Drop { reason: String },
@@ -135,6 +148,15 @@ fn hook_error_reason(message: &str) -> String {
     }
 }
 
+// An empty annotation map is always valid, so a keep without fields needs
+// no validation.
+fn keep(reason: Option<String>) -> BeforeDecision {
+    BeforeDecision::Keep {
+        reason,
+        annotations: ValidatedAnnotations::default(),
+    }
+}
+
 /// Asks a hook for one verdict within a deadline and applies the policy.
 ///
 /// The hook runs on its own thread, so a hook that never answers yields a
@@ -151,27 +173,18 @@ pub(crate) fn decide_before(
     in_flight: &Arc<AtomicBool>,
 ) -> BeforeDecision {
     if before.is_passthrough() {
-        return BeforeDecision::Keep {
-            reason: None,
-            annotations: BTreeMap::new(),
-        };
+        return keep(None);
     }
 
     if timeout.is_zero() {
-        return BeforeDecision::Keep {
-            reason: Some(HOOK_TIMEOUT_REASON.into()),
-            annotations: BTreeMap::new(),
-        };
+        return keep(Some(HOOK_TIMEOUT_REASON.into()));
     }
 
     if in_flight
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return BeforeDecision::Keep {
-            reason: Some(HOOK_BUSY_REASON.into()),
-            annotations: BTreeMap::new(),
-        };
+        return keep(Some(HOOK_BUSY_REASON.into()));
     }
 
     let event = event.clone();
@@ -191,43 +204,28 @@ pub(crate) fn decide_before(
     if let Err(error) = worker {
         in_flight.store(false, Ordering::Release);
 
-        return BeforeDecision::Keep {
-            reason: Some(hook_error_reason(&error.to_string())),
-            annotations: BTreeMap::new(),
-        };
+        return keep(Some(hook_error_reason(&error.to_string())));
     }
 
     match receiver.recv_timeout(timeout) {
-        Ok(Ok(BeforeVerdict::Keep)) => BeforeDecision::Keep {
-            reason: None,
-            annotations: BTreeMap::new(),
-        },
+        Ok(Ok(BeforeVerdict::Keep)) => keep(None),
         Ok(Ok(BeforeVerdict::Drop { reason })) => BeforeDecision::Drop { reason },
         Ok(Ok(BeforeVerdict::Annotate { fields })) => {
-            if Event::validate_annotations(&fields).is_ok() {
-                BeforeDecision::Keep {
+            match ValidatedAnnotations::new(fields) {
+                Ok(annotations) => BeforeDecision::Keep {
                     reason: None,
-                    annotations: fields,
-                }
-            } else {
-                BeforeDecision::Keep {
-                    reason: Some(HOOK_ANNOTATIONS_REASON.into()),
-                    annotations: BTreeMap::new(),
-                }
+                    annotations,
+                },
+                Err(_) => keep(Some(HOOK_ANNOTATIONS_REASON.into())),
             }
         }
-        Ok(Err(message)) => BeforeDecision::Keep {
-            reason: Some(hook_error_reason(&message)),
-            annotations: BTreeMap::new(),
-        },
-        Err(mpsc::RecvTimeoutError::Timeout) => BeforeDecision::Keep {
-            reason: Some(HOOK_TIMEOUT_REASON.into()),
-            annotations: BTreeMap::new(),
-        },
-        Err(mpsc::RecvTimeoutError::Disconnected) => BeforeDecision::Keep {
-            reason: Some(HOOK_PANIC_REASON.into()),
-            annotations: BTreeMap::new(),
-        },
+        Ok(Err(message)) => keep(Some(hook_error_reason(&message))),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            keep(Some(HOOK_TIMEOUT_REASON.into()))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            keep(Some(HOOK_PANIC_REASON.into()))
+        }
     }
 }
 
@@ -381,7 +379,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: None,
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
         assert!(!flag.load(Ordering::Relaxed));
@@ -412,7 +410,7 @@ mod tests {
             kept,
             BeforeDecision::Keep {
                 reason: None,
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -430,7 +428,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(format!("{HOOK_ERROR_REASON}: hook unavailable")),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -448,7 +446,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_TIMEOUT_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -466,7 +464,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_PANIC_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -484,7 +482,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_BUSY_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -503,7 +501,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_TIMEOUT_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
         assert!(!flag.load(Ordering::Relaxed));
@@ -547,7 +545,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: None,
-                annotations: fields,
+                annotations: ValidatedAnnotations::new(fields).unwrap(),
             }
         );
     }
@@ -566,7 +564,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_ANNOTATIONS_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }
@@ -584,7 +582,7 @@ mod tests {
             decision,
             BeforeDecision::Keep {
                 reason: Some(HOOK_CONNECT_REASON.into()),
-                annotations: BTreeMap::new(),
+                annotations: ValidatedAnnotations::default(),
             }
         );
     }

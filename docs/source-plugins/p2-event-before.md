@@ -2,8 +2,8 @@
 
 **Status: In progress.** A bounded verdict seam drops bot-authored events before
 they reach the store. Unit tests cover the seam; no production caller uses
-`with_event_before` yet, and the end-to-end check waits for the framed client.
-The [source and plugin API RFC][rfc] tracks the work.
+`with_event_before` yet. The framed client lands in P3, and the joint real-socket
+proof waits on tack#23 PR4. The [source and plugin API RFC][rfc] tracks the work.
 
 ## You can
 
@@ -116,7 +116,7 @@ live in this slice.
 
 The dependency is the `tack_protocol` crate (`crates/protocol` in wrkhse/tack),
 git-pinned by rev the same way tack pins barn. sourcefed writes its own small
-framed client against tack's daemon socket in a later PR; there is no
+framed client against tack's daemon socket in P3; there is no
 tack-client crate, and sourcefed never launches barn. The in-process seam
 lands first; the framed client implements the same `EventBefore` trait once
 tack's daemon hook and barn's engine are in.
@@ -128,7 +128,7 @@ tack's daemon hook and barn's engine are in.
 - Mutation testing over the changed Rust files catches every viable mutant.
 - Unit tests drive the seam with in-process hooks: a bot-authored event is
   dropped and a normal event is committed through the real poll engine.
-- The end-to-end check waits for the framed client, which lands with the framed
-  proof.
+- The framed client lands in P3; the joint real-socket proof waits on tack#23
+  PR4.
 
 [rfc]: https://github.com/wrkhse/sourcefed/issues/56

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use jiff::Timestamp;
 
-use crate::event_before::{BeforeDecision, HOOK_ANNOTATIONS_REASON, decide_before};
+use crate::event_before::{BeforeDecision, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
     AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId, ModelError,
@@ -444,12 +444,7 @@ impl<S: StateStore> PollEngine<S> {
                     reason,
                     annotations,
                 } => {
-                    let (kept, reason) = match event.with_annotations(annotations) {
-                        Ok(annotated) => (annotated, reason),
-                        Err(_) => {
-                            (event.clone(), Some(HOOK_ANNOTATIONS_REASON.into()))
-                        }
-                    };
+                    let kept = event.with_validated_annotations(annotations);
 
                     if let Some(reason) = reason {
                         tracing::warn!(

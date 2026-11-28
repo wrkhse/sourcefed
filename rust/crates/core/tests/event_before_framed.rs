@@ -1,7 +1,9 @@
 //! Real-socket contract tests for the framed `eventBefore` client.
 
+#![cfg(unix)]
+
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -11,12 +13,14 @@ use serde_json::{Value, json};
 use sourcefed_core::event_before_framed::FramedEventBefore;
 use sourcefed_core::{
     BeforeVerdict, Event, EventBefore, EventId, EventKind, EventSubject,
-    HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_DAEMON_ERROR_REASON,
+    HOOK_ANNOTATION_TYPE_REASON, HOOK_ANNOTATIONS_REASON, HOOK_DAEMON_ERROR_REASON,
     HOOK_DECODE_REASON, HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON,
-    HOOK_REWRITE_REFUSED_REASON, HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON,
-    SourceName,
+    HOOK_REWRITE_REFUSED_REASON, HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON,
+    HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON, SourceName,
 };
-use tack_protocol::wire::{PROTOCOL_VERSION, encode_line, read_line};
+use tack_protocol::wire::{
+    MAX_FRAME_BYTES, PROTOCOL_VERSION, Request, ToolCall, encode_line, read_line,
+};
 
 /// One verdict exchange never waits longer than this in a test.
 const BUDGET: Duration = Duration::from_secs(2);
@@ -62,7 +66,7 @@ fn event() -> Event {
     event.with_author(Some("steven".into())).unwrap()
 }
 
-/// Reads one request, checks the wire contract, then writes the reply frame.
+/// Reads one request, asserts the whole hook request, then writes the reply.
 /// Joining the worker returns the request for further assertions.
 fn serve<F>(listener: UnixListener, reply: F) -> JoinHandle<Value>
 where
@@ -77,26 +81,25 @@ where
             serde_json::from_slice(&frame).unwrap()
         };
 
-        assert_eq!(request.get("kind").and_then(Value::as_str), Some("hook"));
-        assert_eq!(
-            request.get("hook").and_then(Value::as_str),
-            Some("eventBefore")
-        );
-        assert_eq!(
-            request.get("version").and_then(Value::as_u64),
-            Some(u64::from(PROTOCOL_VERSION))
-        );
-
-        let call = request.get("call").unwrap();
-        assert_eq!(call.get("tool"), Some(&json!("sourcefed")));
-        assert_eq!(call.get("name"), Some(&json!("quiet-bots")));
-        assert!(call.get("session_id").is_some_and(Value::is_null));
-
-        let input = call.get("input").unwrap();
-        assert_eq!(input.get("id"), Some(&json!("evt-1")));
-        assert_eq!(input.get("author"), Some(&json!("steven")));
-
         let id = request.get("id").and_then(Value::as_u64).unwrap();
+        let expected = Request::Hook {
+            id,
+            version: PROTOCOL_VERSION,
+            hook: "eventBefore".into(),
+            call: ToolCall {
+                tool: "sourcefed".into(),
+                name: "quiet-bots".into(),
+                input: serde_json::to_value(event()).unwrap(),
+                session_id: None,
+            },
+            _meta: None,
+        };
+
+        assert_eq!(
+            serde_json::from_value::<Request>(request.clone()).unwrap(),
+            expected
+        );
+
         if let Some(frame) = reply(id) {
             stream.write_all(&frame).unwrap();
         }
@@ -179,18 +182,35 @@ fn annotate_converts_fields_to_validated_strings() {
     let worker = serve(daemon.listener, |id| {
         Some(hook_reply(
             id,
-            json!({ "kind": "annotate", "fields": { "team": "core", "count": 7 } }),
+            json!({ "kind": "annotate", "fields": { "team": "core", "owner": "alice" } }),
         ))
     });
 
     let verdict = client.verdict(&event(), BUDGET);
     let fields = BTreeMap::from([
-        ("count".to_owned(), "7".to_owned()),
+        ("owner".to_owned(), "alice".to_owned()),
         ("team".to_owned(), "core".to_owned()),
     ]);
 
     worker.join().unwrap();
     assert_eq!(verdict, Ok(BeforeVerdict::Annotate { fields }));
+}
+
+#[test]
+fn non_string_annotation_fields_are_refused() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = serve(daemon.listener, |id| {
+        Some(hook_reply(
+            id,
+            json!({ "kind": "annotate", "fields": { "count": 7 } }),
+        ))
+    });
+
+    let verdict = client.verdict(&event(), BUDGET);
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_ANNOTATION_TYPE_REASON.to_owned()));
 }
 
 #[test]
@@ -339,6 +359,35 @@ fn a_closed_peer_is_a_named_error() {
 }
 
 #[test]
+fn a_close_mid_frame_is_a_named_error() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = serve(daemon.listener, |_| Some(b"partial".to_vec()));
+
+    let verdict = client.verdict(&event(), BUDGET);
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_PEER_CLOSED_REASON.to_owned()));
+}
+
+#[test]
+fn an_oversized_frame_is_a_named_error() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = serve(daemon.listener, |_| {
+        let mut frame = vec![b'x'; MAX_FRAME_BYTES + 1];
+        frame.push(b'\n');
+
+        Some(frame)
+    });
+
+    let verdict = client.verdict(&event(), BUDGET);
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_DECODE_REASON.to_owned()));
+}
+
+#[test]
 fn a_malformed_reply_is_a_named_error() {
     let daemon = Daemon::new();
     let client = daemon.client();
@@ -351,13 +400,42 @@ fn a_malformed_reply_is_a_named_error() {
 }
 
 #[test]
-fn a_missing_socket_is_a_connect_error() {
+fn a_peer_that_never_answers_times_out() {
+    let daemon = Daemon::new();
+    let client = daemon.client();
+    let worker = thread::spawn(move || {
+        let (_stream, _) = daemon.listener.accept().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+    });
+
+    let verdict = client.verdict(&event(), Duration::from_millis(40));
+
+    worker.join().unwrap();
+    assert_eq!(verdict, Err(HOOK_TIMEOUT_REASON.to_owned()));
+}
+
+#[test]
+fn a_missing_socket_path_is_untrusted() {
     let dir = tempfile::tempdir().unwrap();
     let client =
         FramedEventBefore::new(dir.path().join("missing.sock"), "quiet-bots");
 
     assert_eq!(
         client.verdict(&event(), BUDGET),
-        Err(HOOK_CONNECT_REASON.to_owned())
+        Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+    );
+}
+
+#[test]
+fn a_regular_file_socket_path_is_untrusted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("not-a-socket");
+    std::fs::write(&path, b"x").unwrap();
+    let client = FramedEventBefore::new(path, "quiet-bots");
+
+    assert_eq!(
+        client.verdict(&event(), BUDGET),
+        Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
     );
 }

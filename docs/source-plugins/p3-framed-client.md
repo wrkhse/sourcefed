@@ -1,11 +1,10 @@
 # P3: framed eventBefore client
 
-**Status: Planned.** A sourcefed client asks tack's daemon to run an
-`eventBefore` hook over a framed socket before `store.commit()`. The slice
-waits on barn's engine (barn#72, barn#74); no code lands until the plan is
-approved. The [RFC][rfc] tracks the work.
-The first end-to-end proof runs with [P4][p4].
-The real-socket proof waits on tack's hook.
+**Status: In progress.** A sourcefed client asks tack's daemon to run an
+`eventBefore` hook over a framed socket before `store.commit()`. The framed
+client, the git-pinned protocol dependency, the outcome mapping and annotation
+support have landed. The real-socket proof waits on tack#23 PR4. The [RFC][rfc]
+tracks the work. The first end-to-end proof runs with [P4][p4].
 
 ## You can
 
@@ -34,17 +33,23 @@ flowchart LR
 ### 1. Git-pinned protocol dependency
 
 sourcefed depends on `tack_protocol` from `crates/protocol` in wrkhse/tack,
-git-pinned by rev as tack pins barn. There is no tack-client crate, and
-sourcefed never launches barn.
+git-pinned at rev `197ba009f88e296a8cab28b82ebb3db2b33833fb` as tack pins barn.
+`cargo-deny` allows that git source through `allow-git` in `rust/deny.toml`.
+There is no tack-client crate, and sourcefed never launches barn.
 
-Files: `rust/crates/core/Cargo.toml`, `rust/Cargo.lock`.
+Files: `rust/crates/core/Cargo.toml`, `rust/Cargo.lock`, `rust/deny.toml`.
 
 ```toml
-tack_protocol = { git = "https://github.com/wrkhse/tack", rev = "<pinned rev>" }
+[dependencies.tack_protocol]
+version = "0.1.0-rc.6"
+git = "https://github.com/wrkhse/tack"
+rev = "197ba009f88e296a8cab28b82ebb3db2b33833fb"
 ```
 
-**Verified by** the CI dependency check `cargo tree -i tack_protocol --locked`
-and codec tests decoding `tack_protocol` `Request::Hook` and `Reply::Hook`.
+**Verified by** `allow_keeps_the_event_and_sends_the_hook_request` for the
+`Request::Hook` wire shape, `a_version_mismatch_is_a_named_error` and
+`an_id_mismatch_is_a_named_error` for reply checks against the pinned crate,
+and `cargo deny` accepting the git source.
 
 ### 2. Framed client
 
@@ -55,12 +60,13 @@ The client adds `BeforeVerdict::Annotate` and a bounded, backward-compatible
 unchanged for existing callers: the `budget` argument, `#[non_exhaustive]`
 on `BeforeVerdict` and the `AllowAll` hook stay.
 Every failure keeps the event with a named reason: timeout, connect error,
-decode error, peer closed, version or id mismatch, or an unknown outcome kind.
+decode error, peer closed, daemon error, version or id mismatch, invalid
+annotations, a refused rewrite, or an unknown outcome kind.
 
 Files: `rust/crates/core/src/event_before_framed.rs`,
 `rust/crates/core/src/event.rs`,
 `rust/crates/core/src/lib.rs`, and
-`rust/crates/core/tests/event_before_framed.rs` for the real-socket test.
+`rust/crates/core/tests/event_before_framed.rs` for local socket tests.
 
 ```rust
 let hook = FramedEventBefore::new(socket_path, hook_name);
@@ -69,8 +75,15 @@ let engine = PollEngine::new(config, source, store, clock)?
     .with_event_before(Arc::new(hook), EVENT_BEFORE_TIMEOUT);
 ```
 
-**Verified by** codec, deadline and failure tests in the module, and a
-real-socket contract test against tack's hook.
+**Verified by** `a_missing_socket_is_a_connect_error`,
+`a_closed_peer_is_a_named_error`, `a_malformed_reply_is_a_named_error`,
+`a_daemon_error_is_a_named_error` and `a_tool_reply_is_an_unknown_outcome`
+for the failure paths. `invalid_annotations_keep_the_event_without_fields`,
+`an_annotating_hook_keeps_validated_fields` and
+`a_named_hook_error_is_used_as_the_reason_verbatim` cover the seam in
+`event_before.rs`; `with_annotations_accepts_bounded_fields`,
+`with_annotations_rejects_unbounded_fields` and
+`annotations_default_and_round_trip_when_present` cover `event.rs`.
 
 ### 3. Daemon hook and barn stall
 
@@ -79,7 +92,8 @@ stall. sourcefed calls it over the socket.
 
 Files: none in this repo; tack and barn slices own this work.
 
-**Verified by** the end-to-end check with a real daemon and stall.
+**Verified by** no test in this repo: tack and barn own the daemon and stall.
+The joint proof waits on tack#23 PR4.
 
 ### 4. Verdict mapping
 
@@ -96,7 +110,17 @@ Files: none in this repo; tack and barn slices own this work.
 Wire `drop` carries no reason. Boundary failures include timeout, connect
 error, decode error, peer closed, and version or id mismatch.
 
-**Verified by** mapping and failure tests for each outcome and boundary failure.
+**Verified by** `allow_keeps_the_event_and_sends_the_hook_request`,
+`drop_reports_the_hook_name`, `deny_reports_the_hook_name_and_the_reason`,
+`annotate_converts_fields_to_validated_strings`,
+`invalid_annotations_are_refused_with_a_named_reason`,
+`rewrite_is_refused_with_a_named_reason`,
+`an_unknown_outcome_kind_is_a_named_error` and
+`a_tool_reply_is_an_unknown_outcome` for the outcomes; and
+`a_version_mismatch_is_a_named_error`, `an_id_mismatch_is_a_named_error`,
+`a_daemon_error_is_a_named_error`, `a_closed_peer_is_a_named_error`,
+`a_malformed_reply_is_a_named_error` and
+`a_missing_socket_is_a_connect_error` for the boundaries.
 
 ## Hook contract
 
@@ -126,6 +150,98 @@ tack's daemon path is on main (`daemon/src/main.rs:163-188` through
 - What Luau `ctx.emit` shape carries `author` for the github-issues source?
 - What bound applies to its source cursor?
 
+## Structure
+
+A verdict is one of three kinds. `Annotate` carries the fields the engine
+applies to an event; `BeforeVerdict` is `#[non_exhaustive]`, so callers handle
+future kinds. A `Drop` carries the reason logged for the skipped event.
+
+```rust
+pub enum BeforeVerdict {
+    Keep,
+    Drop { reason: String },
+    Annotate { fields: BTreeMap<String, String> },
+}
+```
+
+A decision is what the engine applies. `Keep` carries the failure reason that
+kept the event, when one exists, and the fields to apply. Invalid annotation
+fields keep the event with no fields.
+
+```rust
+pub(crate) enum BeforeDecision {
+    Keep {
+        reason: Option<String>,
+        annotations: BTreeMap<String, String>,
+    },
+    Drop { reason: String },
+}
+```
+
+The client opens one connection per verdict and bounds it by the trait's
+budget. It refuses a reply whose id or version differs, and names every
+failure path.
+
+```rust
+pub struct FramedEventBefore {
+    socket: PathBuf,
+    hook_name: String,
+    next_id: AtomicU64,
+}
+
+impl FramedEventBefore {
+    pub fn new(
+        socket: impl Into<PathBuf>,
+        hook_name: impl Into<String>,
+    ) -> Self;
+}
+
+impl EventBefore for FramedEventBefore {
+    fn verdict(
+        &self,
+        event: &Event,
+        budget: Duration,
+    ) -> Result<BeforeVerdict, String>;
+}
+```
+
+Annotations are a bounded `BTreeMap` on the event. Older state loads with an
+empty map; `with_annotations` rejects too many fields and empty, oversized or
+control-containing keys and values.
+
+```rust
+pub struct Event {
+    annotations: BTreeMap<String, String>,
+}
+
+impl Event {
+    pub fn annotations(&self) -> &BTreeMap<String, String>;
+
+    pub fn with_annotations(
+        &self,
+        fields: BTreeMap<String, String>,
+    ) -> Result<Self, ModelError>;
+
+    pub(crate) fn validate_annotations(
+        fields: &BTreeMap<String, String>,
+    ) -> Result<(), ModelError>;
+}
+```
+
+Every failure path has one named reason. The seam keeps the event for each.
+
+```rust
+pub const HOOK_CONNECT_REASON: &str = "event-before-connect";
+pub const HOOK_DECODE_REASON: &str = "event-before-decode";
+pub const HOOK_PEER_CLOSED_REASON: &str = "event-before-peer-closed";
+pub const HOOK_VERSION_REASON: &str = "event-before-version-mismatch";
+pub const HOOK_ID_REASON: &str = "event-before-id-mismatch";
+pub const HOOK_UNKNOWN_OUTCOME_REASON: &str = "event-before-unknown-outcome";
+pub const HOOK_REWRITE_REFUSED_REASON: &str = "event-before-rewrite-refused";
+pub const HOOK_ANNOTATIONS_REASON: &str = "event-before-annotations-invalid";
+pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
+```
+
 ## Decided
 
 | Choice                                                 | By         | When       |
@@ -142,10 +258,10 @@ tack#23's Decided table.
 
 ## End to end
 
-The single joint proof is owned with tack#23 PR4 and hosted in tack's CI.
-sourcefed supplies the Luau source table and framed client. A real sourcefed
-session drops a bot event, annotates a non-bot event with its fields, and keeps
-an event at a broken boundary with a named reason.
+The joint proof is owned with tack#23 PR4 and hosted in tack's CI; sourcefed
+supplies the Luau source table and framed client. It drops a bot event,
+annotates a non-bot event with its fields, and keeps an event at a broken
+boundary with a named reason.
 
 [p4]: p4-github-issues-source.md
 [rfc]: https://github.com/wrkhse/sourcefed/issues/56
