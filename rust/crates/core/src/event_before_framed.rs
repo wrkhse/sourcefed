@@ -191,7 +191,10 @@ fn write_frame(
             .set_write_timeout(Some(left))
             .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
 
-        let count = match stream.write(&frame[written..]) {
+        let slice = frame
+            .get(written..)
+            .ok_or_else(|| HOOK_CONNECT_REASON.to_owned())?;
+        let count = match stream.write(slice) {
             Ok(0) => return Err(HOOK_CONNECT_REASON.to_owned()),
             Ok(count) => count,
             Err(error)
@@ -205,7 +208,7 @@ fn write_frame(
             Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
         };
 
-        written += count;
+        written = written.saturating_add(count);
     }
 
     Ok(())
