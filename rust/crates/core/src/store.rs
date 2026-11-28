@@ -245,8 +245,18 @@ impl State {
             return Ok(0);
         }
 
+        self.record_fresh(key, fresh, fresh_skipped)
+    }
+
+    fn record_fresh(
+        &mut self,
+        key: &PositionKey,
+        fresh: Vec<&Event>,
+        fresh_skipped: Vec<&EventId>,
+    ) -> Result<usize, StoreError> {
         let new_count = fresh.len();
         let added = new_count.saturating_add(fresh_skipped.len());
+        let seen = self.seen.entry(key.clone()).or_default();
         let evictions = seen
             .len()
             .saturating_add(added)
@@ -480,10 +490,10 @@ impl Store {
     ///
     /// Skipped IDs enter the seen ledger without entering the pending queue,
     /// so a source that reports one again is treated as a repeat. All other
-    /// rules match [Self::commit].
+    /// rules match [`Self::commit`].
     ///
     /// # Errors
-    /// Returns the same errors as [Self::commit].
+    /// Returns the same errors as [`Self::commit`].
     pub fn commit_with_skipped(
         &mut self,
         key: PositionKey,
@@ -616,10 +626,10 @@ pub trait StateStore: Send + Sync {
     ///
     /// Skipped IDs enter the seen ledger without entering the pending queue,
     /// so a source that reports one again is treated as a repeat. Stores that
-    /// cannot separate skipped IDs keep the behaviour of [Self::commit].
+    /// cannot separate skipped IDs keep the behaviour of [`Self::commit`].
     ///
     /// # Errors
-    /// Returns the same errors as [Self::commit].
+    /// Returns the same errors as [`Self::commit`].
     fn commit_with_skipped(
         &mut self,
         key: PositionKey,

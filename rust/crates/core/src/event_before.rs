@@ -39,7 +39,7 @@ pub(crate) enum BeforeDecision {
 
 /// Decides whether an event is committed or left out.
 ///
-/// Hooks are shared across threads, so each one is Send and Sync.
+/// Hooks are shared across threads, so each one is `Send` and `Sync`.
 pub trait EventBefore: Send + Sync {
     /// Returns the verdict for event within the budget.
     ///
@@ -57,7 +57,7 @@ pub trait EventBefore: Send + Sync {
     }
 }
 
-/// An EventBefore that keeps every event.
+/// An `EventBefore` that keeps every event.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllowAll;
 
@@ -96,7 +96,7 @@ pub(crate) fn decide_before(
     before: Arc<dyn EventBefore>,
     event: &Event,
     timeout: Duration,
-    in_flight: Arc<AtomicBool>,
+    in_flight: &Arc<AtomicBool>,
 ) -> BeforeDecision {
     if before.is_passthrough() {
         return BeforeDecision::Keep { reason: None };
@@ -113,7 +113,7 @@ pub(crate) fn decide_before(
 
     let event = event.clone();
     let (sender, receiver) = mpsc::channel();
-    let flag = Arc::clone(&in_flight);
+    let flag = Arc::clone(in_flight);
     let worker =
         thread::Builder::new()
             .name("event-before".into())
@@ -219,8 +219,12 @@ pub(crate) mod support {
         }
     }
 
+    fn panic_now() -> ! {
+        panic!("hook panicked");
+    }
+
     /// Panics instead of returning a verdict.
-    pub(crate) struct PanickingHook;
+    pub(super) struct PanickingHook;
 
     impl EventBefore for PanickingHook {
         fn verdict(
@@ -228,7 +232,7 @@ pub(crate) mod support {
             _event: &Event,
             _budget: Duration,
         ) -> Result<BeforeVerdict, String> {
-            panic!("hook panicked");
+            panic_now()
         }
     }
 }
@@ -251,7 +255,7 @@ mod tests {
             Arc::new(AllowAll),
             &event("fired", Some("bot")),
             EVENT_BEFORE_TIMEOUT,
-            Arc::clone(&flag),
+            &flag,
         );
 
         assert_eq!(decision, BeforeDecision::Keep { reason: None });
@@ -264,13 +268,13 @@ mod tests {
             Arc::new(BotFilter),
             &event("fired", Some("bot")),
             EVENT_BEFORE_TIMEOUT,
-            in_flight(),
+            &in_flight(),
         );
         let kept = decide_before(
             Arc::new(BotFilter),
             &event("fired", Some("alice")),
             EVENT_BEFORE_TIMEOUT,
-            in_flight(),
+            &in_flight(),
         );
 
         assert_eq!(
@@ -288,7 +292,7 @@ mod tests {
             Arc::new(FailingHook),
             &event("fired", None),
             EVENT_BEFORE_TIMEOUT,
-            in_flight(),
+            &in_flight(),
         );
 
         assert_eq!(
@@ -305,7 +309,7 @@ mod tests {
             Arc::new(BlockingHook),
             &event("fired", None),
             Duration::from_millis(50),
-            in_flight(),
+            &in_flight(),
         );
 
         assert_eq!(
@@ -322,7 +326,7 @@ mod tests {
             Arc::new(PanickingHook),
             &event("fired", None),
             EVENT_BEFORE_TIMEOUT,
-            in_flight(),
+            &in_flight(),
         );
 
         assert_eq!(
@@ -339,7 +343,7 @@ mod tests {
             Arc::new(PanickingHook),
             &event("fired", None),
             EVENT_BEFORE_TIMEOUT,
-            Arc::new(AtomicBool::new(true)),
+            &Arc::new(AtomicBool::new(true)),
         );
 
         assert_eq!(
@@ -357,7 +361,7 @@ mod tests {
             Arc::new(BotFilter),
             &event("fired", Some("bot")),
             EVENT_BEFORE_TIMEOUT,
-            Arc::clone(&flag),
+            &flag,
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
 

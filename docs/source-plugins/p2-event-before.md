@@ -44,7 +44,7 @@ Files: `rust/crates/core/src/event.rs`.
 
 ```rust
 let event = Event::new(id, kind, subject, summary, at)?
-    .with_author(Some("deploy-bot".into()));
+    .with_author(Some("deploy-bot".into()))?;
 
 assert_eq!(event.author(), Some("deploy-bot"));
 ```
@@ -60,7 +60,7 @@ The engine bounds each verdict with `EVENT_BEFORE_TIMEOUT`; the default hook,
 `AllowAll`, keeps every event. A hook error or a timeout keeps the event and
 logs under `HOOK_ERROR_REASON` or `HOOK_TIMEOUT_REASON`, so a filter cannot
 lose an event by failing. The hook runs on its own thread, so one that panics
-disconnects the channel and keeps the event under `HOOK_ERROR_REASON`. One
+disconnects the channel and keeps the event under `HOOK_PANIC_REASON`. One
 trait serves every implementation: an in-process fake answers inline in tests
 and a framed client talks to a plugin process without a trait change.
 
@@ -69,7 +69,11 @@ Files: `rust/crates/core/src/event_before.rs`, `rust/crates/core/src/poll.rs`,
 
 ```rust
 impl EventBefore for DropBots {
-    fn verdict(&self, event: &Event) -> Result<BeforeVerdict, String> {
+    fn verdict(
+        &self,
+        event: &Event,
+        budget: Duration,
+    ) -> Result<BeforeVerdict, String> {
         match event.author() {
             Some(name) if name.starts_with("bot-") => Ok(BeforeVerdict::Drop {
                 reason: "bot author".into(),
@@ -84,9 +88,11 @@ let engine = PollEngine::new(config, source, store, clock)?
 ```
 
 **Verified by** unit tests on `decide_before` for keep, drop, error and timeout,
-and poll engine tests that check the seen ledger and pending queue: a dropped
-event is neither seen nor pending, while a kept event survives a store reopen.
-A blocking hook keeps the event at a shortened deadline.
+and poll engine tests that check the seen ledger and pending queue:
+`commit_with_skipped` records skipped IDs in the seen ledger, so a dropped
+event is seen but not pending. The poll tests assert `is_seen(bot.id())` for
+the dropped event, while a kept event survives a store reopen. A blocking hook
+keeps the event at a shortened deadline.
 
 ### 3. Framed plugin client
 

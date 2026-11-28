@@ -418,13 +418,15 @@ impl<S: StateStore> PollEngine<S> {
     }
 
     fn commit(&mut self, outcome: &PollOutcome) -> Result<(), StoreError> {
-        let deadline = Instant::now() + self.event_before_timeout;
+        let deadline = Instant::now()
+            .checked_add(self.event_before_timeout)
+            .unwrap_or(Instant::now());
         let mut events = Vec::with_capacity(outcome.events().len());
         let mut skipped = Vec::new();
 
         for event in outcome.events() {
             if self.stop.is_stopped() {
-                break;
+                return Ok(());
             }
 
             let budget = deadline.saturating_duration_since(Instant::now());
@@ -433,7 +435,7 @@ impl<S: StateStore> PollEngine<S> {
                 Arc::clone(&self.event_before),
                 event,
                 budget,
-                Arc::clone(&self.before_in_flight),
+                &self.before_in_flight,
             ) {
                 BeforeDecision::Keep { reason } => {
                     if let Some(reason) = reason {
