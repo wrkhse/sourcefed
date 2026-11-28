@@ -252,14 +252,19 @@ pub const HOOK_DAEMON_ERROR_REASON: &str = "event-before-daemon-error";
 
 ## Decided
 
-| Choice                                                                                    | By         | When       |
-| ----------------------------------------------------------------------------------------- | ---------- | ---------- |
-| git-pin `tack_protocol` by rev, the way tack pins barn                                    | owner      | 2026-11-28 |
-| eventBefore outcome mapping                                                               | supervisor | 2026-11-28 |
-| rustix 1.1.6 (net, event), safe API, for a deadline-bound connect; unsafe stays forbidden | owner      | 2026-11-28 |
+| Choice                                                                                                                                                                                         | By         | When       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ---------- |
+| git-pin `tack_protocol` by rev, the way tack pins barn                                                                                                                                         | owner      | 2026-11-28 |
+| eventBefore outcome mapping                                                                                                                                                                    | supervisor | 2026-11-28 |
+| rustix 1.1.6 (net, event), safe API, for a deadline-bound connect; unsafe stays forbidden                                                                                                      | owner      | 2026-11-28 |
+| socket trust: user-owned, non-group/other-writable parent dir checked with symlink_metadata before connect; no post-connect peer check (same-user writer out of scope); unsafe stays forbidden | owner      | 2026-11-28 |
 
 The connect path uses the safe `net` and `event` functions `socket_with`,
 `connect`, `poll` and `socket_error` (docs.rs/rustix/1.1.6).
+
+The post-connect peer check was declined because rustix's peer-cred API needs
+the unapproved `linux_kernel` feature; the parent-folder check closes the
+cross-user swap and symlink case on Linux and macOS.
 
 sourcefed writes its own client against tack's daemon socket.
 

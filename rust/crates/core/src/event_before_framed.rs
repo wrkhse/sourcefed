@@ -183,18 +183,32 @@ fn write_frame(
     frame: &[u8],
     deadline: Instant,
 ) -> Result<(), String> {
-    let left = io_budget(deadline)?;
-    stream
-        .set_write_timeout(Some(left))
-        .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
+    let mut written = 0;
 
-    stream.write_all(frame).map_err(|error| {
-        if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) {
-            HOOK_TIMEOUT_REASON.to_owned()
-        } else {
-            HOOK_CONNECT_REASON.to_owned()
-        }
-    })
+    while written < frame.len() {
+        let left = io_budget(deadline)?;
+        stream
+            .set_write_timeout(Some(left))
+            .map_err(|_| HOOK_CONNECT_REASON.to_owned())?;
+
+        let count = match stream.write(&frame[written..]) {
+            Ok(0) => return Err(HOOK_CONNECT_REASON.to_owned()),
+            Ok(count) => count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(HOOK_TIMEOUT_REASON.to_owned());
+            }
+            Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
+        };
+
+        written += count;
+    }
+
+    Ok(())
 }
 
 fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Result<Value, String> {
@@ -391,14 +405,17 @@ fn validate_socket(path: &Path) -> Result<(), String> {
         return Err(untrusted());
     }
 
-    let metadata = fs::metadata(path).map_err(|_| untrusted())?;
-    if !metadata.file_type().is_socket() {
+    let home = std::env::var_os("HOME").ok_or_else(untrusted)?;
+    let expected = fs::metadata(home).map_err(|_| untrusted())?.uid();
+
+    let parent = path.parent().ok_or_else(untrusted)?;
+    let parent = fs::symlink_metadata(parent).map_err(|_| untrusted())?;
+    if !parent.is_dir() || parent.uid() != expected || parent.mode() & 0o022 != 0 {
         return Err(untrusted());
     }
 
-    let home = std::env::var_os("HOME").ok_or_else(untrusted)?;
-    let expected = fs::metadata(home).map_err(|_| untrusted())?.uid();
-    if metadata.uid() != expected {
+    let metadata = fs::symlink_metadata(path).map_err(|_| untrusted())?;
+    if !metadata.file_type().is_socket() || metadata.uid() != expected {
         return Err(untrusted());
     }
 
@@ -1068,5 +1085,53 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&regular);
+    }
+
+    #[test]
+    fn a_group_or_other_writable_parent_is_untrusted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hook.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+        std::fs::set_permissions(
+            dir.path(),
+            std::fs::Permissions::from_mode(mode | 0o022),
+        )
+        .unwrap();
+
+        assert_eq!(
+            validate_socket(&socket),
+            Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_symlinked_parent_is_untrusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hook.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let link = dir.path().join("linked");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+
+        assert_eq!(
+            validate_socket(&link.join("hook.sock")),
+            Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_symlinked_socket_path_is_untrusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.sock");
+        let _listener = UnixListener::bind(&target).unwrap();
+        let link = dir.path().join("hook.sock");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            validate_socket(&link),
+            Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+        );
     }
 }
