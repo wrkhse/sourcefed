@@ -7,7 +7,11 @@ import {
 } from "@sourcefed/core";
 import { serveHttp } from "./utils";
 import { connectDaemonClient } from "./client.ts";
-import { ADMITTED_LIMIT, evictOldestAdmitted, SourcefedDaemon } from "./daemon.ts";
+import {
+  ADMITTED_LIMIT,
+  evictOldestAdmitted,
+  SourcefedDaemon,
+} from "./daemon.ts";
 import { handleDaemonHttpRequest } from "./http.ts";
 
 const target = { kind: "test", id: "session_lifecycle" };
