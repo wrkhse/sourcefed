@@ -43,8 +43,8 @@ pub mod store;
 
 pub use event::{Event, EventId, EventKind, EventSubject};
 pub use event_before::{
-    AllowAll, BeforeDecision, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore,
-    HOOK_ERROR_REASON, HOOK_TIMEOUT_REASON, decide_before,
+    AllowAll, BeforeVerdict, EVENT_BEFORE_TIMEOUT, EventBefore, HOOK_ERROR_REASON,
+    HOOK_PANIC_REASON, HOOK_TIMEOUT_REASON,
 };
 pub use monitor::{MonitorConfig, MonitorId, MonitorStatus, PollInterval};
 pub use poll::{

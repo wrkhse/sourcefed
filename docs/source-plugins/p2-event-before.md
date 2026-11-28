@@ -1,7 +1,9 @@
 # P2: eventBefore filter
 
-**Status: Planned.** A bounded verdict seam drops bot-authored events before
-they reach the store. The [source and plugin API RFC][rfc] tracks the work.
+**Status: In progress.** A bounded verdict seam drops bot-authored events before
+they reach the store. Unit tests cover the seam; no production caller uses
+`with_event_before` yet, and the end-to-end check waits for the framed client.
+The [source and plugin API RFC][rfc] tracks the work.
 
 ## You can
 
@@ -35,7 +37,8 @@ flowchart LR
 Every event carries an optional author, so a filter can name who wrote it.
 The field is `author: Option<String>` with a serde default: an event stored
 without the key loads as `None`, and older state files keep their meaning. A
-source sets the author when it builds the event.
+source sets the author when it builds the event. GitHub and Slack are
+TypeScript providers, so their author population is left for the framed slice.
 
 Files: `rust/crates/core/src/event.rs`.
 
@@ -46,8 +49,9 @@ let event = Event::new(id, kind, subject, summary, at)?
 assert_eq!(event.author(), Some("deploy-bot"));
 ```
 
-**Verified by** a wire test that an event carrying `author` round-trips and
-one stored without the key deserializes to `None`.
+**Verified by** `author_defaults_to_none_and_round_trips_when_present`: an event
+stored without `author` loads as `None`, and a present author round-trips with
+its exact wire shape.
 
 ### 2. EventBefore trait
 
@@ -55,9 +59,10 @@ A trait supplies one `BeforeVerdict` per event: `Keep` or `Drop { reason }`.
 The engine bounds each verdict with `EVENT_BEFORE_TIMEOUT`; the default hook,
 `AllowAll`, keeps every event. A hook error or a timeout keeps the event and
 logs under `HOOK_ERROR_REASON` or `HOOK_TIMEOUT_REASON`, so a filter cannot
-lose an event by failing. One trait serves every implementation: an
-in-process fake answers inline in tests, and a framed stall client talks to a
-plugin process later without a trait change.
+lose an event by failing. The hook runs on its own thread, so one that panics
+disconnects the channel and keeps the event under `HOOK_ERROR_REASON`. One
+trait serves every implementation: an in-process fake answers inline in tests
+and a framed client talks to a plugin process without a trait change.
 
 Files: `rust/crates/core/src/event_before.rs`, `rust/crates/core/src/poll.rs`,
 `rust/crates/core/src/lib.rs`.
@@ -78,45 +83,25 @@ let engine = PollEngine::new(config, source, store, clock)?
     .with_event_before(Arc::new(DropBots), EVENT_BEFORE_TIMEOUT);
 ```
 
-**Verified by** engine tests with the in-process fake: a dropped event never
-reaches the store, a kept event does, and a hook error or a timeout keeps the
-event and logs `HOOK_ERROR_REASON` or `HOOK_TIMEOUT_REASON`. A stalling fake
-proves the wait stays inside `EVENT_BEFORE_TIMEOUT`.
+**Verified by** unit tests on `decide_before` for keep, drop, error and timeout,
+and poll engine tests that check the seen ledger and pending queue: a dropped
+event is neither seen nor pending, while a kept event survives a store reopen.
+A blocking hook keeps the event at a shortened deadline.
 
-### 3. Plugin data
+### 3. Framed plugin client
 
-`plugin.luau` and `types/sourcefed.d.luau` ship as data files. sourcefed has
-no Luau runtime: it never loads or executes them. The declaration fixes the
-`BeforeVerdict` wire names for the framed client that implements the trait
-later; the Rust `BeforeVerdict` and the Luau declaration stay in step.
-
-Files: `plugins/quiet-bots/plugin.luau`, `types/sourcefed.d.luau`.
-
-```luau
-function plugin.eventBefore(event: Event): BeforeVerdict
-  local author = event.author
-
-  if author ~= nil and BOT_AUTHORS[author] then
-    return { kind = "drop", reason = "bot author" }
-  end
-
-  return { kind = "keep" }
-end
-```
-
-**Verified by** a data test that reads both files and checks their verdict
-names match `BeforeVerdict::Keep` and `BeforeVerdict::Drop`, and a Cargo check
-that the core crate declares no Luau runtime dependency.
+The client that implements `EventBefore` over a framed protocol belongs to the
+framed proof against tack's SDK. It owns the `BeforeVerdict` wire names and the
+plugin entry point; no files for it live here.
 
 ## End to end
 
 - The `rust` job runs `cargo fmt --check`, `cargo deny`, clippy with warnings
   denied, nextest, doc tests and the docs build on the final tree.
 - Mutation testing over the changed Rust files catches every viable mutant.
-- Unit tests drive the seam with the in-process fake: one bot-authored event
-  is dropped and one normal event is committed through the real poll engine.
-- The built `sourcefed-core` `follow` command, run against a source that
-  reports both events, prints only the kept event as NDJSON; the dropped
-  author appears in the log with its reason name.
+- Unit tests drive the seam with in-process hooks: a bot-authored event is
+  dropped and a normal event is committed through the real poll engine.
+- The end-to-end check waits for the framed client, which lands with the framed
+  proof.
 
 [rfc]: https://github.com/wrkhse/sourcefed/issues/56

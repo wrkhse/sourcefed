@@ -178,11 +178,13 @@ impl State {
         &mut self,
         key: &PositionKey,
         events: &[Event],
+        skipped: &[EventId],
     ) -> Result<usize, StoreError> {
         let known = self.seen.get(key);
         let mut distinct = BTreeSet::new();
         let mut repeats = Vec::new();
         let mut fresh = Vec::new();
+        let mut fresh_skipped = Vec::new();
         let pending_count = self.pending.get(key).map_or(0, VecDeque::len);
         let pending_budget = (
             MAX_PENDING_EVENTS.saturating_sub(pending_count),
@@ -211,6 +213,19 @@ impl State {
             }
         }
 
+        // Skipped IDs are remembered without entering the pending queue.
+        for id in skipped {
+            if !distinct.insert(id) {
+                continue;
+            }
+
+            if known.is_some_and(|seen| seen.contains(id)) {
+                repeats.push(id);
+            } else {
+                fresh_skipped.push(id);
+            }
+        }
+
         if distinct.is_empty() {
             return Ok(0);
         }
@@ -226,19 +241,22 @@ impl State {
             seen.push_back(id.clone());
         }
 
-        if fresh.is_empty() {
+        if fresh.is_empty() && fresh_skipped.is_empty() {
             return Ok(0);
         }
 
         let new_count = fresh.len();
-        let pending = self.pending.entry(key.clone()).or_default();
+        let added = new_count.saturating_add(fresh_skipped.len());
         let evictions = seen
             .len()
-            .saturating_add(new_count)
+            .saturating_add(added)
             .saturating_sub(MAX_SEEN_IDS);
 
         if evictions != 0 {
-            let pending_ids: BTreeSet<_> = pending.iter().map(Event::id).collect();
+            let pending_ids: BTreeSet<_> =
+                self.pending.get(key).map_or_else(BTreeSet::new, |queue| {
+                    queue.iter().map(Event::id).collect()
+                });
 
             for _ in 0..evictions {
                 let index = seen
@@ -252,9 +270,19 @@ impl State {
             }
         }
 
-        for event in fresh {
+        for event in &fresh {
             seen.push_back(event.id().clone());
-            pending.push_back(event.clone());
+        }
+        for id in fresh_skipped {
+            seen.push_back(id.clone());
+        }
+
+        if new_count != 0 {
+            let pending = self.pending.entry(key.clone()).or_default();
+
+            for event in fresh {
+                pending.push_back(event.clone());
+            }
         }
 
         Ok(new_count)
@@ -445,6 +473,24 @@ impl Store {
         position: Position,
         events: &[Event],
     ) -> Result<usize, StoreError> {
+        self.commit_with_skipped(key, position, events, &[])
+    }
+
+    /// Saves the position, fresh events and skipped IDs together.
+    ///
+    /// Skipped IDs enter the seen ledger without entering the pending queue,
+    /// so a source that reports one again is treated as a repeat. All other
+    /// rules match [Self::commit].
+    ///
+    /// # Errors
+    /// Returns the same errors as [Self::commit].
+    pub fn commit_with_skipped(
+        &mut self,
+        key: PositionKey,
+        position: Position,
+        events: &[Event],
+        skipped: &[EventId],
+    ) -> Result<usize, StoreError> {
         if self.state.positions.len() == MAX_POSITIONS
             && !self.state.positions.contains_key(&key)
         {
@@ -454,7 +500,7 @@ impl Store {
         }
 
         let mut state = self.state.clone();
-        let count = state.record(&key, events)?;
+        let count = state.record(&key, events, skipped)?;
         state.positions.insert(key, position);
         self.persist(state)?;
 
@@ -565,6 +611,25 @@ pub trait StateStore: Send + Sync {
         position: Position,
         events: &[Event],
     ) -> Result<usize, StoreError>;
+
+    /// Saves the position, fresh events and skipped IDs together.
+    ///
+    /// Skipped IDs enter the seen ledger without entering the pending queue,
+    /// so a source that reports one again is treated as a repeat. Stores that
+    /// cannot separate skipped IDs keep the behaviour of [Self::commit].
+    ///
+    /// # Errors
+    /// Returns the same errors as [Self::commit].
+    fn commit_with_skipped(
+        &mut self,
+        key: PositionKey,
+        position: Position,
+        events: &[Event],
+        skipped: &[EventId],
+    ) -> Result<usize, StoreError> {
+        let _ = skipped;
+        self.commit(key, position, events)
+    }
 }
 
 impl StateStore for Store {
@@ -595,6 +660,16 @@ impl StateStore for Store {
         events: &[Event],
     ) -> Result<usize, StoreError> {
         Self::commit(self, key, position, events)
+    }
+
+    fn commit_with_skipped(
+        &mut self,
+        key: PositionKey,
+        position: Position,
+        events: &[Event],
+        skipped: &[EventId],
+    ) -> Result<usize, StoreError> {
+        Self::commit_with_skipped(self, key, position, events, skipped)
     }
 }
 
@@ -846,6 +921,57 @@ mod tests {
             ),
             (true, false)
         );
+    }
+
+    #[test]
+    fn a_skipped_id_is_seen_but_not_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = key(1);
+        let dropped = event("dropped".into());
+        let kept = event("kept".into());
+        let mut store = Store::open(dir.path()).unwrap();
+
+        assert_eq!(
+            store
+                .commit_with_skipped(
+                    key.clone(),
+                    cursor(),
+                    std::slice::from_ref(&kept),
+                    std::slice::from_ref(dropped.id()),
+                )
+                .unwrap(),
+            1
+        );
+        assert!(store.is_seen(&key, dropped.id()));
+        assert_eq!(store.pending(&key), Some(&VecDeque::from([kept])));
+    }
+
+    #[test]
+    fn a_reported_skipped_id_is_treated_as_a_repeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = key(1);
+        let dropped = event("dropped".into());
+        let mut store = Store::open(dir.path()).unwrap();
+
+        assert_eq!(
+            store
+                .commit_with_skipped(
+                    key.clone(),
+                    cursor(),
+                    &[],
+                    std::slice::from_ref(dropped.id()),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .commit(key.clone(), cursor(), std::slice::from_ref(&dropped))
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.pending(&key), None);
+        assert!(store.is_seen(&key, dropped.id()));
     }
 
     fn trait_seen<S: StateStore>(
