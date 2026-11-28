@@ -102,6 +102,19 @@ The client that implements `EventBefore` over a framed protocol belongs to the
 framed proof against tack's SDK. It owns the `BeforeVerdict` wire names and the
 plugin entry point; no files for it live here.
 
+## Decided
+
+| Choice             | Decision                                               | By    | When       |
+| ------------------ | ------------------------------------------------------ | ----- | ---------- |
+| eventBefore client | git-pin `tack_protocol` by rev, the way tack pins barn | owner | 2026-11-28 |
+
+The dependency is the `tack_protocol` crate (`crates/protocol` in wrkhse/tack),
+git-pinned by rev the same way tack pins barn. sourcefed writes its own small
+framed client against tack's daemon socket in a later PR; there is no
+tack-client crate, and sourcefed never launches barn. The in-process seam
+lands first; the framed client implements the same `EventBefore` trait once
+tack's SDK and barn's engine are in.
+
 ## End to end
 
 - The `rust` job runs `cargo fmt --check`, `cargo deny`, clippy with warnings
