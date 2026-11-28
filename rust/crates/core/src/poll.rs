@@ -452,13 +452,10 @@ impl<S: StateStore> PollEngine<S> {
                         let mut fields = event.annotations().clone();
                         fields.extend(annotations.into_inner());
 
-                        match event.with_annotations(fields) {
-                            Ok(kept) => kept,
-                            Err(_) => {
-                                reason = Some(HOOK_ANNOTATIONS_REASON.into());
-                                event.clone()
-                            }
-                        }
+                        event.with_annotations(fields).unwrap_or_else(|_| {
+                            reason = Some(HOOK_ANNOTATIONS_REASON.into());
+                            event.clone()
+                        })
                     };
 
                     if let Some(reason) = reason {

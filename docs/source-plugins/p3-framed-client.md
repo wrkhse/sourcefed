@@ -59,7 +59,9 @@ The client adds `BeforeVerdict::Annotate` and a bounded, backward-compatible
 `Event.annotations` map with validated keys and values. `EventBefore` stays
 unchanged for existing callers: the `budget` argument, `#[non_exhaustive]`
 on `BeforeVerdict` and the `AllowAll` hook stay.
-Every failure keeps the event with a named reason: timeout, connect error,
+An explicit `deny` always drops: a missing, control-containing or oversized
+wire reason becomes the named reason `plugin-deny:<plugin>:invalid-reason`.
+Other failures keep the event with a named reason: timeout, connect error,
 decode error, peer closed, daemon error, version or id mismatch, invalid
 annotations, a refused rewrite, or an unknown outcome kind.
 
@@ -107,8 +109,10 @@ The joint proof waits on tack#23 PR4.
 | Unknown outcome kind  | Keep with its own named reason, logged and counted   |
 | Boundary failure      | Keep with its own named reason, logged and counted   |
 
-Wire `drop` carries no reason. Boundary failures include timeout, connect
-error, decode error, peer closed, and version or id mismatch.
+Wire `drop` carries no reason. An explicit `deny` always drops, using
+`plugin-deny:<plugin>:invalid-reason` when the wire reason is malformed.
+Boundary failures include timeout, connect error, decode error, peer closed,
+and version or id mismatch.
 
 **Verified by** `allow_keeps_the_event_and_sends_the_hook_request`,
 `drop_reports_the_hook_name`, `deny_reports_the_hook_name_and_the_reason`,

@@ -22,9 +22,8 @@ use crate::{
     BeforeVerdict, EventBefore, HOOK_ANNOTATION_TYPE_REASON,
     HOOK_ANNOTATIONS_REASON, HOOK_CONNECT_REASON, HOOK_DAEMON_ERROR_REASON,
     HOOK_DECODE_REASON, HOOK_ENCODE_REASON, HOOK_ID_REASON, HOOK_PEER_CLOSED_REASON,
-    HOOK_REASON_INVALID_REASON, HOOK_REWRITE_REFUSED_REASON,
-    HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON,
-    HOOK_VERSION_REASON, validate_text,
+    HOOK_REWRITE_REFUSED_REASON, HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON,
+    HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON, validate_text,
 };
 
 /// Longest wire deny reason accepted before it is logged.
@@ -106,8 +105,16 @@ impl FramedEventBefore {
                 reason: format!("plugin-drop:{}", self.hook_name),
             }),
             Outcome::Deny { reason } => {
-                validate_text(&reason, "plugin reason", MAX_PLUGIN_REASON_LEN)
-                    .map_err(|_| HOOK_REASON_INVALID_REASON.to_owned())?;
+                if validate_text(&reason, "plugin reason", MAX_PLUGIN_REASON_LEN)
+                    .is_err()
+                {
+                    return Ok(BeforeVerdict::Drop {
+                        reason: format!(
+                            "plugin-deny:{}:invalid-reason",
+                            self.hook_name,
+                        ),
+                    });
+                }
 
                 Ok(BeforeVerdict::Drop {
                     reason: format!("plugin-deny:{}:{}", self.hook_name, reason),
@@ -322,10 +329,9 @@ mod tests {
         BeforeVerdict, Event, EventBefore, EventId, EventKind, EventSubject,
         HOOK_ANNOTATION_TYPE_REASON, HOOK_ANNOTATIONS_REASON,
         HOOK_DAEMON_ERROR_REASON, HOOK_DECODE_REASON, HOOK_ID_REASON,
-        HOOK_PEER_CLOSED_REASON, HOOK_REASON_INVALID_REASON,
-        HOOK_REWRITE_REFUSED_REASON, HOOK_SOCKET_UNTRUSTED_REASON,
-        HOOK_TIMEOUT_REASON, HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON,
-        SourceName,
+        HOOK_PEER_CLOSED_REASON, HOOK_REWRITE_REFUSED_REASON,
+        HOOK_SOCKET_UNTRUSTED_REASON, HOOK_TIMEOUT_REASON,
+        HOOK_UNKNOWN_OUTCOME_REASON, HOOK_VERSION_REASON, SourceName,
     };
     use tack_protocol::wire::{
         MAX_FRAME_BYTES, PROTOCOL_VERSION, Request, ToolCall, encode_line, read_line,
@@ -500,7 +506,12 @@ mod tests {
         let verdict = client.verdict(&event(), BUDGET);
 
         worker.join().unwrap();
-        assert_eq!(verdict, Err(HOOK_REASON_INVALID_REASON.to_owned()));
+        assert_eq!(
+            verdict,
+            Ok(BeforeVerdict::Drop {
+                reason: "plugin-deny:quiet-bots:invalid-reason".into(),
+            })
+        );
     }
 
     #[test]
@@ -517,7 +528,12 @@ mod tests {
         let verdict = client.verdict(&event(), BUDGET);
 
         worker.join().unwrap();
-        assert_eq!(verdict, Err(HOOK_REASON_INVALID_REASON.to_owned()));
+        assert_eq!(
+            verdict,
+            Ok(BeforeVerdict::Drop {
+                reason: "plugin-deny:quiet-bots:invalid-reason".into(),
+            })
+        );
     }
 
     #[test]
