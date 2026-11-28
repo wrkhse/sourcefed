@@ -65,10 +65,9 @@ Other failures keep the event with a named reason: timeout, connect error,
 decode error, peer closed, daemon error, version or id mismatch, invalid
 annotations, a refused rewrite, or an unknown outcome kind.
 
-Files: `rust/crates/core/src/event_before_framed.rs`,
-`rust/crates/core/src/event.rs`,
-`rust/crates/core/src/lib.rs`, and
-`rust/crates/core/tests/event_before_framed.rs` for local socket tests.
+Files: `rust/crates/core/src/event_before_framed.rs` (implementation and its
+`#[cfg(test)]` module of local socket tests), `rust/crates/core/src/event.rs`,
+and `rust/crates/core/src/lib.rs`.
 
 ```rust
 let hook = FramedEventBefore::new(socket_path, hook_name);
