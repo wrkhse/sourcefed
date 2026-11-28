@@ -506,3 +506,65 @@ jobs:
             echo "- tested: ${TOTAL_MUTANTS:-unknown}"
             echo "- caught: ${CAUGHT_MUTANTS:-unknown}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  drain-loop:
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = \(.*\)/\1/p' rust-toolchain.toml)
+          channel=${channel//\"/}
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: ${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+          workspaces: "rust -> target"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
+        with:
+          tool: cargo-nextest@0.9.152,cargo-deny@0.22.0
+      - name: Full-queue drain 50x
+        shell: bash
+        run: |
+          set -uo pipefail
+          failures=0
+          for i in $(seq 1 50); do
+            echo "iteration $i"
+            if output=$(cargo test -p sourcefed-cli --lib --locked -- \
+              --exact 'tests::finish_applies_a_full_queue_the_reader_left_when_the_run_ends' 2>&1); then
+              status=0
+            else
+              status=$?
+            fi
+            echo "$output"
+            if [ "$status" -ne 0 ]; then
+              echo "iteration $i failed (exit=$status)"
+              failures=$((failures + 1))
+            elif ! printf '%s\n' "$output" | grep -Fq '1 passed; 0 failed'; then
+              echo "iteration $i failed (test did not run: no '1 passed; 0 failed' in output)"
+              failures=$((failures + 1))
+            fi
+          done
+
+          pct=$((failures * 100 / 50))
+          summary="drain loop: $failures/50 failed ($pct%)"
+          echo "$summary"
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$failures" -gt 0 ]; then
+            exit 1
+          fi
