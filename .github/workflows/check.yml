@@ -29,6 +29,9 @@ jobs:
           CHAUFFEUR_TARBALL: https://github.com/wrkhse/chauffeur/releases/download/v1.0.0-rc.5/chauffeur-1.0.0-rc.5-linux-x64.tar.gz
           CHAUFFEUR_SHA256: 4f192618ccfa921ccd9540ad1a20f2da400d962b62513611bc07cbbecf3c717f
       - run: npm run check
+      - name: "Proof: deliberate failure"
+        shell: bash
+        run: exit 1
 
   pi-integration:
     name: Pi integration
