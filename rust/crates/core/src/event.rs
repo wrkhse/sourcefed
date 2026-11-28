@@ -721,11 +721,17 @@ mod tests {
                 "y".repeat(MAX_ANNOTATION_VALUE_LEN),
             ),
         ]);
+        let at_limit: BTreeMap<String, String> = (0..MAX_ANNOTATIONS)
+            .map(|index| (format!("key-{index}"), "value".to_owned()))
+            .collect();
         let annotated = event.with_annotations(fields.clone()).unwrap();
+        let at_limit_annotated = event.with_annotations(at_limit.clone()).unwrap();
 
         assert_eq!(annotated.annotations(), &fields);
         assert_eq!(event.annotations(), &BTreeMap::new());
         assert_eq!(annotated, event);
+        assert_eq!(at_limit_annotated.annotations(), &at_limit);
+        assert_eq!(at_limit_annotated.annotations().len(), MAX_ANNOTATIONS);
     }
 
     #[test]
