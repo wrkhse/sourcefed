@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Write};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -269,8 +269,6 @@ fn connect_bounded(path: &Path, deadline: Instant) -> Result<UnixStream, String>
     };
     let _ = worker.join();
 
-    verify_owner(&stream)?;
-
     Ok(stream)
 }
 
@@ -286,16 +284,9 @@ fn validate_socket(path: &Path) -> Result<(), String> {
         return Err(untrusted());
     }
 
-    Ok(())
-}
-
-fn verify_owner(stream: &UnixStream) -> Result<(), String> {
-    let untrusted = || HOOK_SOCKET_UNTRUSTED_REASON.to_owned();
-    let (local, _peer) = UnixStream::pair().map_err(|_| untrusted())?;
-    let expected = local.peer_cred().map_err(|_| untrusted())?;
-    let actual = stream.peer_cred().map_err(|_| untrusted())?;
-
-    if actual.uid() != expected.uid() {
+    let home = std::env::var_os("HOME").ok_or_else(untrusted)?;
+    let expected = fs::metadata(home).map_err(|_| untrusted())?.uid();
+    if metadata.uid() != expected {
         return Err(untrusted());
     }
 
@@ -332,5 +323,32 @@ mod tests {
             exchange_stream(&mut client, frame, deadline),
             Err(HOOK_CONNECT_REASON.to_owned())
         );
+    }
+
+    #[test]
+    fn a_regular_file_and_a_missing_path_are_untrusted() {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir();
+        let regular = dir.join(format!(
+            "event-before-regular-{}-{suffix}.tmp",
+            std::process::id()
+        ));
+        let missing = dir.join(format!(
+            "event-before-missing-{}-{suffix}.sock",
+            std::process::id()
+        ));
+        std::fs::write(&regular, b"x").unwrap();
+
+        assert_eq!(
+            validate_socket(&regular),
+            Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+        );
+        assert_eq!(
+            validate_socket(&missing),
+            Err(HOOK_SOCKET_UNTRUSTED_REASON.to_owned())
+        );
+
+        let _ = std::fs::remove_file(&regular);
     }
 }
