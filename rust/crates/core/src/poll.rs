@@ -453,7 +453,7 @@ impl<S: StateStore> PollEngine<S> {
                         let hook_fields = annotations.into_inner();
                         let room = MAX_ANNOTATIONS.saturating_sub(fields.len());
 
-                        reason = Some(HOOK_ANNOTATIONS_REASON.into());
+                        reason = merge_annotations_reason(hook_fields.len(), room);
                         fields.extend(hook_fields.into_iter().take(room));
 
                         event.with_annotations(fields).unwrap_or_else(|_| {
@@ -498,6 +498,14 @@ impl<S: StateStore> PollEngine<S> {
 
         Ok(())
     }
+}
+
+// The reason is logged only when hook fields exceed the room that fits.
+fn merge_annotations_reason(hook_count: usize, room: usize) -> Option<String> {
+    hook_count
+        .checked_sub(room)
+        .and_then(std::num::NonZeroUsize::new)
+        .map(|_| HOOK_ANNOTATIONS_REASON.into())
 }
 
 #[cfg(test)]
@@ -1599,6 +1607,16 @@ mod tests {
         assert_eq!(pending[0].annotations(), &expected);
         assert_eq!(pending[0].annotations().len(), MAX_ANNOTATIONS - 1);
         assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn merge_annotations_reason_names_only_the_overflow() {
+        assert_eq!(merge_annotations_reason(2, 2), None);
+        assert_eq!(merge_annotations_reason(1, 2), None);
+        assert_eq!(
+            merge_annotations_reason(3, 2),
+            Some(HOOK_ANNOTATIONS_REASON.to_owned())
+        );
     }
 
     #[test]

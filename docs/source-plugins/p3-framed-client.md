@@ -113,7 +113,7 @@ The joint proof waits on tack#23 PR4.
 
 When an `Annotate` verdict exceeds `MAX_ANNOTATIONS` on an already-annotated
 event, the engine applies the fields that fit and logs
-`HOOK_ANNOTATIONS_REASON`.
+`HOOK_ANNOTATIONS_REASON`. A merge where every field fits logs no reason.
 
 Wire `drop` carries no reason. An explicit `deny` always drops, using
 `plugin-deny:<plugin>:invalid-reason` when the wire reason is malformed.
