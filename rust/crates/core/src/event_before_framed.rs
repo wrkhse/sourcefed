@@ -361,9 +361,12 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
 
         match socket_error(fd) {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(Errno::AGAIN | Errno::INPROGRESS | Errno::CONNREFUSED)) => {
+            Ok(Err(Errno::AGAIN | Errno::INPROGRESS)) => {
                 let _ = remaining(deadline)
                     .map_err(|_| HOOK_CONNECT_TIMEOUT_REASON.to_owned())?;
+            }
+            Ok(Err(Errno::CONNREFUSED)) => {
+                return Err(HOOK_CONNECT_TIMEOUT_REASON.to_owned());
             }
             Ok(Err(_)) | Err(_) => return Err(HOOK_CONNECT_REASON.to_owned()),
         }

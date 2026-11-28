@@ -105,8 +105,9 @@ not pending in both `Store` and the sim `MemoryStore`.
 
 The client implements `EventBefore` over tack's daemon socket using the
 git-pinned `tack_protocol` crate. sourcefed writes the small framed client
-itself, no tack-client crate and no plugin entry point here; no files for it
-live in this slice.
+itself, no tack-client crate and no plugin entry point here. The client lives
+in P3's `rust/crates/core/src/event_before_framed.rs`; this P2 page owns only
+the in-process seam.
 
 ## Decided
 
@@ -118,8 +119,8 @@ The dependency is the `tack_protocol` crate (`crates/protocol` in wrkhse/tack),
 git-pinned by rev the same way tack pins barn. sourcefed writes its own small
 framed client against tack's daemon socket in P3; there is no
 tack-client crate, and sourcefed never launches barn. The in-process seam
-lands first; the framed client implements the same `EventBefore` trait once
-tack's daemon hook and barn's engine are in.
+lands first; the framed client lands in P3, and only the joint real-socket
+proof waits on tack#23 PR4.
 
 ## End to end
 

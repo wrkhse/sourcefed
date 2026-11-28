@@ -712,6 +712,11 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_validated_annotations_is_empty() {
+        assert!(ValidatedAnnotations::default().is_empty());
+    }
+
+    #[test]
     fn with_annotations_accepts_bounded_fields() {
         let event = deploy_event();
         let fields = BTreeMap::from([
