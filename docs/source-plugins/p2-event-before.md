@@ -38,7 +38,8 @@ Every event carries an optional author, so a filter can name who wrote it.
 The field is `author: Option<String>` with a serde default: an event stored
 without the key loads as `None`, and older state files keep their meaning. A
 source sets the author when it builds the event. GitHub and Slack are
-TypeScript providers, so their author population is left for the framed slice.
+TypeScript providers today; #56 ports sources to Luau tables in barn stalls,
+so author population follows the github-issues and Slack ports.
 
 Files: `rust/crates/core/src/event.rs`.
 
@@ -118,7 +119,7 @@ git-pinned by rev the same way tack pins barn. sourcefed writes its own small
 framed client against tack's daemon socket in a later PR; there is no
 tack-client crate, and sourcefed never launches barn. The in-process seam
 lands first; the framed client implements the same `EventBefore` trait once
-tack's SDK and barn's engine are in.
+tack's daemon hook and barn's engine are in.
 
 ## End to end
 
