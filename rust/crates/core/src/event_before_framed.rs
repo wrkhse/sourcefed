@@ -412,17 +412,17 @@ fn wait_for_connect(fd: &OwnedFd, deadline: Instant) -> Result<(), String> {
 }
 
 // True when poll reported no ready descriptors before the deadline.
-fn poll_timed_out(ready: usize) -> bool {
+const fn poll_timed_out(ready: usize) -> bool {
     ready == 0
 }
 
 // True when the polled events say the connect still needs more waiting.
-fn revents_need_more_wait(revents: PollFlags) -> bool {
+const fn revents_need_more_wait(revents: PollFlags) -> bool {
     !revents.intersects(PollFlags::OUT.union(PollFlags::ERR).union(PollFlags::HUP))
 }
 
 // True only while the connect is still in flight.
-fn retryable_connected_socket_error(errno: Errno) -> bool {
+const fn retryable_connected_socket_error(errno: Errno) -> bool {
     matches!(errno, Errno::AGAIN | Errno::INPROGRESS)
 }
 
