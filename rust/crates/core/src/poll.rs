@@ -8,9 +8,9 @@ use jiff::Timestamp;
 use crate::event_before::{BeforeDecision, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
-    AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId, ModelError,
-    MonitorConfig, Next, PollOutcome, PollRequest, PositionKey, Source, StateStore,
-    Store, StoreError,
+    AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId,
+    HOOK_ANNOTATIONS_REASON, ModelError, MonitorConfig, Next, PollOutcome,
+    PollRequest, PositionKey, Source, StateStore, Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -441,13 +441,24 @@ impl<S: StateStore> PollEngine<S> {
                 &self.before_in_flight,
             ) {
                 BeforeDecision::Keep {
-                    reason,
+                    mut reason,
                     annotations,
                 } => {
                     let kept = if annotations.is_empty() {
                         event.clone()
-                    } else {
+                    } else if event.annotations().is_empty() {
                         event.with_validated_annotations(annotations)
+                    } else {
+                        let mut fields = event.annotations().clone();
+                        fields.extend(annotations.into_inner());
+
+                        match event.with_annotations(fields) {
+                            Ok(kept) => kept,
+                            Err(_) => {
+                                reason = Some(HOOK_ANNOTATIONS_REASON.into());
+                                event.clone()
+                            }
+                        }
                     };
 
                     if let Some(reason) = reason {
@@ -1451,6 +1462,41 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id(), fired.id());
         assert_eq!(pending[0].annotations(), &fields);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn an_annotating_hook_merges_fields_into_existing_annotations() {
+        let old_fields = BTreeMap::from([
+            ("agent".to_owned(), "deploy-bot".to_owned()),
+            ("env".to_owned(), "prod".to_owned()),
+        ]);
+        let new_fields = BTreeMap::from([
+            ("reviewer".to_owned(), "alice".to_owned()),
+            ("env".to_owned(), "staging".to_owned()),
+        ]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(old_fields).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(AnnotatingHook(new_fields)),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(
+            pending[0].annotations(),
+            &BTreeMap::from([
+                ("agent".to_owned(), "deploy-bot".to_owned()),
+                ("env".to_owned(), "staging".to_owned()),
+                ("reviewer".to_owned(), "alice".to_owned()),
+            ])
+        );
         assert!(f.engine.store.is_seen(&key(), fired.id()));
     }
 
