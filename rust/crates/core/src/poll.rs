@@ -1,14 +1,16 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use jiff::Timestamp;
 
+use crate::event_before::{BeforeDecision, decide_before};
 pub use crate::store::MAX_PENDING_EVENTS;
 use crate::{
-    Event, EventId, ModelError, MonitorConfig, Next, PollOutcome, PollRequest,
-    PositionKey, Source, StateStore, Store, StoreError,
+    AllowAll, EVENT_BEFORE_TIMEOUT, Event, EventBefore, EventId, ModelError,
+    MonitorConfig, Next, PollOutcome, PollRequest, PositionKey, Source, StateStore,
+    Store, StoreError,
 };
 
 /// Maximum number of seconds the engine sleeps before checking for a stop.
@@ -199,6 +201,9 @@ pub struct PollEngine<S = Store> {
     schedule: Schedule,
     backoff: Backoff,
     stop: StopHandle,
+    event_before: Arc<dyn EventBefore>,
+    event_before_timeout: Duration,
+    before_in_flight: Arc<AtomicBool>,
 }
 
 impl<S: StateStore> PollEngine<S> {
@@ -246,7 +251,26 @@ impl<S: StateStore> PollEngine<S> {
             schedule,
             backoff,
             stop: StopHandle::default(),
+            event_before: Arc::new(AllowAll),
+            event_before_timeout: EVENT_BEFORE_TIMEOUT,
+            before_in_flight: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Uses the supplied hook to decide which events reach the store, allowing
+    /// at most `EVENT_BEFORE_TIMEOUT` for all verdicts in one commit; the
+    /// remaining budget passes to each hook. An error or a timeout keeps the
+    /// event with a named reason in the log.
+    #[must_use]
+    pub fn with_event_before(
+        mut self,
+        before: Arc<dyn EventBefore>,
+        timeout: Duration,
+    ) -> Self {
+        self.event_before = before;
+        self.event_before_timeout = timeout.min(EVENT_BEFORE_TIMEOUT);
+
+        self
     }
 
     /// Returns a handle that can request a stop from another thread.
@@ -395,10 +419,54 @@ impl<S: StateStore> PollEngine<S> {
     }
 
     fn commit(&mut self, outcome: &PollOutcome) -> Result<(), StoreError> {
-        self.store.commit(
+        let deadline = Instant::now()
+            .checked_add(self.event_before_timeout)
+            .unwrap_or_else(Instant::now);
+        let mut events = Vec::with_capacity(outcome.events().len());
+        let mut skipped = Vec::new();
+
+        for event in outcome.events() {
+            if self.stop.is_stopped() {
+                self.schedule = Schedule::Stopped;
+
+                return Ok(());
+            }
+
+            let budget = deadline.saturating_duration_since(Instant::now());
+
+            match decide_before(
+                Arc::clone(&self.event_before),
+                event,
+                budget,
+                &self.before_in_flight,
+            ) {
+                BeforeDecision::Keep { reason } => {
+                    if let Some(reason) = reason {
+                        tracing::warn!(
+                            reason = %reason,
+                            event_id = %event.id().as_str(),
+                            "event kept after event before failure"
+                        );
+                    }
+
+                    events.push(event.clone());
+                }
+                BeforeDecision::Drop { reason } => {
+                    tracing::info!(
+                        reason = %reason,
+                        event_id = %event.id().as_str(),
+                        "event dropped before commit"
+                    );
+                    skipped.push(event.id().clone());
+                }
+            }
+        }
+
+        self.store.commit_with_skipped(
             self.key.clone(),
             outcome.position().clone(),
-            outcome.events(),
+            &events,
+            &skipped,
         )?;
 
         self.backoff.succeed();
@@ -419,9 +487,11 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::event_before::support::{
+        BlockingHook, BotFilter, FailingHook, event,
+    };
     use crate::{
-        EventKind, EventSubject, MonitorId, PollError, PollInterval, Position,
-        SourceName,
+        BeforeVerdict, MonitorId, PollError, PollInterval, Position, SourceName,
     };
 
     #[derive(Default)]
@@ -484,6 +554,20 @@ mod tests {
 
     impl Fixture {
         fn new(interval: u64, results: Vec<Result<PollOutcome, PollError>>) -> Self {
+            Self::with_hook(
+                interval,
+                results,
+                Arc::new(AllowAll),
+                EVENT_BEFORE_TIMEOUT,
+            )
+        }
+
+        fn with_hook(
+            interval: u64,
+            results: Vec<Result<PollOutcome, PollError>>,
+            before: Arc<dyn EventBefore>,
+            timeout: Duration,
+        ) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let store = Store::open(dir.path()).unwrap();
             let clock = Arc::new(FakeClock::default());
@@ -500,7 +584,8 @@ mod tests {
             };
             let engine =
                 PollEngine::new(config, source.clone(), store, clock.clone())
-                    .unwrap();
+                    .unwrap()
+                    .with_event_before(before, timeout);
 
             Self {
                 engine,
@@ -542,17 +627,8 @@ mod tests {
         PollOutcome::new(Vec::new(), cursor(), next).unwrap()
     }
 
-    fn event(id: &str) -> Event {
-        let subject = EventSubject::new(timer(), "subject".into()).unwrap();
-
-        Event::new(
-            EventId::new(id.into()).unwrap(),
-            EventKind::TimerFired,
-            subject,
-            "fired".into(),
-            at(0),
-        )
-        .unwrap()
+    fn authored_event(id: &str, author: &str) -> Event {
+        event(id, Some(author))
     }
 
     #[test]
@@ -834,9 +910,9 @@ mod tests {
     #[test]
     fn a_full_durable_queue_makes_the_engine_refuse_a_commit_with_too_many() {
         let initial: Vec<_> = (0..MAX_PENDING_EVENTS)
-            .map(|index| event(&format!("event-{index}")))
+            .map(|index| event(&format!("event-{index}"), None))
             .collect();
-        let fresh = event("overflow");
+        let fresh = event("overflow", None);
         let next = Position::new("next".into()).unwrap();
         let result = PollOutcome::new(vec![fresh.clone()], next, Next::Done);
         let mut f = Fixture::new(5, vec![Ok(result.unwrap())]);
@@ -886,9 +962,9 @@ mod tests {
 
     #[test]
     fn pending_keeps_only_new_events_in_their_original_order() {
-        let first = event("first");
-        let second = event("second");
-        let third = event("third");
+        let first = event("first", None);
+        let second = event("second", None);
+        let third = event("third", None);
         let initial = vec![first.clone(), first.clone()];
         let later = vec![third.clone(), first.clone(), second.clone()];
         let mut f = Fixture::new(
@@ -907,9 +983,9 @@ mod tests {
 
     #[test]
     fn ack_removes_only_matching_events_from_the_engines_key() {
-        let first = event("first");
-        let shared = event("shared");
-        let last = event("last");
+        let first = event("first", None);
+        let shared = event("shared", None);
+        let last = event("last", None);
         let batch = vec![first.clone(), shared.clone(), last.clone()];
         let outcome = PollOutcome::new(batch, cursor(), Next::Done).unwrap();
         let mut f = Fixture::new(5, vec![Ok(outcome)]);
@@ -946,9 +1022,9 @@ mod tests {
     #[test]
     fn pending_overflow_leaves_the_schedule_and_store_unchanged() {
         let initial: Vec<_> = (0..MAX_PENDING_EVENTS)
-            .map(|index| event(&format!("event-{index}")))
+            .map(|index| event(&format!("event-{index}"), None))
             .collect();
-        let fresh = event("overflow");
+        let fresh = event("overflow", None);
         let next = Position::new("next".into()).unwrap();
         let overflow = PollOutcome::new(vec![fresh.clone()], next, Next::Done);
         let mut f = Fixture::new(5, vec![Ok(overflow.unwrap())]);
@@ -980,7 +1056,7 @@ mod tests {
 
     #[test]
     fn a_finished_engines_position_and_pending_events_survive_reopen() {
-        let events = vec![event("first"), event("second")];
+        let events = vec![event("first", None), event("second", None)];
         let outcome = PollOutcome::new(events.clone(), cursor(), Next::Done);
         let mut f = Fixture::new(5, vec![Ok(outcome.unwrap())]);
 
@@ -1058,6 +1134,23 @@ mod tests {
             self.commits.fetch_add(1, Ordering::Relaxed);
             StateStore::commit(&mut self.inner, key, position, events)
         }
+
+        fn commit_with_skipped(
+            &mut self,
+            key: PositionKey,
+            position: Position,
+            events: &[Event],
+            skipped: &[EventId],
+        ) -> Result<usize, StoreError> {
+            self.commits.fetch_add(1, Ordering::Relaxed);
+            StateStore::commit_with_skipped(
+                &mut self.inner,
+                key,
+                position,
+                events,
+                skipped,
+            )
+        }
     }
 
     #[test]
@@ -1071,7 +1164,7 @@ mod tests {
             acks: acks.clone(),
         };
         let clock = Arc::new(FakeClock::default());
-        let fired = event("fired");
+        let fired = event("fired", None);
         let outcome =
             PollOutcome::new(vec![fired.clone()], cursor(), Next::Done).unwrap();
         let source = Arc::new(FakeSource {
@@ -1095,5 +1188,239 @@ mod tests {
         assert_eq!(commits.load(Ordering::Relaxed), 1);
         assert_eq!(acks.load(Ordering::Relaxed), 1);
         assert_eq!(engine.pending(), Some(VecDeque::new()));
+    }
+
+    #[test]
+    fn event_before_drops_a_bot_event_and_commits_the_rest() {
+        let bot = authored_event("bot-1", "bot");
+        let human = authored_event("human-1", "alice");
+        let outcome =
+            PollOutcome::new(vec![bot.clone(), human.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(BotFilter),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([human.clone()])));
+        assert_eq!(f.engine.store.position(&key()), Some(&cursor()));
+        assert!(f.engine.store.is_seen(&key(), bot.id()));
+        assert!(!f.engine.pending().unwrap().contains(&bot));
+        assert!(f.engine.store.is_seen(&key(), human.id()));
+    }
+
+    #[test]
+    fn a_bot_after_a_human_is_still_dropped() {
+        let human = authored_event("human-1", "alice");
+        let bot = authored_event("bot-1", "bot");
+        let outcome =
+            PollOutcome::new(vec![human.clone(), bot.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(BotFilter),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([human.clone()])));
+        assert!(f.engine.store.is_seen(&key(), bot.id()));
+        assert!(!f.engine.pending().unwrap().contains(&bot));
+        assert!(f.engine.store.is_seen(&key(), human.id()));
+    }
+
+    #[test]
+    fn the_default_hook_keeps_a_normal_event() {
+        let human = authored_event("human-1", "alice");
+        let outcome = PollOutcome::new(vec![human.clone()], cursor(), Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(outcome.unwrap())]);
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([human.clone()])));
+        assert!(f.engine.store.is_seen(&key(), human.id()));
+    }
+
+    #[test]
+    fn a_hook_error_keeps_the_event() {
+        let fired = event("fired", None);
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(FailingHook),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([fired.clone()])));
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn a_hook_timeout_keeps_the_event() {
+        let fired = event("fired", None);
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(BlockingHook),
+            Duration::from_millis(50),
+        );
+        let start = Instant::now();
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(f.engine.pending(), Some(VecDeque::from([fired.clone()])));
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn store_pending_proves_the_filtered_commit() {
+        let bot = authored_event("bot-1", "bot");
+        let human = authored_event("human-1", "alice");
+        let outcome =
+            PollOutcome::new(vec![bot.clone(), human.clone()], cursor(), Next::Done);
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(BotFilter),
+            EVENT_BEFORE_TIMEOUT,
+        );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let store = f.engine.into_store();
+        drop(store);
+        let reopened = Store::open(f.dir.path()).unwrap();
+
+        assert_eq!(reopened.position(&key()), Some(&cursor()));
+        assert_eq!(
+            reopened.pending(&key()),
+            Some(&VecDeque::from([human.clone()]))
+        );
+        assert!(reopened.is_seen(&key(), bot.id()));
+        assert!(!reopened.pending(&key()).unwrap().contains(&bot));
+        assert!(reopened.is_seen(&key(), human.id()));
+    }
+
+    struct StopOnFirst {
+        stop: StopHandle,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl EventBefore for StopOnFirst {
+        fn verdict(
+            &self,
+            _event: &Event,
+            _budget: Duration,
+        ) -> Result<BeforeVerdict, String> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                self.stop.stop();
+            }
+
+            Ok(BeforeVerdict::Keep)
+        }
+    }
+
+    fn assert_replayed_outcome(
+        dir: &std::path::Path,
+        first: &Event,
+        second: &Event,
+    ) {
+        let reopened = Store::open(dir).unwrap();
+        let replay = PollOutcome::new(
+            vec![first.clone(), second.clone()],
+            cursor(),
+            Next::Done,
+        )
+        .unwrap();
+        let source = Arc::new(FakeSource {
+            name: timer(),
+            results: Mutex::new(VecDeque::from([Ok(replay)])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let config = MonitorConfig {
+            id: key().monitor,
+            source: timer(),
+            poll_interval: PollInterval::from_secs(5).unwrap(),
+        };
+        let mut engine = PollEngine::new(
+            config,
+            source.clone(),
+            reopened,
+            Arc::new(FakeClock::default()),
+        )
+        .unwrap();
+
+        assert_eq!(engine.run(1).unwrap(), EngineState::Ended);
+        assert_eq!(
+            source.requests.lock().unwrap().as_slice(),
+            &[PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+        assert_eq!(engine.store.position(&key()), Some(&cursor()));
+        assert_eq!(
+            engine.pending(),
+            Some(VecDeque::from([first.clone(), second.clone()]))
+        );
+        assert!(engine.store.is_seen(&key(), first.id()));
+        assert!(engine.store.is_seen(&key(), second.id()));
+    }
+
+    #[test]
+    fn a_stop_mid_batch_leaves_the_outcome_for_replay() {
+        let first = authored_event("first", "alice");
+        let second = authored_event("second", "alice");
+        let outcome = PollOutcome::new(
+            vec![first.clone(), second.clone()],
+            cursor(),
+            Next::Done,
+        );
+        let stop = StopHandle::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome.unwrap())],
+            Arc::new(StopOnFirst {
+                stop: stop.clone(),
+                calls: calls.clone(),
+            }),
+            EVENT_BEFORE_TIMEOUT,
+        );
+        // with_hook owns the engine, so give it the handle the hook stops.
+        f.engine.stop = stop;
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Stopped);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(f.engine.store.position(&key()), None);
+        assert_eq!(f.engine.pending(), None);
+        assert!(!f.engine.store.is_seen(&key(), first.id()));
+        assert!(!f.engine.store.is_seen(&key(), second.id()));
+        assert_eq!(
+            f.requests(),
+            [PollRequest {
+                now: at(0),
+                position: None,
+            }]
+        );
+
+        let store = f.engine.into_store();
+        drop(store);
+        assert_replayed_outcome(f.dir.path(), &first, &second);
+    }
+
+    #[test]
+    fn a_larger_timeout_is_clamped_to_the_batch_bound() {
+        let f = Fixture::with_hook(
+            5,
+            vec![Ok(outcome(Next::Done))],
+            Arc::new(AllowAll),
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(f.engine.event_before_timeout, EVENT_BEFORE_TIMEOUT);
     }
 }

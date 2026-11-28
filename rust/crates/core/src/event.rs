@@ -5,6 +5,8 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::{MAX_ID_LEN, MAX_SUMMARY_LEN, ModelError, SourceName, validate_text};
 
+const MAX_AUTHOR_LEN: usize = MAX_SUMMARY_LEN;
+
 /// Identifies one event: 1 to [`MAX_ID_LEN`] bytes with no control characters.
 ///
 /// Two events with the same ID are the same event. Deserializing applies the
@@ -152,6 +154,12 @@ pub struct Event {
     #[serde(deserialize_with = "deserialize_summary")]
     summary: String,
     at: Timestamp,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_author",
+        skip_serializing_if = "Option::is_none"
+    )]
+    author: Option<String>,
 }
 
 impl PartialEq for Event {
@@ -187,6 +195,7 @@ impl Event {
             subject,
             summary: validate_summary(summary)?,
             at,
+            author: None,
         })
     }
 
@@ -219,6 +228,26 @@ impl Event {
     pub const fn at(&self) -> Timestamp {
         self.at
     }
+
+    /// Returns a copy of this event with the author attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty, oversized, or control-containing author.
+    pub fn with_author(
+        mut self,
+        author: Option<String>,
+    ) -> Result<Self, ModelError> {
+        self.author = author.map(validate_author).transpose()?;
+
+        Ok(self)
+    }
+
+    /// Returns the author of the event, when one is recorded.
+    #[must_use]
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
 }
 
 fn validate_summary(summary: String) -> Result<String, ModelError> {
@@ -232,6 +261,22 @@ where
     D: Deserializer<'de>,
 {
     validate_summary(String::deserialize(de)?).map_err(de::Error::custom)
+}
+
+fn validate_author(author: String) -> Result<String, ModelError> {
+    validate_text(&author, "author", MAX_AUTHOR_LEN)?;
+
+    Ok(author)
+}
+
+fn deserialize_author<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(de)?
+        .map(validate_author)
+        .transpose()
+        .map_err(de::Error::custom)
 }
 
 #[cfg(test)]
@@ -409,6 +454,34 @@ mod tests {
     }
 
     #[test]
+    fn author_defaults_to_none_and_round_trips_when_present() {
+        let json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z"}"#,
+        );
+        let older = serde_json::from_str::<Event>(json).unwrap();
+
+        assert_eq!(older.author(), None);
+        assert_eq!(serde_json::to_string(&older).unwrap(), json);
+
+        let authored = older.with_author(Some("deploy-bot".into())).unwrap();
+        let stored = serde_json::to_string(&authored).unwrap();
+        let decoded = serde_json::from_str::<Event>(&stored).unwrap();
+        let authored_json = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z","#,
+            r#""author":"deploy-bot"}"#,
+        );
+
+        assert_eq!(stored, authored_json);
+        assert_eq!(decoded.author(), Some("deploy-bot"));
+        assert_eq!(decoded.author(), authored.author());
+        assert_eq!(decoded, authored);
+    }
+
+    #[test]
     fn subject_keys_and_event_summaries_are_validated() {
         let source = SourceName::new("timer".into()).unwrap();
         let json = r#"{"source":"timer","key":""}"#;
@@ -446,6 +519,72 @@ mod tests {
         );
         assert_eq!(error.classify(), Category::Data);
         assert_eq!(error.to_string(), "summary is empty at line 1 column 94");
+    }
+
+    #[test]
+    fn authors_are_validated_when_attached() {
+        let id = EventId::new("deploy-1".into()).unwrap();
+        let source = SourceName::new("timer".into()).unwrap();
+        let subject = EventSubject::new(source, "deploy".into()).unwrap();
+        let at = "2026-01-01T00:00:00Z".parse().unwrap();
+        let event =
+            Event::new(id, EventKind::TimerFired, subject, "deploy".into(), at)
+                .unwrap();
+        let oversized = "x".repeat(MAX_AUTHOR_LEN + 1);
+
+        assert_eq!(
+            event.clone().with_author(Some(String::new())),
+            Err(ModelError::Empty { field: "author" })
+        );
+        assert_eq!(
+            event.clone().with_author(Some(oversized)),
+            Err(ModelError::TooLong {
+                field: "author",
+                limit: MAX_AUTHOR_LEN,
+            })
+        );
+        assert_eq!(
+            event.clone().with_author(Some("deploy\nbot".into())),
+            Err(ModelError::Invalid {
+                field: "author",
+                reason: "contains a control character",
+            })
+        );
+        assert_eq!(event.with_author(None).unwrap().author(), None);
+    }
+
+    #[test]
+    fn json_authors_are_validated() {
+        let oversized = "x".repeat(MAX_AUTHOR_LEN + 1);
+        let prefix = concat!(
+            r#"{"id":"deploy-1","kind":"timer.fired","#,
+            r#""subject":{"source":"timer","key":"deploy"},"#,
+            r#""summary":"deploy","at":"2026-01-01T00:00:00Z","author":"#,
+        );
+
+        for (author, expected) in [
+            (
+                serde_json::to_string("").unwrap(),
+                "author is empty".to_owned(),
+            ),
+            (
+                serde_json::to_string(&oversized).unwrap(),
+                format!("author exceeds {MAX_AUTHOR_LEN} bytes"),
+            ),
+            (
+                serde_json::to_string("deploy\nbot").unwrap(),
+                "author contains a control character".to_owned(),
+            ),
+        ] {
+            let json = format!("{prefix}{author}}}");
+            let error = serde_json::from_str::<Event>(&json).unwrap_err();
+
+            assert_eq!(error.classify(), Category::Data);
+            assert_eq!(
+                error.to_string(),
+                format!("{expected} at line 1 column {}", json.len())
+            );
+        }
     }
 
     proptest! {
