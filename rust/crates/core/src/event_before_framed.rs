@@ -895,7 +895,7 @@ mod tests {
             .unwrap();
             match connect(&fd, &address) {
                 Ok(()) => held.push(fd),
-                Err(Errno::AGAIN | Err(Errno::INPROGRESS)) => break,
+                Err(Errno::AGAIN | Errno::INPROGRESS) => break,
                 Err(error) => panic!("unexpected connect error: {error}"),
             }
         }
