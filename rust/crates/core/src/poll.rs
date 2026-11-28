@@ -444,7 +444,11 @@ impl<S: StateStore> PollEngine<S> {
                     reason,
                     annotations,
                 } => {
-                    let kept = event.with_validated_annotations(annotations);
+                    let kept = if annotations.is_empty() {
+                        event.clone()
+                    } else {
+                        event.with_validated_annotations(annotations)
+                    };
 
                     if let Some(reason) = reason {
                         tracing::warn!(
@@ -1441,6 +1445,22 @@ mod tests {
             Arc::new(AnnotatingHook(fields.clone())),
             EVENT_BEFORE_TIMEOUT,
         );
+
+        assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
+        let pending = f.engine.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), fired.id());
+        assert_eq!(pending[0].annotations(), &fields);
+        assert!(f.engine.store.is_seen(&key(), fired.id()));
+    }
+
+    #[test]
+    fn the_default_hook_preserves_existing_annotations() {
+        let fields = BTreeMap::from([("agent".to_owned(), "deploy-bot".to_owned())]);
+        let base = event("fired", None);
+        let fired = base.with_annotations(fields.clone()).unwrap();
+        let outcome = PollOutcome::new(vec![fired.clone()], cursor(), Next::Done);
+        let mut f = Fixture::new(5, vec![Ok(outcome.unwrap())]);
 
         assert_eq!(f.engine.run(1).unwrap(), EngineState::Ended);
         let pending = f.engine.pending().unwrap();

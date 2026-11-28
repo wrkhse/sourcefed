@@ -335,6 +335,11 @@ impl ValidatedAnnotations {
         Ok(Self(fields))
     }
 
+    /// Returns whether no fields were validated.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns the fields that passed validation.
     pub(crate) fn into_inner(self) -> BTreeMap<String, String> {
         self.0
@@ -726,7 +731,7 @@ mod tests {
     #[test]
     fn with_annotations_rejects_unbounded_fields() {
         let event = deploy_event();
-        let too_many: BTreeMap<String, String> = (0..MAX_ANNOTATIONS + 1)
+        let too_many: BTreeMap<String, String> = (0..=MAX_ANNOTATIONS)
             .map(|index| (format!("key-{index}"), "value".to_owned()))
             .collect();
         let long_key = BTreeMap::from([(
@@ -814,7 +819,7 @@ mod tests {
             r#""subject":{"source":"timer","key":"deploy"},"#,
             r#""summary":"deploy","at":"2026-01-01T00:00:00Z","annotations":"#,
         );
-        let too_many: BTreeMap<String, String> = (0..MAX_ANNOTATIONS + 1)
+        let too_many: BTreeMap<String, String> = (0..=MAX_ANNOTATIONS)
             .map(|index| (format!("key-{index}"), "value".to_owned()))
             .collect();
 

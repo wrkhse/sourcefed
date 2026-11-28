@@ -164,15 +164,16 @@ pub enum BeforeVerdict {
 }
 ```
 
-A decision is what the engine applies. `Keep` carries the failure reason that
-kept the event, when one exists, and the fields to apply. Invalid annotation
-fields keep the event with no fields.
+A decision is what the engine applies. Annotations are validated before the
+decision is built. `Keep` carries the failure reason that kept the event, when
+one exists, and the fields to apply. Invalid annotation fields keep the event
+with no fields.
 
 ```rust
 pub(crate) enum BeforeDecision {
     Keep {
         reason: Option<String>,
-        annotations: BTreeMap<String, String>,
+        annotations: ValidatedAnnotations,
     },
     Drop { reason: String },
 }
